@@ -31,8 +31,8 @@ def message(body, sender=ALICE, event_id="$trigger", reply_to=NOTE_ID, mention=T
     )
 
 
-def note(body="fix the tests", unsigned=None):
-    evt = message(body, sender="@bob:example.org", event_id=NOTE_ID, reply_to=None, mention=False)
+def note(body="fix the tests", unsigned=None, sender=ALICE):
+    evt = message(body, sender=sender, event_id=NOTE_ID, reply_to=None, mention=False)
     if unsigned:
         evt = MessageEvent.deserialize({**evt.serialize(), "unsigned": {"age": 1, **unsigned}})
     return evt
@@ -125,7 +125,7 @@ def replies(bot):
 
 
 async def test_starts_task(maubot_plugin, maubot_test_bot, api):
-    body = "> <@bob:example.org> fix the tests\n\n@meeseeks:example.org use xdist\nallow: pypi.org\nharness: claude-code"
+    body = "> <@alice:example.org> fix the tests\n\n@meeseeks:example.org use xdist\nallow: pypi.org\nharness: claude-code"
     await send(maubot_test_bot, message(body))
     auth, payload = api.requests[0]
     assert auth == "Bearer s3cret"
@@ -181,7 +181,15 @@ async def test_undecryptable_note(maubot_plugin, maubot_test_bot, api):
     assert api.requests == []
 
 
-def edit_event(body, event_id="$edit", sender="@bob:example.org"):
+async def test_note_from_non_whitelisted_sender_is_refused(maubot_plugin, maubot_test_bot, api):
+    maubot_test_bot.events[NOTE_ID] = note(sender="@mallory:example.org")
+    await send(maubot_test_bot, message("@meeseeks:example.org go"))
+    assert replies(maubot_test_bot) == ["the note is from @mallory:example.org, who isn't allowed to start tasks"]
+    assert reactions(maubot_test_bot) == ["⏳", "❌"]
+    assert api.requests == []
+
+
+def edit_event(body, event_id="$edit", sender=ALICE):
     return {
         "type": "m.room.message",
         "event_id": event_id,
@@ -222,7 +230,7 @@ async def test_encrypted_edit(maubot_plugin, maubot_test_bot, api):
     edit = {
         "type": "m.room.encrypted",
         "event_id": "$edit",
-        "sender": "@bob:example.org",
+        "sender": ALICE,
         "origin_server_ts": 2,
         "content": {
             "algorithm": "m.megolm.v1.aes-sha2",

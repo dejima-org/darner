@@ -29,7 +29,7 @@ The note is the task. The rest of the reply, minus the mention and the keyword l
 | `harness:` | harness for this task, overriding the default |
 | `backend:` | backend for this task, overriding the harness's default |
 
-The bot replies with the task id and its tmux target, or with why it was refused. It only acts on messages from users in its `whitelist`.
+The bot replies with the task id and its tmux target, or with why it was refused. It only acts when both the reply and the note are from users in its `whitelist`, since the note becomes the agent's instructions.
 
 ## Prompt
 
