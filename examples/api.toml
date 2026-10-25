@@ -1,0 +1,13 @@
+listen = "127.0.0.1:8080"
+db_path = "/var/lib/meeseeks/tasks.db"
+blurbs_dir = "/etc/meeseeks/blurbs"
+launch_command = ["ssh", "-T", "-o", "BatchMode=yes", "operator@dejima.example.com"]
+launch_timeout = 120
+
+# One token per source; the bot instance uses one of these as api_token.
+[tokens]
+maubot = "replace-with-a-long-random-token"
+
+[policy]
+deny_domains = []
+max_domains = 20

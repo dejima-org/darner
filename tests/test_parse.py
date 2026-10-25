@@ -1,0 +1,109 @@
+import pytest
+
+from meeseeks_bot.parse import ParseError, Request, parse_reply
+
+NAMES = ["@meeseeks:example.org", "Meeseeks"]
+
+
+def parse(body):
+    return parse_reply(body, NAMES)
+
+
+def test_design_example():
+    req = parse(
+        "@meeseeks fix the flaky tests, use pytest-xdist\n"
+        "ctx: myapp\n"
+        "allow: pypi.org, files.pythonhosted.org\n"
+        "deps: apt:python3-venv pip:pytest-xdist\n"
+        "harness: claude-code\n"
+        "backend: openrouter\n"
+    )
+    assert req == Request(
+        context="fix the flaky tests, use pytest-xdist",
+        blurbs=["myapp"],
+        domains=["pypi.org", "files.pythonhosted.org"],
+        dependencies=["apt:python3-venv", "pip:pytest-xdist"],
+        harness="claude-code",
+        backend="openrouter",
+    )
+
+
+def test_mixed_lines_and_case():
+    req = parse("first\nALLOW: a.org\nmiddle\n  Deps : pip:x,apt:y\nlast")
+    assert req.context == "first\nmiddle\nlast"
+    assert req.domains == ["a.org"]
+    assert req.dependencies == ["pip:x", "apt:y"]
+    assert req.harness is None and req.backend is None
+
+
+def test_repeated_keywords_append_and_dedup():
+    req = parse("allow: a.org b.org\nallow: b.org, c.org,a.org\nctx: x\nctx: x y")
+    assert req.domains == ["a.org", "b.org", "c.org"]
+    assert req.blurbs == ["x", "y"]
+
+
+def test_empty_keyword_value():
+    assert parse("allow:\ndo it").domains == []
+
+
+def test_keyword_mid_line_is_context():
+    req = parse("please do not allow: evil.org here\nnote ctx: nope")
+    assert req.context == "please do not allow: evil.org here\nnote ctx: nope"
+    assert req.domains == [] and req.blurbs == []
+
+
+@pytest.mark.parametrize("key", ["harness", "backend"])
+def test_single_value_keywords(key):
+    assert getattr(parse(f"{key}: a\n{key}: a"), key) == "a"
+    with pytest.raises(ParseError, match=f"{key} takes one value"):
+        parse(f"{key}: a b")
+    with pytest.raises(ParseError, match=f"{key} takes one value"):
+        parse(f"{key}: a\n{key}: b")
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "@meeseeks:example.org do it",
+        "@meeseeks:example.org: do it",
+        "meeseeks: do it",
+        "Meeseeks do it",
+        "@Meeseeks do it",
+        "@meeseeks: do it",
+        "MEESEEKS: do it",
+    ],
+)
+def test_leading_mention_forms(body):
+    assert parse(body).context == "do it"
+
+
+def test_mention_mid_line():
+    assert parse("hey @meeseeks:example.org do it").context == "hey do it"
+    assert parse("thanks Meeseeks!").context == "thanks !"
+
+
+def test_mention_not_inside_word():
+    assert parse("Meeseeks: the meeseeksbox repo").context == "the meeseeksbox repo"
+
+
+def test_mention_before_keyword_line():
+    req = parse("@meeseeks:example.org ctx: myapp")
+    assert req.blurbs == ["myapp"] and req.context == ""
+
+
+def test_keyword_values_keep_bot_name():
+    assert parse("Meeseeks\nctx: meeseeks").blurbs == ["meeseeks"]
+
+
+def test_empty_context():
+    assert parse("@meeseeks:example.org\nallow: a.org").context == ""
+    assert parse("").context == ""
+
+
+def test_reply_fallback_stripped():
+    body = "> <@alice:example.org> the note\n> more\n\nmeeseeks: go"
+    assert parse(body).context == "go"
+
+
+def test_no_names():
+    assert parse_reply("meeseeks: go", []).context == "meeseeks: go"

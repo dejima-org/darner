@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "meeseeks"
+version = "0.1.0"
+description = "Start dejima sessions from task requests"
+requires-python = ">=3.11"
+
+[project.optional-dependencies]
+api = ["aiohttp>=3.9"]
+test = ["aiohttp>=3.9", "pytest", "pytest-aiohttp", "maubot"]
+
+[project.scripts]
+meeseeks-api = "meeseeks.api:main"
+meeseeks-launch = "meeseeks.launch:main"
+
+[tool.setuptools]
+packages = ["meeseeks"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+pythonpath = [".", "plugin"]
