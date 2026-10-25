@@ -432,3 +432,9 @@ async def test_answer_is_scoped_to_client(started, config, tmp_path):
 async def test_answer_rejects_bad_body(started, body):
     app, client, task_id, *_ = started
     assert (await client.post(f"/v1/tasks/{task_id}/answer", json=body, headers=AUTH)).status == 400
+
+
+async def test_blurbs_are_listed(client):
+    resp = await client.get("/v1/blurbs", headers=AUTH)
+    assert resp.status == 200 and await resp.json() == ["myapp"]
+    assert (await client.get("/v1/blurbs")).status == 401

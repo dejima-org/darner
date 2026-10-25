@@ -21,6 +21,32 @@ from .parse import ParseError, parse_reply, strip_mention
 
 TASK_ID = re.compile(r"ms-[a-z2-7]{5}")
 
+USAGE = """\
+**Meeseeks** starts an isolated dejima session for a task.
+
+**Start a task:** reply to a note with a message that mentions me. The note is the task, and the rest of your reply is extra context. Keyword lines configure the session:
+
+```
+ctx: <names>       add context blurbs{blurbs}
+allow: <domains>   let the session reach these domains
+deps: <specs>      install dependencies (apt:, pip:, cargo:, npm:, tarball:)
+harness: <name>    use this harness instead of the default
+backend: <name>    use this backend instead of the harness's default
+```
+
+Values are separated by commas or spaces, and keywords can repeat. For example:
+
+```
+@meeseeks find out why the import job fails since the deploy
+ctx: myapp
+allow: pypi.org, files.pythonhosted.org
+```
+
+**Updates:** I reply when the session starts, when it delivers output (a summary and a zip), when it needs something from you, and when it ends. When a help request says "Reply to this message to answer", reply to it and your answer is typed into the session.
+
+Only allowlisted users can start tasks, and the note must be from one of them too. Anything the agent writes is untrusted.
+"""
+
 
 class NoteError(Exception):
     pass
@@ -118,10 +144,14 @@ class MeeseeksBot(Plugin):
             or not isinstance(content, TextMessageEventContent)
             or content.get_edit()
             or evt.sender not in self.config["allowlist"]
-            or not content.get_reply_to()
         ):
             return
         content.trim_reply_fallback()
+        if self._mentioned(evt) and strip_mention(content.body, self.names).strip().lower() == "help":
+            await evt.reply(await self._usage())
+            return
+        if not content.get_reply_to():
+            return
         try:
             replied = await self.client.get_event(evt.room_id, content.get_reply_to())
         except Exception as e:
@@ -134,6 +164,16 @@ class MeeseeksBot(Plugin):
             await self._respond(evt, self._answer(evt, task))
         elif self._mentioned(evt):
             await self._respond(evt, self._submit(evt, replied))
+
+    async def _usage(self) -> str:
+        try:
+            async with self._api("GET", "/v1/blurbs", raise_for_status=True) as resp:
+                blurbs = await resp.json()
+        except Exception:
+            self.log.warning("Couldn't list context blurbs", exc_info=True)
+            blurbs = None
+        listed = f" (available: {', '.join(blurbs) or 'none'})" if isinstance(blurbs, list) else ""
+        return USAGE.format(blurbs=listed)
 
     def _help_task(self, replied: Event | None) -> str | None:
         # Only the bot's own tag counts, so a user can't steer an answer into another task

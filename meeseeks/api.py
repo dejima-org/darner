@@ -59,8 +59,12 @@ def _source(body: dict) -> dict:
     return source
 
 
+def available_blurbs(blurbs_dir: Path) -> list[str]:
+    return sorted(p.stem for p in blurbs_dir.glob("*.md")) if blurbs_dir.is_dir() else []
+
+
 def load_blurbs(blurbs_dir: Path, names: list) -> list[tuple[str, str]]:
-    available = sorted(p.stem for p in blurbs_dir.glob("*.md")) if blurbs_dir.is_dir() else []
+    available = available_blurbs(blurbs_dir)
     blurbs = []
     for name in names:
         if not isinstance(name, str) or name not in available:
@@ -340,6 +344,11 @@ async def answer_help(request: web.Request) -> web.Response:
     return web.Response(status=204)
 
 
+async def list_blurbs(request: web.Request) -> web.Response:
+    _client(request)
+    return web.json_response(available_blurbs(Path(request.app[CONFIG]["blurbs_dir"])))
+
+
 async def ack_event(request: web.Request) -> web.Response:
     if not request.app[STORE].ack(_client(request), int(request.match_info["seq"])):
         raise web.HTTPNotFound()
@@ -353,6 +362,7 @@ def make_app(config: dict, poll: bool = True) -> web.Application:
     app[STORE].fail_pending()
     app.router.add_post("/v1/tasks", create_task)
     app.router.add_get("/v1/events", list_events)
+    app.router.add_get("/v1/blurbs", list_blurbs)
     app.router.add_get(r"/v1/tasks/{id:ms-[a-z2-7]{5}}/outputs/{seq:\d+}.zip", get_output)
     app.router.add_post(r"/v1/events/{seq:\d+}/ack", ack_event)
     app.router.add_post(r"/v1/tasks/{id:ms-[a-z2-7]{5}}/answer", answer_help)

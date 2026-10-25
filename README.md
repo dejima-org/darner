@@ -19,6 +19,8 @@ harness: claude-code
 backend: openrouter
 ```
 
+`@meeseeks help` replies with this usage, including the available context blurbs.
+
 The note is the task. The rest of the reply, minus the mention and the keyword lines, is extra context. Keyword lines take comma or space separated values and can repeat:
 
 | keyword | meaning |
@@ -139,6 +141,7 @@ Every `poll_interval` seconds the API asks the dejima host for the status of lau
 | `GET /v1/events` | unacknowledged events, oldest first: `{seq, id, type, summary, size, answerable, target, source}`, `type` is `output`, `help` or `ended` |
 | `GET /v1/tasks/<id>/outputs/<seq>.zip` | an `output` event's archive (`size` 0 means it was rejected, and `summary` says why) |
 | `POST /v1/events/<seq>/ack` | mark an event delivered |
+| `GET /v1/blurbs` | names of the available context blurbs |
 | `POST /v1/tasks/<id>/answer` | `{text, requester}`: answer the task's outstanding help request; 409 with the reason if the host refuses |
 
 `source` is echoed back as given, so a client knows where to reply without keeping state.
