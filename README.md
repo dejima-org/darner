@@ -6,6 +6,198 @@ Starts a dejima session for a task sent from chat. A task request carries the ta
 maubot plugin ──► meeseeks-api ──ssh──► meeseeks-launch ──► tmux new-window ── dejima --isolated
 ```
 
+## Setup
+
+Meeseeks has three parts, which can share a machine or not:
+
+- **Dejima host:** runs dejima and `meeseeks-launch`. The API reaches it over ssh with a key that can run nothing but the launcher.
+- **API host:** runs `meeseeks-api`, which the bot talks to.
+- **Maubot:** runs the bot plugin, logged in as a Matrix account for the bot.
+
+You need:
+
+- dejima, working on the dejima host, with `--isolated`, `--domains`, `--dependencies` and `--shared-path-file`
+- tmux, pipx and git on the dejima host, and Python 3.11 or newer on both hosts
+- a maubot server, and a Matrix account for the bot
+
+The examples below use these placeholders; substitute your own:
+
+| placeholder | meaning |
+|---|---|
+| `https://git.example.com/example/meeseeks.git` | this repository's clone URL |
+| `dejima.example.com`, `operator` | the dejima host, and the account on it that runs dejima |
+| `192.0.2.10` | the API host's address, as the dejima host sees it |
+| `@meeseeks:example.org` | the bot's Matrix account |
+| `@you:example.org` | your Matrix account |
+
+### 1. Install the launcher on the dejima host
+
+As `operator`:
+
+```sh
+git clone https://git.example.com/example/meeseeks.git ~/src/meeseeks
+pipx install --editable ~/src/meeseeks
+```
+
+This installs `~/.local/bin/meeseeks-launch`. Make sure dejima can start a session in a detached tmux window without stopping to ask anything:
+
+- Acknowledge CRITICAL audit findings with `dejima-audit ack`.
+- Pre-record decisions for any credential-shaped values dejima's staging scan flags.
+- Run `sudo loginctl enable-linger operator` (or set `KillUserProcesses=no`), so the tmux server outlives the ssh connection.
+
+Optionally, add a `[identity.meeseeks]` section to dejima's config, for the git name and keys every meeseeks session should act as (see dejima's configuration docs). Then pass `--identity meeseeks` in step 4.
+
+Try a launch by hand:
+
+```sh
+echo '{"id": "ms-hello", "prompt": "Write hello to ~/shared/RESULT.md, then create ~/shared/.done"}' \
+  | ~/.local/bin/meeseeks-launch
+tmux attach -t meeseeks                      # watch it; detach with Ctrl-b d
+~/.local/bin/meeseeks-launch status          # "ready": true once .done exists
+~/.local/bin/meeseeks-launch fetch ms-hello > /tmp/hello.zip
+```
+
+Quit the session when you're done, then remove `~/meeseeks/tasks/ms-hello`.
+
+### 2. Install the API
+
+On the API host, create a service user and install into a virtualenv:
+
+```sh
+sudo useradd --system --create-home --home-dir /var/lib/meeseeks --shell /usr/sbin/nologin meeseeks
+sudo git clone https://git.example.com/example/meeseeks.git /opt/meeseeks/src
+sudo python3 -m venv /opt/meeseeks/venv
+sudo /opt/meeseeks/venv/bin/pip install --editable '/opt/meeseeks/src[api]'
+```
+
+### 3. Give the API an ssh key and the dejima host's host key
+
+The API reaches the dejima host as `operator`, with a key of its own:
+
+```sh
+sudo -u meeseeks install -d -m 700 /var/lib/meeseeks/.ssh
+sudo -u meeseeks ssh-keygen -t ed25519 -N '' -C meeseeks-api -f /var/lib/meeseeks/.ssh/id_ed25519
+sudo cat /var/lib/meeseeks/.ssh/id_ed25519.pub     # you need this in step 4
+```
+
+Record the dejima host's host key, after checking that it is the right one:
+
+```sh
+ssh-keyscan -t ed25519 dejima.example.com > /tmp/dejima.hostkey
+ssh-keygen -lf /tmp/dejima.hostkey                 # on the API host
+ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub   # on the dejima host: must match
+sudo -u meeseeks tee -a /var/lib/meeseeks/.ssh/known_hosts < /tmp/dejima.hostkey
+```
+
+### 4. Lock the key to the launcher on the dejima host
+
+Append one line to `operator`'s `~/.ssh/authorized_keys`, with the public key from step 3:
+
+```
+from="192.0.2.10",command="/home/operator/.local/bin/meeseeks-launch --harness claude-code --backend claude-code=anthropic",restrict ssh-ed25519 AAAA... meeseeks-api
+```
+
+- `command=` makes the launcher the only thing this key can run, whatever the client asks for. Use the absolute path, since a non-interactive ssh login may not have `~/.local/bin` on its `PATH`.
+- `restrict` turns off forwarding and terminals, and `from=` accepts the key only from the API host.
+- Put the launcher's options in the command: the defaults every session gets, plus `--identity` from step 1 and `--answers` if replies in chat may be typed into sessions. All options are listed under [Launcher options](#launcher-options).
+
+### 5. Configure and start the API
+
+Generate a token for the bot to authenticate to the API:
+
+```sh
+python3 -c 'import secrets; print(secrets.token_urlsafe(32))'
+```
+
+Install the example config, readable only by root and the service:
+
+```sh
+sudo install -d -m 750 -g meeseeks /etc/meeseeks /etc/meeseeks/blurbs
+sudo install -m 640 -g meeseeks /opt/meeseeks/src/examples/api.toml /etc/meeseeks/api.toml
+sudoedit /etc/meeseeks/api.toml
+```
+
+In it:
+- Set `launch_command` to `["ssh", "-T", "-o", "BatchMode=yes", "operator@dejima.example.com"]`.
+- Put the token under `[tokens]` as `maubot = "..."`.
+- Leave `listen` on `127.0.0.1:8080` if maubot runs on the same machine. Otherwise, listen on a private address, or put a TLS reverse proxy in front: the token travels in every request.
+
+Context blurbs go in `/etc/meeseeks/blurbs` as `<name>.md`, and [`examples/blurbs`](examples/blurbs) has one. Every key is described under [API config](#api-config).
+
+Run it as a systemd service:
+
+```sh
+sudo cp /opt/meeseeks/src/examples/meeseeks-api.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now meeseeks-api
+```
+
+Check both links:
+
+```sh
+sudo -u meeseeks ssh -T -o BatchMode=yes operator@dejima.example.com status   # prints []
+curl -H "Authorization: Bearer <token>" http://127.0.0.1:8080/v1/blurbs        # prints the blurb names
+```
+
+If the first command asks for a password or prints anything but JSON, recheck step 4. `journalctl -u meeseeks-api` shows the API's log.
+
+### 6. Set up the bot in maubot
+
+Create the bot's Matrix account. Use your homeserver's registration, or `register_new_matrix_user` on Synapse.
+
+On any machine, install maubot's CLI. Log in to your maubot server, then log the bot in through it. `--update-client` creates the bot's client in maubot with a device of its own, which encrypted rooms need:
+
+```sh
+pipx install maubot
+mbc login -s https://maubot.example.org -u <maubot admin user>
+mbc auth -h example.org -u meeseeks --update-client
+```
+
+Download the plugin, `io.example.meeseeks-v<version>.mbp`, from the repository's latest release, then upload it in maubot's web UI under **Plugins**. `mbc upload <file>` does the same from the command line.
+
+In maubot's web UI:
+
+1. Under **Instances**, create one with the bot's client as the primary user and `io.example.meeseeks` as the type.
+2. Set the instance config:
+   - `allowlist`: the Matrix IDs that may start tasks, e.g. `["@you:example.org"]`
+   - `api_url`: where the API is reachable from maubot, e.g. `http://127.0.0.1:8080`
+   - `api_token`: the token from step 5
+3. Invite the bot to the room you keep notes in, and accept the invite. The simplest way is to turn on **Autojoin** on the bot's client, invite it, then turn autojoin off again, so only rooms you choose matter.
+
+Encrypted rooms need maubot's encryption support installed on the maubot server; see maubot's documentation.
+
+### 7. Check it end to end
+
+In the room, send `@meeseeks help`. The reply lists your context blurbs, which also shows that the bot reaches the API.
+
+Then reply to a note with `@meeseeks` and a line of context. The bot answers with the task id, and `tmux attach -t meeseeks` on the dejima host shows the session. When the agent finishes, the bot replies again with its summary and a zip.
+
+## Updating
+
+Update in this order, because each part may rely on commands or fields added to the one after it: the dejima host, then the API, then the plugin. Look at the commit log first for anything that needs a step of its own.
+
+**Dejima host**, as `operator`. The install is editable, so pulling is the update:
+
+```sh
+git -C ~/src/meeseeks pull
+```
+
+Sessions already running are unaffected.
+
+**API host.** Back up the database while the service is stopped:
+
+```sh
+sudo systemctl stop meeseeks-api
+sudo -u meeseeks cp /var/lib/meeseeks/tasks.db /var/lib/meeseeks/tasks.db.bak
+sudo git -C /opt/meeseeks/src pull
+sudo /opt/meeseeks/venv/bin/pip install --editable '/opt/meeseeks/src[api]'   # picks up new dependencies
+sudo systemctl start meeseeks-api
+```
+
+**Plugin.** Download the `.mbp` from the new release and upload it, as in setup step 6. Maubot replaces the plugin and restarts its instances. Instance config is kept, and new keys get their defaults.
+
+Dejima itself updates independently, but the launcher depends on the flags listed under Setup.
+
 ## Using it from Element
 
 Reply to a note with a message that mentions the bot:
@@ -79,15 +271,9 @@ The bot only treats a reply as an answer when the replied-to message is its own 
 
 The files are still agent-written: treat what is in the zip as untrusted. Neither the API's `results_dir` nor dejima's `isolated/` share directories are pruned.
 
-## Deployment
+## Reference
 
-### Dejima host
-
-Install the package for the account that runs dejima (`pipx install .`), then lock the API's key to the launcher in that account's `~/.ssh/authorized_keys`:
-
-```
-command="meeseeks-launch --identity meeseeks --harness claude-code --backend claude-code=anthropic",restrict ssh-ed25519 AAAA... meeseeks-api
-```
+### Launcher options
 
 | option | default | meaning |
 |---|---|---|
@@ -105,17 +291,27 @@ command="meeseeks-launch --identity meeseeks --harness claude-code --backend cla
 
 The API sends one of these commands, which arrive as `SSH_ORIGINAL_COMMAND`: none (launch the job on stdin), `status`, `fetch <id>`, `help <id>` or `answer <id>`. Anything else is refused.
 
-A detached launch has nobody to answer a prompt, so the host must not raise one:
-
-- Acknowledge CRITICAL audit findings with `dejima-audit ack`.
-- Pre-record decisions for any credential-shaped values dejima's staging scan flags.
-- Run `loginctl enable-linger <user>` (or set `KillUserProcesses=no`) so the tmux server outlives the ssh connection.
-
 Grants use `dejima --domains FILE` and `--dependencies FILE`, and output collection uses `--shared-path-file FILE`. A task without grants passes neither grant flag.
 
-### API
+### API config
 
-Install with `pipx install '.[api]'`, write a config based on [`examples/api.toml`](examples/api.toml), and run `meeseeks-api --config /etc/meeseeks/api.toml`. Put context blurbs in `blurbs_dir` as `<name>.md`. They are read per request, so an edit needs no restart.
+[`examples/api.toml`](examples/api.toml), with:
+
+| key | meaning |
+|---|---|
+| `listen` | `host:port` to listen on |
+| `db_path` | SQLite database of tasks and events |
+| `blurbs_dir` | context blurbs, as `<name>.md`; read per request, so an edit needs no restart |
+| `results_dir` | collected output archives |
+| `poll_interval` | seconds between checks on the dejima host |
+| `launch_command` | how to reach the launcher; the command is appended, and over ssh arrives as `SSH_ORIGINAL_COMMAND` |
+| `launch_timeout` | seconds a launcher call may take |
+| `output_instructions` | replaces the prompt's last section |
+| `[tokens]` | one bearer token per client, by name |
+| `[policy]` | `deny_domains` (a denied domain's parents are denied too), `max_domains` |
+| `[limits]` | `max_bytes`, `max_files`: should match the launcher's `--max-output` |
+
+### API endpoints
 
 `POST /v1/tasks` takes a bearer token from `[tokens]`:
 
@@ -146,9 +342,13 @@ Every `poll_interval` seconds the API asks the dejima host for the status of lau
 
 `source` is echoed back as given, so a client knows where to reply without keeping state.
 
-### Maubot plugin
+### Maubot instance config
 
-Build with `mbc build` in `plugin/`, upload the `.mbp`, and create an instance. In the instance config, set `allowlist` to the Matrix IDs allowed to start tasks, `api_url`/`api_token` to the API, and `poll_interval` to how often it checks for output. Turn off autojoin for the bot's client, and enable its encryption support for encrypted rooms.
+| key | meaning |
+|---|---|
+| `allowlist` | Matrix IDs that may start tasks and answer help requests |
+| `api_url`, `api_token` | where the API is and the token to use |
+| `poll_interval` | seconds between checks for task updates |
 
 ## Development
 
@@ -156,3 +356,12 @@ Build with `mbc build` in `plugin/`, upload the `.mbp`, and create an instance. 
 python3 -m venv .venv && .venv/bin/pip install -e '.[test]'
 .venv/bin/python -m pytest
 ```
+
+To build the plugin locally, run `mbc build` in `plugin/`.
+
+### Releasing
+
+1. Set the new version in both `plugin/maubot.yaml` and `pyproject.toml`, and merge that.
+2. Tag the merge as `v<version>` and push the tag.
+
+[`.gitea/workflows/release.yml`](.gitea/workflows/release.yml) then builds the plugin on a `dejima-confined` runner and attaches it to the release for that tag. It fails if the tag doesn't match both versions. It uses the job's automatic `GITEA_TOKEN`, so Actions must be enabled for the repository, and the token must be allowed to create releases.
