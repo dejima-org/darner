@@ -15,9 +15,13 @@ from mautrix.util.config import BaseProxyConfig, ConfigUpdateHelper
 from .parse import ParseError, parse_reply
 
 
+class NoteError(Exception):
+    pass
+
+
 class Config(BaseProxyConfig):
     def do_update(self, helper: ConfigUpdateHelper) -> None:
-        helper.copy("whitelist")
+        helper.copy("allowlist")
         helper.copy("api_url")
         helper.copy("api_token")
 
@@ -43,10 +47,13 @@ class MeeseeksBot(Plugin):
             n.lower() in body for n in self.names
         )
 
-    async def _note_body(self, evt: MessageEvent) -> str | None:
+    async def _note_body(self, evt: MessageEvent) -> str:
         note = await self.client.get_event(evt.room_id, evt.content.get_reply_to())
         if note is None:
-            return None
+            raise NoteError("couldn't decrypt the note")
+        # The note becomes the agent's instructions, so it must come from someone trusted to give them.
+        if note.sender not in self.config["allowlist"]:
+            raise NoteError(f"the note is from {note.sender}, who isn't allowed to start tasks")
         relations = (note.unsigned.get("m.relations") if note.unsigned else None) or {}
         if edit := relations.get("m.replace"):
             if "content" in edit:
@@ -57,18 +64,16 @@ class MeeseeksBot(Plugin):
                 try:
                     edit = await self.client.crypto.decrypt_megolm_event(edit)
                 except DecryptionError:
-                    return None
+                    raise NoteError("couldn't decrypt the note")
             if isinstance(edit, RawMessageEvent) and edit.sender == note.sender:
                 return edit.content.body
         return note.content.body
 
     async def _submit(self, evt: MessageEvent) -> tuple[str, bool]:
-        note = await self._note_body(evt)
-        if note is None:
-            return "couldn't decrypt the note", False
         try:
+            note = await self._note_body(evt)
             req = parse_reply(evt.content.body, self.names)
-        except ParseError as e:
+        except (NoteError, ParseError) as e:
             return str(e), False
         payload = {
             "task": note,
@@ -100,7 +105,7 @@ class MeeseeksBot(Plugin):
             evt.sender == self.client.mxid
             or not isinstance(content, TextMessageEventContent)
             or content.get_edit()
-            or evt.sender not in self.config["whitelist"]
+            or evt.sender not in self.config["allowlist"]
             or not content.get_reply_to()
         ):
             return

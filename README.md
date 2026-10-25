@@ -29,7 +29,7 @@ The note is the task. The rest of the reply, minus the mention and the keyword l
 | `harness:` | harness for this task, overriding the default |
 | `backend:` | backend for this task, overriding the harness's default |
 
-The bot replies with the task id and its tmux target, or with why it was refused. It only acts on messages from users in its `whitelist`.
+The bot replies with the task id and its tmux target, or with why it was refused. It only acts when both the reply and the note are from users in its `allowlist`, since the note becomes the agent's instructions.
 
 ## Prompt
 
@@ -92,7 +92,7 @@ It returns `201 {"id", "target"}`. A repeat of the same `source` returns the exi
 
 ### Maubot plugin
 
-Build with `mbc build` in `plugin/`, upload the `.mbp`, and create an instance. In the instance config, set `whitelist` to the Matrix IDs allowed to start tasks, and `api_url`/`api_token` to the API. Turn off autojoin for the bot's client, and enable its encryption support for encrypted rooms.
+Build with `mbc build` in `plugin/`, upload the `.mbp`, and create an instance. In the instance config, set `allowlist` to the Matrix IDs allowed to start tasks, and `api_url`/`api_token` to the API. Turn off autojoin for the bot's client, and enable its encryption support for encrypted rooms.
 
 ## Development
 
