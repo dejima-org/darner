@@ -21,7 +21,7 @@ class NoteError(Exception):
 
 class Config(BaseProxyConfig):
     def do_update(self, helper: ConfigUpdateHelper) -> None:
-        helper.copy("whitelist")
+        helper.copy("allowlist")
         helper.copy("api_url")
         helper.copy("api_token")
 
@@ -52,7 +52,7 @@ class MeeseeksBot(Plugin):
         if note is None:
             raise NoteError("couldn't decrypt the note")
         # The note becomes the agent's instructions, so it must come from someone trusted to give them.
-        if note.sender not in self.config["whitelist"]:
+        if note.sender not in self.config["allowlist"]:
             raise NoteError(f"the note is from {note.sender}, who isn't allowed to start tasks")
         relations = (note.unsigned.get("m.relations") if note.unsigned else None) or {}
         if edit := relations.get("m.replace"):
@@ -105,7 +105,7 @@ class MeeseeksBot(Plugin):
             evt.sender == self.client.mxid
             or not isinstance(content, TextMessageEventContent)
             or content.get_edit()
-            or evt.sender not in self.config["whitelist"]
+            or evt.sender not in self.config["allowlist"]
             or not content.get_reply_to()
         ):
             return

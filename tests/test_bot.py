@@ -81,7 +81,7 @@ def maubot_plugin_config_class():
 
 @pytest.fixture
 def maubot_plugin_config_overrides(api):
-    return {"whitelist": [ALICE], "api_url": str(api.server.make_url("/")), "api_token": "s3cret"}
+    return {"allowlist": [ALICE], "api_url": str(api.server.make_url("/")), "api_token": "s3cret"}
 
 
 @pytest.fixture
@@ -155,7 +155,7 @@ async def test_starts_task(maubot_plugin, maubot_test_bot, api):
         message("@meeseeks:example.org go", reply_to=None),
         message("go", mention=False),
     ],
-    ids=["own", "edit", "not-whitelisted", "not-reply", "no-mention"],
+    ids=["own", "edit", "not-allowlisted", "not-reply", "no-mention"],
 )
 async def test_ignored(maubot_plugin, maubot_test_bot, api, evt):
     await send(maubot_test_bot, evt)
@@ -181,7 +181,7 @@ async def test_undecryptable_note(maubot_plugin, maubot_test_bot, api):
     assert api.requests == []
 
 
-async def test_note_from_non_whitelisted_sender_is_refused(maubot_plugin, maubot_test_bot, api):
+async def test_note_from_non_allowlisted_sender_is_refused(maubot_plugin, maubot_test_bot, api):
     maubot_test_bot.events[NOTE_ID] = note(sender="@mallory:example.org")
     await send(maubot_test_bot, message("@meeseeks:example.org go"))
     assert replies(maubot_test_bot) == ["the note is from @mallory:example.org, who isn't allowed to start tasks"]
