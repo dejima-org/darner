@@ -7,7 +7,11 @@ from mautrix.types import (
     EncryptedEvent,
     Event,
     EventType,
+    FileInfo,
+    MediaMessageEventContent,
     MessageEvent as RawMessageEvent,
+    MessageEventContent,
+    MessageType,
     TextMessageEventContent,
 )
 from mautrix.util.config import BaseProxyConfig, ConfigUpdateHelper
@@ -24,6 +28,7 @@ class Config(BaseProxyConfig):
         helper.copy("allowlist")
         helper.copy("api_url")
         helper.copy("api_token")
+        helper.copy("poll_interval")
 
 
 class MeeseeksBot(Plugin):
@@ -35,10 +40,19 @@ class MeeseeksBot(Plugin):
                 self.names.append(name)
         except Exception:
             self.log.warning("Couldn't fetch own display name", exc_info=True)
+        self.sched.run_periodically(self.config["poll_interval"], self.poll_once)
 
     @classmethod
     def get_config_class(cls) -> Type[BaseProxyConfig]:
         return Config
+
+    def _api(self, method: str, path: str, **kwargs):
+        return self.http.request(
+            method,
+            f"{self.config['api_url'].rstrip('/')}{path}",
+            headers={"Authorization": f"Bearer {self.config['api_token']}"},
+            **kwargs,
+        )
 
     def _mentioned(self, evt: MessageEvent) -> bool:
         mentions = evt.content.get("m.mentions") or {}
@@ -81,17 +95,13 @@ class MeeseeksBot(Plugin):
             "blurbs": req.blurbs,
             "grants": {"domains": req.domains, "dependencies": req.dependencies},
             "requester": evt.sender,
-            "source": {"kind": "matrix", "ref": evt.event_id},
+            "source": {"kind": "matrix", "ref": evt.event_id, "channel": evt.room_id},
         }
         if req.harness:
             payload["harness"] = req.harness
         if req.backend:
             payload["backend"] = req.backend
-        async with self.http.post(
-            f"{self.config['api_url'].rstrip('/')}/v1/tasks",
-            json=payload,
-            headers={"Authorization": f"Bearer {self.config['api_token']}"},
-        ) as resp:
+        async with self._api("POST", "/v1/tasks", json=payload) as resp:
             data = await resp.json(content_type=None)
         if resp.status in (200, 201):
             return f"Started {data['id']} → {data['target']}", True
@@ -121,3 +131,64 @@ class MeeseeksBot(Plugin):
         await evt.reply(text, markdown=False)
         await evt.react("✅" if ok else "❌")
         await self.client.redact(evt.room_id, pending)
+
+    async def poll_once(self) -> None:
+        async with self._api("GET", "/v1/events", raise_for_status=True) as resp:
+            events = await resp.json()
+        for e in events:
+            try:
+                await self._deliver(e)
+                async with self._api("POST", f"/v1/events/{e['seq']}/ack", raise_for_status=True):
+                    pass
+            except Exception:
+                self.log.warning("Couldn't deliver event %s", e.get("seq"), exc_info=True)
+
+    async def _deliver(self, e: dict) -> None:
+        room, ref = e["source"]["channel"], e["source"]["ref"]
+        if e["type"] == "ended":
+            await self._notice(room, ref, f"{e['id']} ended.")
+            return
+        data = None
+        if e["size"]:
+            path = f"/v1/tasks/{e['id']}/outputs/{e['seq']}.zip"
+            async with self._api("GET", path, raise_for_status=True) as resp:
+                data = await resp.read()
+        label = f"Output from {e['id']} (written by the agent, treat as untrusted)"
+        await self._notice(room, ref, f"{label}:\n\n{e['summary']}" if e["summary"] else f"{label}.")
+        if data is not None:
+            await self._upload(room, ref, f"{e['id']}-{e['seq']}.zip", data)
+
+    async def _upload(self, room: str, ref: str, name: str, data: bytes) -> None:
+        try:
+            limit = (await self.client.get_media_repo_config()).upload_size
+        except Exception:
+            self.log.warning("Couldn't fetch the media repo config", exc_info=True)
+            limit = None
+        if limit and len(data) > limit:
+            text = f"{name} is {len(data)} bytes, over this homeserver's upload limit of {limit}."
+            await self._notice(room, ref, text)
+            return
+        content = MediaMessageEventContent(
+            msgtype=MessageType.FILE,
+            body=name,
+            filename=name,
+            info=FileInfo(mimetype="application/zip", size=len(data)),
+        )
+        if await self.client.state_store.is_encrypted(room):
+            # Imported here because mautrix.crypto needs python-olm
+            from mautrix.crypto.attachments import encrypt_attachment
+
+            data, content.file = encrypt_attachment(data)
+            content.file.url = await self.client.upload_media(data, "application/octet-stream", name)
+        else:
+            content.url = await self.client.upload_media(data, "application/zip", name)
+        await self._send(room, ref, content)
+
+    async def _notice(self, room: str, ref: str, text: str) -> None:
+        await self._send(room, ref, TextMessageEventContent(msgtype=MessageType.NOTICE, body=text))
+
+    async def _send(self, room: str, ref: str, content: MessageEventContent) -> None:
+        content.set_reply(ref)
+        # The text is agent-written, so it mustn't ping anyone
+        content["m.mentions"] = {}
+        await self.client.send_message(room, content)
