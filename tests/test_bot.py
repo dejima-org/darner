@@ -54,6 +54,12 @@ class Api:
         self.acked = []
         self.answers = []
         self.answer_status = 204
+        self.blurbs = ["loki", "myapp"]
+
+    async def list_blurbs(self, request):
+        if self.blurbs is None:
+            return web.json_response({"error": "down"}, status=500)
+        return web.json_response(self.blurbs)
 
     async def handle(self, request):
         self.requests.append((request.headers.get("Authorization"), await request.json()))
@@ -109,6 +115,7 @@ async def api(aiohttp_server):
     app.router.add_get("/v1/tasks/{id}/outputs/{seq}.zip", api.output)
     app.router.add_post("/v1/events/{seq}/ack", api.ack)
     app.router.add_post("/v1/tasks/{id}/answer", api.answer)
+    app.router.add_get("/v1/blurbs", api.list_blurbs)
     api.server = await aiohttp_server(app)
     return api
 
@@ -590,3 +597,42 @@ async def test_fetch_error(maubot_plugin, maubot_test_bot, api):
     await send(maubot_test_bot, message("@meeseeks:example.org go"))
     assert replies(maubot_test_bot) == ["Failed: not found"]
     assert reactions(maubot_test_bot) == ["❌"]
+
+
+@pytest.mark.parametrize("body", ["@meeseeks:example.org help", "meeseeks: Help", "@meeseeks:example.org  HELP "])
+async def test_help_command_shows_usage(maubot_plugin, maubot_test_bot, api, body):
+    await send(maubot_test_bot, message(body, reply_to=None))
+    [text] = replies(maubot_test_bot)
+    assert text.startswith("**Meeseeks** starts an isolated dejima session")
+    assert "ctx: <names>       add context blurbs (available: loki, myapp)" in text
+    assert api.requests == []
+    [msg] = sent(maubot_test_bot)
+    assert "formatted_body" in msg
+
+
+async def test_help_command_without_blurbs_listing(maubot_plugin, maubot_test_bot, api):
+    api.blurbs = None
+    await send(maubot_test_bot, message("@meeseeks:example.org help", reply_to=None))
+    [text] = replies(maubot_test_bot)
+    assert "ctx: <names>       add context blurbs\n" in text
+
+
+async def test_help_command_as_reply_to_note_shows_usage(maubot_plugin, maubot_test_bot, api):
+    await send(maubot_test_bot, message("@meeseeks:example.org help"))
+    assert replies(maubot_test_bot)[0].startswith("**Meeseeks**")
+    assert api.requests == []
+
+
+async def test_help_command_ignored_for_non_allowlisted(maubot_plugin, maubot_test_bot, api):
+    await send(maubot_test_bot, message("@meeseeks:example.org help", sender="@mallory:example.org", reply_to=None))
+    assert maubot_test_bot.responded == []
+
+
+async def test_help_needs_a_mention(maubot_plugin, maubot_test_bot, api):
+    await send(maubot_test_bot, message("help", reply_to=None, mention=False))
+    assert maubot_test_bot.responded == []
+
+
+async def test_non_reply_other_than_help_is_ignored(maubot_plugin, maubot_test_bot, api):
+    await send(maubot_test_bot, message("@meeseeks:example.org do a thing", reply_to=None))
+    assert maubot_test_bot.responded == []
