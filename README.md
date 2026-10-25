@@ -1,6 +1,6 @@
 # meeseeks
 
-Starts a dejima session for a task sent from chat. A task request carries the task, extra context, preconfigured context blurbs, network and dependency grants, and an optional harness and backend. Meeseeks starts `dejima --isolated` for it in a tmux window on a dejima host and hands the agent the composed prompt. Reaching the session afterwards is dejima's remote access.
+Starts a dejima session for a task sent from chat. A task request carries the task, extra context, preconfigured context blurbs, network and dependency grants, and an optional harness and backend. Meeseeks starts `dejima --isolated` for it in a tmux window on a dejima host and hands the agent the composed prompt. When the agent signals it is done, meeseeks delivers what it left in `~/shared` back to the requester. Reaching the session itself is dejima's remote access.
 
 ```
 maubot plugin ──► meeseeks-api ──ssh──► meeseeks-launch ──► tmux new-window ── dejima --isolated
@@ -31,6 +31,8 @@ The note is the task. The rest of the reply, minus the mention and the keyword l
 
 The bot replies with the task id and its tmux target, or with why it was refused. It only acts when both the reply and the note are from users in its `allowlist`, since the note becomes the agent's instructions.
 
+When the agent delivers output, the bot replies again with the agent's summary and the output as a zip. It also says when the session ends.
+
 ## Prompt
 
 ```
@@ -41,7 +43,26 @@ The bot replies with the task id and its tmux target, or with why it was refused
 
 ## Context from requester
 <reply text>
+
+## Delivering your output
+<put output in ~/shared, a summary in ~/shared/RESULT.md, then create ~/shared/.done>
 ```
+
+The last section can be replaced with `output_instructions` in the API config.
+
+## Output
+
+The session is presumed hostile, and so is everything it writes to `~/shared`. Collecting output never follows a link, never opens anything but a regular file, and copies only file contents into a zip that meeseeks builds itself:
+
+- **Walk:** by file descriptor, never by path. Each entry is opened with `O_PATH`, so no device driver is ever opened, and its type is checked on that handle. Only a regular file is reopened, through `/proc/self/fd`. Swapping in a symlink mid-walk therefore gains nothing.
+- **Skipped:** symlinks, FIFOs, devices, and names outside `[A-Za-z0-9][A-Za-z0-9._ +-]*`. That covers dotfiles, `..`, backslashes, control and bidi characters, and invalid UTF-8. Also skipped: Windows reserved names, and names that differ only in case. `MANIFEST.txt` in the zip lists what was included and what was skipped, and why.
+- **Limits:** bytes actually read (50 MiB by default), files included, entries visited, depth, path length and time taken. Going over one rejects the output and tells the requester why.
+- **Signal:** a `.done` is consumed once. The launcher records which one it consumed, so a session that makes `.done` impossible to delete can't trigger repeat deliveries. A new `.done` signals new output.
+- **Entries:** mode `0644`, a fixed timestamp, and no symlink or directory entries.
+- **Re-check:** the API verifies the archive again and rebuilds it with its own writer before storing it, so what it serves is exactly what it checked.
+- **Delivery:** the bot sends the summary as plain text with no mentions, so the agent can't hide a link behind other text or ping the room.
+
+The files are still agent-written: treat what is in the zip as untrusted. Neither the API's `results_dir` nor dejima's `isolated/` share directories are pruned.
 
 ## Deployment
 
@@ -59,7 +80,12 @@ command="meeseeks-launch --identity meeseeks --harness claude-code --backend cla
 | `--harness NAME` | dejima's | default harness |
 | `--backend HARNESS=NAME` | dejima's | default backend for a harness; repeatable |
 | `--session NAME` | `meeseeks` | tmux session the windows go in |
-| `--tasks-dir DIR` | `~/meeseeks/tasks` | per-task grant files and argv |
+| `--tasks-dir DIR` | `~/meeseeks/tasks` | per-task grant files, argv and exit status |
+| `--share-root DIR` | `~/.local/share/dejima/shared/isolated` | where dejima puts isolated sessions' `~/shared`; output is only read from directly under it |
+| `--max-output BYTES` | 50 MiB | largest output that will be collected |
+| `--fetch-timeout SECONDS` | 60 | longest time collecting one output may take |
+
+The API sends one of three commands, which arrive as `SSH_ORIGINAL_COMMAND`: none (launch the job on stdin), `status`, or `fetch <id>`. Anything else is refused.
 
 A detached launch has nobody to answer a prompt, so the host must not raise one:
 
@@ -67,7 +93,7 @@ A detached launch has nobody to answer a prompt, so the host must not raise one:
 - Pre-record decisions for any credential-shaped values dejima's staging scan flags.
 - Run `loginctl enable-linger <user>` (or set `KillUserProcesses=no`) so the tmux server outlives the ssh connection.
 
-Grants use `dejima --domains FILE` and `--dependencies FILE`. A task without grants passes neither flag.
+Grants use `dejima --domains FILE` and `--dependencies FILE`, and output collection uses `--shared-path-file FILE`. A task without grants passes neither grant flag.
 
 ### API
 
@@ -84,15 +110,25 @@ Install with `pipx install '.[api]'`, write a config based on [`examples/api.tom
   "harness": "claude-code",
   "backend": "openrouter",
   "requester": "@user:example.org",
-  "source": {"kind": "matrix", "ref": "$event-id"}
+  "source": {"kind": "matrix", "ref": "$event-id", "channel": "!room-id"}
 }
 ```
 
 It returns `201 {"id", "target"}`. A repeat of the same `source` returns the existing task with `200`, unless its launch failed, in which case it is retried. Errors are `{"error": "..."}`.
 
+Every `poll_interval` seconds the API asks the dejima host for the status of launched tasks, collects output that is ready, and records events. A client sees only the events of tasks it created:
+
+| endpoint | |
+|---|---|
+| `GET /v1/events` | unacknowledged events, oldest first: `{seq, id, type, summary, size, source}`, `type` is `output` or `ended` |
+| `GET /v1/tasks/<id>/outputs/<seq>.zip` | an `output` event's archive (`size` 0 means it was rejected, and `summary` says why) |
+| `POST /v1/events/<seq>/ack` | mark an event delivered |
+
+`source` is echoed back as given, so a client knows where to reply without keeping state.
+
 ### Maubot plugin
 
-Build with `mbc build` in `plugin/`, upload the `.mbp`, and create an instance. In the instance config, set `allowlist` to the Matrix IDs allowed to start tasks, and `api_url`/`api_token` to the API. Turn off autojoin for the bot's client, and enable its encryption support for encrypted rooms.
+Build with `mbc build` in `plugin/`, upload the `.mbp`, and create an instance. In the instance config, set `allowlist` to the Matrix IDs allowed to start tasks, `api_url`/`api_token` to the API, and `poll_interval` to how often it checks for output. Turn off autojoin for the bot's client, and enable its encryption support for encrypted rooms.
 
 ## Development
 

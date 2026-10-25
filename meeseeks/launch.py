@@ -1,7 +1,11 @@
-"""Start a dejima session for a job read from stdin.
+"""Start dejima sessions and collect their output.
 
-Meant to be the forced command of the API's key in authorized_keys. The
-dejima argv is written to the task directory and the tmux window re-invokes
+Meant to be the forced command of the API's key in authorized_keys, so the
+only command a client can send is SSH_ORIGINAL_COMMAND, and only three forms
+of it are accepted: none (launch the job on stdin), `status`, and
+`fetch <id>`.
+
+The dejima argv is written to the task directory and the tmux window re-invokes
 this module with --exec to run it, since tmux limits the size of a command
 sent to its server and the prompt is passed as a single argument.
 """
@@ -9,11 +13,16 @@ sent to its server and the prompt is passed as a single argument.
 import argparse
 import json
 import os
+import signal
+import stat
 import subprocess
 import sys
 from pathlib import Path
 
-from meeseeks.job import JobError, valid_name, validate_job
+from meeseeks import archive
+from meeseeks.job import JobError, valid_name, valid_task_id, validate_job
+
+FETCH_REJECTED = 3
 
 
 def _backend_default(value: str) -> tuple[str, str]:
@@ -38,14 +47,18 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--identity", type=_name)
     p.add_argument("--harness", type=_name)
     p.add_argument("--backend", type=_backend_default, action="append", default=[])
+    p.add_argument("--share-root", default=Path.home() / ".local/share/dejima/shared/isolated", type=Path)
+    p.add_argument("--max-output", default=archive.Limits.max_bytes, type=int)
+    p.add_argument("--fetch-timeout", default=60, type=int)
     p.add_argument("--exec", dest="exec_dir", type=Path, help=argparse.SUPPRESS)
+    p.add_argument("command", nargs="*", help=argparse.SUPPRESS)
     return p.parse_args(argv)
 
 
 def dejima_argv(args: argparse.Namespace, job, task_dir: Path) -> list[str]:
     harness = job.harness or args.harness
     backend = job.backend or dict(args.backend).get(harness)
-    argv = [args.dejima, "--isolated", "--no-pause"]
+    argv = [args.dejima, "--isolated", "--no-pause", "--shared-path-file", str(task_dir / "shared-path")]
     for flag, value in (("--identity", args.identity), ("--harness", harness), ("--backend", backend)):
         if value:
             argv += [flag, value]
@@ -91,17 +104,158 @@ def launch(args: argparse.Namespace, data: object) -> dict:
     return {"id": job.id, "target": window.stdout.strip()}
 
 
+def run_session(task_dir: Path) -> int:
+    """Run dejima and record how it exited, so `status` can report it."""
+    # Handlers, unlike SIG_IGN, are reset by exec, so dejima still gets these
+    # signals as usual while this process stays to record the exit.
+    for sig in (signal.SIGINT, signal.SIGHUP, signal.SIGTERM, signal.SIGQUIT):
+        signal.signal(sig, lambda *_: None)
+    dejima = json.loads((task_dir / "argv.json").read_text())
+    code = subprocess.Popen(dejima).wait()
+    if code < 0:
+        code = 128 - code
+    tmp = task_dir / "exit.tmp"
+    tmp.write_text(f"{code}\n")
+    os.replace(tmp, task_dir / "exit")
+    return code
+
+
+def open_share(args: argparse.Namespace, task_dir: Path) -> int:
+    """Open a task's ~/shared, which must be a directory directly under the share root."""
+    raw = (task_dir / "shared-path").read_text()
+    path = raw.removesuffix("\n")
+    parent, leaf = os.path.split(path)
+    if not os.path.isabs(path) or "\0" in path or not archive.safe_component(leaf):
+        raise ValueError(f"invalid shared path {path!r}")
+    root = os.path.realpath(args.share_root)
+    if os.path.realpath(parent) != root:
+        raise ValueError(f"shared path {path!r} is not under {root}")
+    parent_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    try:
+        return os.open(leaf, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=parent_fd)
+    finally:
+        os.close(parent_fd)
+
+
+def _done_signal(fd: int, task_dir: Path) -> str | None:
+    """Identify an unconsumed .done, if there is one.
+
+    Consumption is recorded host-side rather than relying on removing .done,
+    which the session can make impossible. A new .done is a new inode or ctime.
+    """
+    try:
+        st = os.lstat(".done", dir_fd=fd)
+    except OSError:
+        return None
+    if stat.S_ISDIR(st.st_mode):
+        return None
+    signal_id = f"{st.st_dev} {st.st_ino} {st.st_ctime_ns}"
+    consumed = task_dir / "consumed"
+    if consumed.exists() and consumed.read_text() == signal_id:
+        return None
+    return signal_id
+
+
+def _consume(fd: int, task_dir: Path, signal_id: str) -> None:
+    tmp = task_dir / "consumed.tmp"
+    tmp.write_text(signal_id)
+    os.replace(tmp, task_dir / "consumed")
+    try:
+        os.unlink(".done", dir_fd=fd)
+    except OSError:
+        pass
+
+
+def _ready(args: argparse.Namespace, task_dir: Path) -> bool:
+    try:
+        fd = open_share(args, task_dir)
+    except (OSError, ValueError):
+        return False
+    try:
+        return _done_signal(fd, task_dir) is not None
+    finally:
+        os.close(fd)
+
+
+def status(args: argparse.Namespace) -> list[dict]:
+    tasks = []
+    if not args.tasks_dir.is_dir():
+        return tasks
+    for task_dir in sorted(args.tasks_dir.iterdir()):
+        if not valid_task_id(task_dir.name):
+            continue
+        if (task_dir / "exit").exists():
+            state = "exited"
+        elif (task_dir / "shared-path").exists():
+            state = "running"
+        else:
+            state = "starting"
+        tasks.append({"id": task_dir.name, "state": state, "ready": _ready(args, task_dir)})
+    return tasks
+
+
+class _Timeout(Exception):
+    pass
+
+
+def _timeout(*_):
+    raise _Timeout
+
+
+def fetch(args: argparse.Namespace, task_id: str) -> int:
+    task_dir = args.tasks_dir / task_id
+    fd = open_share(args, task_dir)
+    try:
+        signal_id = _done_signal(fd, task_dir)
+        if signal_id is None:
+            raise RuntimeError(f"{task_id} has no output ready")
+        signal.signal(signal.SIGALRM, _timeout)
+        signal.alarm(args.fetch_timeout)
+        try:
+            data, _ = archive.build(fd, archive.Limits(max_bytes=args.max_output))
+        except (archive.ArchiveError, _Timeout) as e:
+            # Retrying would fail the same way, so the output is consumed.
+            _consume(fd, task_dir, signal_id)
+            reason = e if isinstance(e, archive.ArchiveError) else f"took longer than {args.fetch_timeout}s to read"
+            print(f"meeseeks-launch: {reason}", file=sys.stderr)
+            return FETCH_REJECTED
+        finally:
+            signal.alarm(0)
+        sys.stdout.buffer.write(data)
+        sys.stdout.buffer.flush()
+        _consume(fd, task_dir, signal_id)
+    finally:
+        os.close(fd)
+    return 0
+
+
+def command(args: argparse.Namespace) -> list[str]:
+    original = os.environ.get("SSH_ORIGINAL_COMMAND")
+    words = original.split() if original is not None else args.command
+    if words in ([], ["status"]) or (len(words) == 2 and words[0] == "fetch" and valid_task_id(words[1])):
+        return words
+    raise ValueError("unknown command")
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(sys.argv[1:] if argv is None else argv)
     if args.exec_dir:
-        dejima = json.loads((args.exec_dir / "argv.json").read_text())
-        os.execvp(dejima[0], dejima)
+        return run_session(args.exec_dir)
     try:
-        result = launch(args, json.load(sys.stdin))
-    except (JobError, json.JSONDecodeError, RuntimeError, OSError) as e:
+        words = command(args)
+    except ValueError as e:
+        print(f"meeseeks-launch: {e}", file=sys.stderr)
+        return 2
+    try:
+        if words == ["status"]:
+            print(json.dumps(status(args)))
+        elif words:
+            return fetch(args, words[1])
+        else:
+            print(json.dumps(launch(args, json.load(sys.stdin))))
+    except (JobError, json.JSONDecodeError, RuntimeError, OSError, ValueError) as e:
         print(f"meeseeks-launch: {e}", file=sys.stderr)
         return 1
-    print(json.dumps(result))
     return 0
 
 

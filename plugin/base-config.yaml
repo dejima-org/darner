@@ -2,3 +2,5 @@
 allowlist: []
 api_url: http://192.0.2.10:8080
 api_token: ""
+# Seconds between checks for task output
+poll_interval: 30

@@ -1,6 +1,7 @@
 import pytest
 
 from meeseeks.job import (
+    OUTPUT_INSTRUCTIONS,
     JobError,
     compose_prompt,
     new_task_id,
@@ -102,8 +103,12 @@ def test_validate_job_rejects(d):
 
 
 def test_compose_prompt():
-    assert compose_prompt("Task\n", [], "") == "Task\n"
-    assert compose_prompt("Task", [("myapp", "repo at X\n"), ("loki", "logs")], " ctx ") == (
+    assert compose_prompt("Task\n", [], "", "") == "Task\n"
+    assert compose_prompt("Task", [("myapp", "repo at X\n"), ("loki", "logs")], " ctx ", "Leave it in ~/shared.") == (
         "Task\n\n## Context: myapp\nrepo at X\n\n## Context: loki\nlogs\n\n"
-        "## Context from requester\nctx\n"
+        "## Context from requester\nctx\n\n## Delivering your output\nLeave it in ~/shared.\n"
     )
+
+
+def test_compose_prompt_default_output_instructions():
+    assert compose_prompt("Task", [], "").endswith(f"## Delivering your output\n{OUTPUT_INSTRUCTIONS}\n")

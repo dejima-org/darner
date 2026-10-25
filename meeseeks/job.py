@@ -21,6 +21,12 @@ _TARBALL = re.compile(r"tarball:([A-Za-z0-9][A-Za-z0-9._-]*)@[a-f0-9]{64}:(https
 _NAME = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}")
 _ID = re.compile(r"ms-[a-z2-7]{5}")
 
+OUTPUT_INSTRUCTIONS = (
+    "When you finish, put anything the requester should receive in ~/shared, write a short summary "
+    "of what you did and found to ~/shared/RESULT.md, then create the empty file ~/shared/.done. "
+    "If you are asked to do more afterwards, do the same again when that is finished."
+)
+
 
 class JobError(ValueError):
     pass
@@ -80,7 +86,7 @@ def validate_job(d: object) -> Job:
     unknown = set(d) - {"id", "prompt", "domains", "dependencies", "harness", "backend"}
     if unknown:
         raise JobError(f"unknown job keys: {', '.join(sorted(unknown))}")
-    if not isinstance(d.get("id"), str) or not _ID.fullmatch(d["id"]):
+    if not valid_task_id(d.get("id")):
         raise JobError("invalid job id")
     prompt = d.get("prompt")
     if not isinstance(prompt, str) or not prompt.strip() or len(prompt) > MAX_PROMPT:
@@ -97,9 +103,17 @@ def validate_job(d: object) -> Job:
     )
 
 
-def compose_prompt(task: str, blurbs: list[tuple[str, str]], context: str) -> str:
+def valid_task_id(s: str) -> bool:
+    return isinstance(s, str) and _ID.fullmatch(s) is not None
+
+
+def compose_prompt(
+    task: str, blurbs: list[tuple[str, str]], context: str, output_instructions: str = OUTPUT_INSTRUCTIONS
+) -> str:
     parts = [task.strip()]
     parts += [f"## Context: {name}\n{text.strip()}" for name, text in blurbs]
     if context.strip():
         parts.append(f"## Context from requester\n{context.strip()}")
+    if output_instructions.strip():
+        parts.append(f"## Delivering your output\n{output_instructions.strip()}")
     return "\n\n".join(parts) + "\n"
