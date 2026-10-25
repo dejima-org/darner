@@ -1,4 +1,5 @@
-from typing import Type
+import re
+from typing import Awaitable, Type
 
 from maubot import MessageEvent, Plugin
 from maubot.handlers import event
@@ -16,7 +17,9 @@ from mautrix.types import (
 )
 from mautrix.util.config import BaseProxyConfig, ConfigUpdateHelper
 
-from .parse import ParseError, parse_reply
+from .parse import ParseError, parse_reply, strip_mention
+
+TASK_ID = re.compile(r"ms-[a-z2-7]{5}")
 
 
 class NoteError(Exception):
@@ -61,8 +64,7 @@ class MeeseeksBot(Plugin):
             n.lower() in body for n in self.names
         )
 
-    async def _note_body(self, evt: MessageEvent) -> str:
-        note = await self.client.get_event(evt.room_id, evt.content.get_reply_to())
+    async def _note_body(self, note: Event | None) -> str:
         if note is None:
             raise NoteError("couldn't decrypt the note")
         # The note becomes the agent's instructions, so it must come from someone trusted to give them.
@@ -83,9 +85,9 @@ class MeeseeksBot(Plugin):
                 return edit.content.body
         return note.content.body
 
-    async def _submit(self, evt: MessageEvent) -> tuple[str, bool]:
+    async def _submit(self, evt: MessageEvent, replied: Event | None) -> tuple[str, bool]:
         try:
-            note = await self._note_body(evt)
+            note = await self._note_body(replied)
             req = parse_reply(evt.content.body, self.names)
         except (NoteError, ParseError) as e:
             return str(e), False
@@ -120,15 +122,48 @@ class MeeseeksBot(Plugin):
         ):
             return
         content.trim_reply_fallback()
-        if not self._mentioned(evt):
+        try:
+            replied = await self.client.get_event(evt.room_id, content.get_reply_to())
+        except Exception as e:
+            self.log.warning("Couldn't fetch the replied-to event", exc_info=True)
+            if self._mentioned(evt):
+                await evt.reply(_failure(e), markdown=False)
+                await evt.react("❌")
             return
+        if task := self._help_task(replied):
+            await self._respond(evt, self._answer(evt, task))
+        elif self._mentioned(evt):
+            await self._respond(evt, self._submit(evt, replied))
+
+    def _help_task(self, replied: Event | None) -> str | None:
+        # Only the bot's own tag counts, so a user can't steer an answer into another task
+        if not isinstance(replied, RawMessageEvent) or replied.sender != self.client.mxid:
+            return None
+        tag = replied.content.get("io.meeseeks.help")
+        task = tag.get("task") if isinstance(tag, dict) else None
+        return task if isinstance(task, str) and TASK_ID.fullmatch(task) else None
+
+    async def _answer(self, evt: MessageEvent, task: str) -> tuple[str | None, bool]:
+        text = strip_mention(evt.content.body, self.names).strip()
+        if not text:
+            return "the answer is empty", False
+        payload = {"text": text, "requester": evt.sender}
+        async with self._api("POST", f"/v1/tasks/{task}/answer", json=payload) as resp:
+            if resp.ok:
+                return None, True
+            data = await resp.json(content_type=None)
+        error = data.get("error") if isinstance(data, dict) else None
+        return f"Failed: {error or f'HTTP {resp.status}'}", False
+
+    async def _respond(self, evt: MessageEvent, action: Awaitable[tuple[str | None, bool]]) -> None:
         pending = await evt.react("⏳")
         try:
-            text, ok = await self._submit(evt)
+            text, ok = await action
         except Exception as e:
-            self.log.warning("Task submission failed", exc_info=True)
-            text, ok = f"Failed: {str(e) or type(e).__name__}", False
-        await evt.reply(text, markdown=False)
+            self.log.warning("Request failed", exc_info=True)
+            text, ok = _failure(e), False
+        if text:
+            await evt.reply(text, markdown=False)
         await evt.react("✅" if ok else "❌")
         await self.client.redact(evt.room_id, pending)
 
@@ -148,6 +183,9 @@ class MeeseeksBot(Plugin):
         if e["type"] == "ended":
             await self._notice(room, ref, f"{e['id']} ended.")
             return
+        if e["type"] == "help":
+            await self._help(room, ref, e)
+            return
         data = None
         if e["size"]:
             path = f"/v1/tasks/{e['id']}/outputs/{e['seq']}.zip"
@@ -157,6 +195,18 @@ class MeeseeksBot(Plugin):
         await self._notice(room, ref, f"{label}:\n\n{e['summary']}" if e["summary"] else f"{label}.")
         if data is not None:
             await self._upload(room, ref, f"{e['id']}-{e['seq']}.zip", data)
+
+    async def _help(self, room: str, ref: str, e: dict) -> None:
+        label = f"{e['id']} needs help (written by the agent, treat as untrusted)"
+        text = f"{label}:\n\n{e['summary']}" if e["summary"] else f"{label}."
+        content = TextMessageEventContent(msgtype=MessageType.NOTICE)
+        if e["answerable"]:
+            content.body = f"{text}\n\nReply to this message to answer."
+            content["io.meeseeks.help"] = {"task": e["id"]}
+        else:
+            target = e["target"] or f"the {e['id']} session"
+            content.body = f"{text}\n\nAttach to {target} to respond."
+        await self._send(room, ref, content)
 
     async def _upload(self, room: str, ref: str, name: str, data: bytes) -> None:
         try:
@@ -192,3 +242,7 @@ class MeeseeksBot(Plugin):
         # The text is agent-written, so it mustn't ping anyone
         content["m.mentions"] = {}
         await self.client.send_message(room, content)
+
+
+def _failure(e: Exception) -> str:
+    return f"Failed: {str(e) or type(e).__name__}"

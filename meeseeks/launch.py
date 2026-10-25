@@ -2,8 +2,8 @@
 
 Meant to be the forced command of the API's key in authorized_keys, so the
 only command a client can send is SSH_ORIGINAL_COMMAND, and only three forms
-of it are accepted: none (launch the job on stdin), `status`, and
-`fetch <id>`.
+of it are accepted: none (launch the job on stdin), `status`, `fetch <id>`,
+`help <id>` and `answer <id>`.
 
 The dejima argv is written to the task directory and the tmux window re-invokes
 this module with --exec to run it, since tmux limits the size of a command
@@ -17,12 +17,15 @@ import signal
 import stat
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 from meeseeks import archive
 from meeseeks.job import JobError, valid_name, valid_task_id, validate_job
 
 FETCH_REJECTED = 3
+MAX_HELP = 16 * 1024
+SIGNALS = {"done": (".done", "consumed"), "help": (".help", "consumed-help")}
 
 
 def _backend_default(value: str) -> tuple[str, str]:
@@ -50,6 +53,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--share-root", default=Path.home() / ".local/share/dejima/shared/isolated", type=Path)
     p.add_argument("--max-output", default=archive.Limits.max_bytes, type=int)
     p.add_argument("--fetch-timeout", default=60, type=int)
+    p.add_argument("--answers", action="store_true", help="allow answering help requests from chat")
+    p.add_argument("--paste-delay", default=0.5, type=float)
+    p.add_argument("--help-interval", default=300, type=int, help="least seconds between a task's help requests")
     p.add_argument("--exec", dest="exec_dir", type=Path, help=argparse.SUPPRESS)
     p.add_argument("command", nargs="*", help=argparse.SUPPRESS)
     return p.parse_args(argv)
@@ -78,8 +84,7 @@ def launch(args: argparse.Namespace, data: object) -> dict:
     (task_dir / "dependencies").write_text("".join(f"{d}\n" for d in job.dependencies))
     (task_dir / "argv.json").write_text(json.dumps(dejima_argv(args, job, task_dir)))
 
-    env = os.environ.copy()
-    env.setdefault("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
+    env = _tmux_env()
     tmux = [args.tmux]
     if subprocess.run([*tmux, "has-session", "-t", f"={args.session}"], env=env, capture_output=True).returncode:
         created = subprocess.run([*tmux, "new-session", "-d", "-s", args.session], env=env, capture_output=True)
@@ -90,7 +95,7 @@ def launch(args: argparse.Namespace, data: object) -> dict:
             raise RuntimeError(created.stderr.decode().strip() or "tmux new-session failed")
     window = subprocess.run(
         [
-            *tmux, "new-window", "-d", "-P", "-F", "#{session_name}:#{window_name}",
+            *tmux, "new-window", "-d", "-P", "-F", "#{session_name}:#{window_name} #{window_id}",
             "-t", f"={args.session}:", "-n", job.id, "-c", str(task_dir),
             "-e", f"XDG_RUNTIME_DIR={env['XDG_RUNTIME_DIR']}",
             "--", sys.executable, "-m", "meeseeks.launch", "--exec", str(task_dir),
@@ -101,7 +106,16 @@ def launch(args: argparse.Namespace, data: object) -> dict:
     )
     if window.returncode:
         raise RuntimeError(window.stderr.strip() or "tmux new-window failed")
-    return {"id": job.id, "target": window.stdout.strip()}
+    target, _, window_id = window.stdout.strip().rpartition(" ")
+    # Answers target the window by id, which a rename inside the session can't change.
+    (task_dir / "window").write_text(window_id)
+    return {"id": job.id, "target": target}
+
+
+def _tmux_env() -> dict:
+    env = os.environ.copy()
+    env.setdefault("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
+    return env
 
 
 def run_session(task_dir: Path) -> int:
@@ -137,44 +151,62 @@ def open_share(args: argparse.Namespace, task_dir: Path) -> int:
         os.close(parent_fd)
 
 
-def _done_signal(fd: int, task_dir: Path) -> str | None:
-    """Identify an unconsumed .done, if there is one.
+def _signal(fd: int, task_dir: Path, kind: str) -> str | None:
+    """Identify an unconsumed signal file (.done or .help), if there is one.
 
-    Consumption is recorded host-side rather than relying on removing .done,
-    which the session can make impossible. A new .done is a new inode or ctime.
+    Consumption is recorded host-side rather than relying on removing the file,
+    which the session can make impossible. A new file is a new inode or ctime.
     """
+    name, record = SIGNALS[kind]
     try:
-        st = os.lstat(".done", dir_fd=fd)
+        st = os.lstat(name, dir_fd=fd)
     except OSError:
         return None
     if stat.S_ISDIR(st.st_mode):
         return None
     signal_id = f"{st.st_dev} {st.st_ino} {st.st_ctime_ns}"
-    consumed = task_dir / "consumed"
+    consumed = task_dir / record
     if consumed.exists() and consumed.read_text() == signal_id:
         return None
     return signal_id
 
 
-def _consume(fd: int, task_dir: Path, signal_id: str) -> None:
-    tmp = task_dir / "consumed.tmp"
+def _consume(fd: int, task_dir: Path, kind: str, signal_id: str) -> None:
+    name, record = SIGNALS[kind]
+    tmp = task_dir / f"{record}.tmp"
     tmp.write_text(signal_id)
-    os.replace(tmp, task_dir / "consumed")
+    os.replace(tmp, task_dir / record)
     try:
-        os.unlink(".done", dir_fd=fd)
+        os.unlink(name, dir_fd=fd)
     except OSError:
         pass
 
 
-def _ready(args: argparse.Namespace, task_dir: Path) -> bool:
+def _help_allowed(args: argparse.Namespace, task_dir: Path) -> bool:
+    """Rate-limit help requests, so a session can't flood the room with them."""
+    last = task_dir / SIGNALS["help"][1]
+    return not last.exists() or time.time() - last.stat().st_mtime >= args.help_interval
+
+
+def _signals(args: argparse.Namespace, task_dir: Path) -> dict[str, bool]:
     try:
         fd = open_share(args, task_dir)
     except (OSError, ValueError):
-        return False
+        return {kind: False for kind in SIGNALS}
     try:
-        return _done_signal(fd, task_dir) is not None
+        signals = {kind: _signal(fd, task_dir, kind) is not None for kind in SIGNALS}
     finally:
         os.close(fd)
+    signals["help"] = signals["help"] and _help_allowed(args, task_dir)
+    return signals
+
+
+def _state(task_dir: Path) -> str:
+    if (task_dir / "exit").exists():
+        return "exited"
+    if (task_dir / "shared-path").exists():
+        return "running"
+    return "starting"
 
 
 def status(args: argparse.Namespace) -> list[dict]:
@@ -184,13 +216,15 @@ def status(args: argparse.Namespace) -> list[dict]:
     for task_dir in sorted(args.tasks_dir.iterdir()):
         if not valid_task_id(task_dir.name):
             continue
-        if (task_dir / "exit").exists():
-            state = "exited"
-        elif (task_dir / "shared-path").exists():
-            state = "running"
-        else:
-            state = "starting"
-        tasks.append({"id": task_dir.name, "state": state, "ready": _ready(args, task_dir)})
+        state = _state(task_dir)
+        signals = _signals(args, task_dir)
+        tasks.append({
+            "id": task_dir.name,
+            "state": state,
+            "ready": signals["done"],
+            "help": signals["help"],
+            "answerable": args.answers and state == "running",
+        })
     return tasks
 
 
@@ -206,7 +240,7 @@ def fetch(args: argparse.Namespace, task_id: str) -> int:
     task_dir = args.tasks_dir / task_id
     fd = open_share(args, task_dir)
     try:
-        signal_id = _done_signal(fd, task_dir)
+        signal_id = _signal(fd, task_dir, "done")
         if signal_id is None:
             raise RuntimeError(f"{task_id} has no output ready")
         signal.signal(signal.SIGALRM, _timeout)
@@ -215,7 +249,7 @@ def fetch(args: argparse.Namespace, task_id: str) -> int:
             data, _ = archive.build(fd, archive.Limits(max_bytes=args.max_output))
         except (archive.ArchiveError, _Timeout) as e:
             # Retrying would fail the same way, so the output is consumed.
-            _consume(fd, task_dir, signal_id)
+            _consume(fd, task_dir, "done", signal_id)
             reason = e if isinstance(e, archive.ArchiveError) else f"took longer than {args.fetch_timeout}s to read"
             print(f"meeseeks-launch: {reason}", file=sys.stderr)
             return FETCH_REJECTED
@@ -223,16 +257,87 @@ def fetch(args: argparse.Namespace, task_id: str) -> int:
             signal.alarm(0)
         sys.stdout.buffer.write(data)
         sys.stdout.buffer.flush()
-        _consume(fd, task_dir, signal_id)
+        _consume(fd, task_dir, "done", signal_id)
     finally:
         os.close(fd)
     return 0
 
 
+def help_request(args: argparse.Namespace, task_id: str) -> None:
+    """Print a task's HELP.md and mark its help request as awaiting an answer."""
+    task_dir = args.tasks_dir / task_id
+    fd = open_share(args, task_dir)
+    try:
+        signal_id = _signal(fd, task_dir, "help")
+        if signal_id is None or not _help_allowed(args, task_dir):
+            raise RuntimeError(f"{task_id} has no help request")
+        text = archive.read_file(fd, "HELP.md", MAX_HELP) or b""
+        sys.stdout.buffer.write(text)
+        sys.stdout.buffer.flush()
+        (task_dir / "help-pending").touch()
+        _consume(fd, task_dir, "help", signal_id)
+    finally:
+        os.close(fd)
+
+
+def answer(args: argparse.Namespace, task_id: str, data: object) -> None:
+    """Type a requester's answer into the session, as its next message."""
+    task_dir = args.tasks_dir / task_id
+    if not args.answers:
+        raise RuntimeError("answering from chat is not enabled on this host")
+    if _state(task_dir) != "running":
+        raise RuntimeError(f"{task_id} is not running")
+    if not isinstance(data, dict) or not isinstance(data.get("text"), str) or not isinstance(data.get("requester"), str):
+        raise ValueError("answer must be an object with text and requester")
+    if len(data["text"].encode()) > MAX_HELP:
+        raise ValueError(f"the answer is over {MAX_HELP // 1024} KiB")
+    # Stripping control characters, ESC above all, keeps the text from ending
+    # the bracketed paste early and having the rest read as keystrokes.
+    text = archive.clean_text(data["text"].encode(), MAX_HELP)
+    requester = " ".join(archive.clean_text(data["requester"].encode(), 255).split())
+    if not text:
+        raise ValueError("the answer is empty")
+
+    # Claimed by rename, so of two concurrent answers only one goes through.
+    pending, answering = task_dir / "help-pending", task_dir / "help-answering"
+    try:
+        os.rename(pending, answering)
+    except FileNotFoundError:
+        raise RuntimeError(f"{task_id} has no help request awaiting an answer")
+    # The prefix also means the message never starts with a character the
+    # harness treats as a command, such as Claude Code's ! (shell) or / (slash).
+    try:
+        _paste(args, task_dir, task_id, f"Reply from {requester}:\n\n{text}")
+    except BaseException:
+        os.rename(answering, pending)
+        raise
+    answering.unlink()
+
+
+def _paste(args: argparse.Namespace, task_dir: Path, task_id: str, message: str) -> None:
+    env = _tmux_env()
+    window = task_dir / "window"
+    target = window.read_text() if window.exists() else f"={args.session}:={task_id}"
+    buffer = f"meeseeks-{task_id}-{os.getpid()}"
+    for argv, stdin in (
+        ([args.tmux, "load-buffer", "-b", buffer, "-"], message),
+        ([args.tmux, "paste-buffer", "-p", "-d", "-b", buffer, "-t", target], None),
+    ):
+        # tmux's own error names sockets and paths, which shouldn't reach the chat.
+        if subprocess.run(argv, input=stdin, env=env, capture_output=True, text=True).returncode:
+            raise RuntimeError("couldn't type into the session")
+    # The TUI needs a moment to take the paste before Enter submits it.
+    time.sleep(args.paste_delay)
+    if subprocess.run([args.tmux, "send-keys", "-t", target, "Enter"], env=env, capture_output=True).returncode:
+        raise RuntimeError("couldn't type into the session")
+
+
 def command(args: argparse.Namespace) -> list[str]:
     original = os.environ.get("SSH_ORIGINAL_COMMAND")
     words = original.split() if original is not None else args.command
-    if words in ([], ["status"]) or (len(words) == 2 and words[0] == "fetch" and valid_task_id(words[1])):
+    if words in ([], ["status"]) or (
+        len(words) == 2 and words[0] in ("fetch", "help", "answer") and valid_task_id(words[1])
+    ):
         return words
     raise ValueError("unknown command")
 
@@ -249,8 +354,12 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if words == ["status"]:
             print(json.dumps(status(args)))
-        elif words:
+        elif words and words[0] == "fetch":
             return fetch(args, words[1])
+        elif words and words[0] == "help":
+            help_request(args, words[1])
+        elif words:
+            answer(args, words[1], json.load(sys.stdin))
         else:
             print(json.dumps(launch(args, json.load(sys.stdin))))
     except (JobError, json.JSONDecodeError, RuntimeError, OSError, ValueError) as e:

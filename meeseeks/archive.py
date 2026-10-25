@@ -168,6 +168,30 @@ class _Builder:
         return size
 
 
+def read_file(dir_fd: int, name: str, limit: int) -> bytes | None:
+    """Read up to limit bytes of a regular file in dir_fd, or None if it isn't one."""
+    try:
+        handle = os.open(name, os.O_PATH | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=dir_fd)
+    except OSError:
+        return None
+    try:
+        if not stat.S_ISREG(os.fstat(handle).st_mode):
+            return None
+        try:
+            fd = os.open(f"/proc/self/fd/{handle}", os.O_RDONLY | os.O_NOCTTY | os.O_CLOEXEC)
+        except OSError:
+            return None
+        try:
+            data = b""
+            while len(data) < limit and (chunk := os.read(fd, min(_CHUNK, limit - len(data)))):
+                data += chunk
+            return data
+        finally:
+            os.close(fd)
+    finally:
+        os.close(handle)
+
+
 def build(root_fd: int, limits: Limits = Limits()) -> tuple[bytes, Manifest]:
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:

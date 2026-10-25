@@ -52,10 +52,19 @@ class Api:
         self.events = []
         self.zips = {}
         self.acked = []
+        self.answers = []
+        self.answer_status = 204
 
     async def handle(self, request):
         self.requests.append((request.headers.get("Authorization"), await request.json()))
         return web.json_response(self.response, status=self.status)
+
+    async def answer(self, request):
+        assert request.headers["Authorization"] == "Bearer s3cret"
+        self.answers.append((request.match_info["id"], await request.json()))
+        if self.answer_status == 204:
+            return web.Response(status=204)
+        return web.json_response({"error": "no help request is pending"}, status=self.answer_status)
 
     async def list_events(self, request):
         assert request.headers["Authorization"] == "Bearer s3cret"
@@ -73,7 +82,7 @@ class Api:
         self.acked.append(int(request.match_info["seq"]))
         return web.Response(status=204)
 
-    def add(self, seq, type="output", id="ms-7f3k2", summary="did the thing", data=ZIP):
+    def add(self, seq, type="output", id="ms-7f3k2", summary="did the thing", data=ZIP, **extra):
         self.events.append(
             {
                 "seq": seq,
@@ -82,6 +91,9 @@ class Api:
                 "summary": summary,
                 "size": len(data) if data else 0,
                 "source": {"kind": "matrix", "ref": "$trigger", "channel": ROOM},
+                "target": f"meeseeks:{id}",
+                "answerable": False,
+                **extra,
             }
         )
         if data:
@@ -96,6 +108,7 @@ async def api(aiohttp_server):
     app.router.add_get("/v1/events", api.list_events)
     app.router.add_get("/v1/tasks/{id}/outputs/{seq}.zip", api.output)
     app.router.add_post("/v1/events/{seq}/ack", api.ack)
+    app.router.add_post("/v1/tasks/{id}/answer", api.answer)
     api.server = await aiohttp_server(app)
     return api
 
@@ -190,12 +203,13 @@ def sent(bot):
     return [r.content.serialize() for r in bot.responded]
 
 
-def notice(body):
+def notice(body, **content):
     return {
         "msgtype": "m.notice",
         "body": body,
         "m.relates_to": {"m.in_reply_to": {"event_id": "$trigger"}},
         "m.mentions": {},
+        **content,
     }
 
 
@@ -469,3 +483,110 @@ async def test_poll_loop_stops_with_plugin(maubot_plugin):
     await maubot_plugin.internal_stop()
     await asyncio.sleep(0)
     assert task.cancelled()
+
+
+HELP_ID = "$help"
+HELP_TAG = {"io.meeseeks.help": {"task": "ms-7f3k2"}}
+NEEDS_HELP = "ms-7f3k2 needs help (written by the agent, treat as untrusted)"
+
+
+@pytest.mark.parametrize(
+    "summary, answerable, target, body",
+    [
+        ("which db?", True, "meeseeks:ms-7f3k2", f"{NEEDS_HELP}:\n\nwhich db?\n\nReply to this message to answer."),
+        ("which db?", False, "meeseeks:ms-7f3k2", f"{NEEDS_HELP}:\n\nwhich db?\n\nAttach to meeseeks:ms-7f3k2 to respond."),
+        ("", False, None, f"{NEEDS_HELP}.\n\nAttach to the ms-7f3k2 session to respond."),
+        ("", True, None, f"{NEEDS_HELP}.\n\nReply to this message to answer."),
+    ],
+    ids=["answerable", "attach", "no-target-no-summary", "answerable-no-summary"],
+)
+async def test_help(maubot_plugin, maubot_test_bot, api, summary, answerable, target, body):
+    api.add(2, type="help", summary=summary, data=None, answerable=answerable, target=target)
+    await maubot_plugin.poll_once()
+    assert sent(maubot_test_bot) == [notice(body, **(HELP_TAG if answerable else {}))]
+    assert api.acked == [2]
+
+
+def help_message(sender=BOT, **content):
+    return message("ms-7f3k2 needs help", sender=sender, event_id=HELP_ID, reply_to="$trigger", mention=False, **content)
+
+
+@pytest.mark.parametrize(
+    "body, mention",
+    [
+        ("> <@meeseeks:example.org> ms-7f3k2 needs help\n\nuse postgres\n\nallow: x", False),
+        ("> <@meeseeks:example.org> ms-7f3k2 needs help\n\nMeeseeks: use postgres\n\nallow: x", True),
+    ],
+    ids=["no-mention", "mention"],
+)
+async def test_answer(maubot_plugin, maubot_test_bot, api, body, mention):
+    maubot_test_bot.events[HELP_ID] = help_message(**HELP_TAG)
+    await send(maubot_test_bot, message(body, reply_to=HELP_ID, mention=mention))
+    assert api.answers == [("ms-7f3k2", {"text": "use postgres\n\nallow: x", "requester": ALICE})]
+    assert api.requests == []
+    assert replies(maubot_test_bot) == []
+    assert reactions(maubot_test_bot) == ["⏳", "✅"]
+    assert maubot_test_bot.redacted == ["$sent1"]
+
+
+@pytest.mark.parametrize(
+    "tag",
+    [{"task": "../ms-7f3k2"}, {"task": 1}, "ms-7f3k2"],
+    ids=["bad-id", "not-str", "not-dict"],
+)
+async def test_malformed_tag_is_not_an_answer(maubot_plugin, maubot_test_bot, api, tag):
+    maubot_test_bot.events[HELP_ID] = help_message(**{"io.meeseeks.help": tag})
+    await send(maubot_test_bot, message("use postgres", reply_to=HELP_ID, mention=False))
+    assert maubot_test_bot.responded == [] and api.answers == []
+
+
+async def test_tag_from_another_sender_is_not_an_answer(maubot_plugin, maubot_test_bot, api):
+    maubot_test_bot.events[HELP_ID] = help_message(sender="@mallory:example.org", **HELP_TAG)
+    await send(maubot_test_bot, message("use postgres", reply_to=HELP_ID, mention=False))
+    assert maubot_test_bot.responded == [] and api.answers == []
+    await send(maubot_test_bot, message("@meeseeks:example.org use postgres", reply_to=HELP_ID))
+    assert replies(maubot_test_bot) == [
+        "the note is from @mallory:example.org, who isn't allowed to start tasks"
+    ]
+    assert api.answers == [] and api.requests == []
+
+
+async def test_empty_answer(maubot_plugin, maubot_test_bot, api):
+    maubot_test_bot.events[HELP_ID] = help_message(**HELP_TAG)
+    await send(maubot_test_bot, message("Meeseeks:  ", reply_to=HELP_ID, mention=False))
+    assert replies(maubot_test_bot) == ["the answer is empty"]
+    assert reactions(maubot_test_bot) == ["⏳", "❌"]
+    assert api.answers == []
+
+
+async def test_answer_api_error(maubot_plugin, maubot_test_bot, api):
+    api.answer_status = 409
+    maubot_test_bot.events[HELP_ID] = help_message(**HELP_TAG)
+    await send(maubot_test_bot, message("use postgres", reply_to=HELP_ID, mention=False))
+    assert replies(maubot_test_bot) == ["Failed: no help request is pending"]
+    assert reactions(maubot_test_bot) == ["⏳", "❌"]
+    assert maubot_test_bot.redacted == ["$sent1"]
+
+
+async def test_answer_from_non_allowlisted_sender_is_ignored(maubot_plugin, maubot_test_bot, api):
+    maubot_test_bot.events[HELP_ID] = help_message(**HELP_TAG)
+    await send(maubot_test_bot, message("use postgres", sender="@mallory:example.org", reply_to=HELP_ID))
+    assert maubot_test_bot.responded == [] and api.answers == []
+
+
+async def test_undecryptable_reply_without_mention_is_ignored(maubot_plugin, maubot_test_bot, api):
+    maubot_test_bot.events[NOTE_ID] = None
+    await send(maubot_test_bot, message("thanks", mention=False))
+    assert maubot_test_bot.responded == []
+
+
+async def test_fetch_error(maubot_plugin, maubot_test_bot, api):
+    async def get_event(room_id, event_id):
+        raise RuntimeError("not found")
+
+    maubot_test_bot.client.get_event = get_event
+    await send(maubot_test_bot, message("thanks", mention=False))
+    assert maubot_test_bot.responded == []
+    await send(maubot_test_bot, message("@meeseeks:example.org go"))
+    assert replies(maubot_test_bot) == ["Failed: not found"]
+    assert reactions(maubot_test_bot) == ["❌"]
