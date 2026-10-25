@@ -1,0 +1,53 @@
+# Builds the maubot plugin and attaches it to a release when a version tag is
+# pushed, so installing or updating the bot needs no local build.
+#
+# A .mbp is a zip of maubot.yaml, the plugin's modules and its extra files,
+# which is all `mbc build` writes. The stdlib's zipfile CLI builds the same
+# archive without installing maubot, so the job needs nothing from PyPI and
+# runs on the confined tier. Nothing here needs a Docker daemon.
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  plugin:
+    runs-on: dejima-confined
+    name: confined (plugin release)
+    container:
+      image: node:20-bookworm
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check the tag matches the versions in the repository
+        run: |
+          plugin="$(sed -n 's/^version: *//p' plugin/maubot.yaml)"
+          package="$(sed -n 's/^version = "\(.*\)"/\1/p' pyproject.toml)"
+          if [ "v$plugin" != "$GITHUB_REF_NAME" ] || [ "v$package" != "$GITHUB_REF_NAME" ]; then
+            echo "tag $GITHUB_REF_NAME does not match plugin/maubot.yaml ($plugin) and pyproject.toml ($package)" >&2
+            exit 1
+          fi
+
+      - name: Build the plugin
+        working-directory: plugin
+        run: |
+          id="$(sed -n 's/^id: *//p' maubot.yaml)"
+          echo "MBP=$id-$GITHUB_REF_NAME.mbp" >> "$GITHUB_ENV"
+          python3 -m zipfile -c "../$id-$GITHUB_REF_NAME.mbp" maubot.yaml meeseeks_bot base-config.yaml
+          python3 -m zipfile -l "../$id-$GITHUB_REF_NAME.mbp"
+
+      - name: Attach it to the release
+        env:
+          TOKEN: ${{ secrets.GITEA_TOKEN }}
+        run: |
+          api="$GITHUB_SERVER_URL/api/v1/repos/$GITHUB_REPOSITORY"
+          auth="Authorization: token $TOKEN"
+          # A rerun finds the release the first run created.
+          if ! release="$(curl -fsS -H "$auth" "$api/releases/tags/$GITHUB_REF_NAME")"; then
+            release="$(curl -fsS -X POST -H "$auth" -H "Content-Type: application/json" \
+              -d "{\"tag_name\": \"$GITHUB_REF_NAME\", \"name\": \"$GITHUB_REF_NAME\"}" "$api/releases")"
+          fi
+          id="$(printf '%s' "$release" | python3 -c 'import json, sys; print(json.load(sys.stdin)["id"])')"
+          curl -fsS -X POST -H "$auth" -F "attachment=@$MBP" "$api/releases/$id/assets?name=$MBP"
