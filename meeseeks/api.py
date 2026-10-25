@@ -189,6 +189,15 @@ async def collect(app: web.Application, task_id: str) -> bool:
     return True
 
 
+async def collect_help(app: web.Application, task: dict) -> None:
+    config, store = app[CONFIG], app[STORE]
+    code, out, err = await run_remote(config, ["help", task["id"]])
+    if code:
+        log.warning("help %s failed: %s", task["id"], err or f"exit {code}")
+        return
+    store.add_event(task["id"], "help", archive.clean_text(out), answerable=task.get("answerable", False))
+
+
 async def poll_once(app: web.Application) -> None:
     config, store = app[CONFIG], app[STORE]
     ours = set(store.launched())
@@ -203,6 +212,8 @@ async def poll_once(app: web.Application) -> None:
             continue
         # One task's failure must not hold up the others.
         try:
+            if task.get("help"):
+                await collect_help(app, task)
             collected = await collect(app, task["id"]) if task["ready"] else True
         except Exception:
             log.exception("collecting %s failed", task["id"])
@@ -278,7 +289,13 @@ async def create_task(request: web.Request) -> web.Response:
 async def list_events(request: web.Request) -> web.Response:
     events = request.app[STORE].events(_client(request))
     return web.json_response(
-        [{"seq": e.seq, "id": e.id, "type": e.type, "summary": e.summary, "size": e.size, "source": e.source} for e in events]
+        [
+            {
+                "seq": e.seq, "id": e.id, "type": e.type, "summary": e.summary, "size": e.size,
+                "answerable": e.answerable, "target": e.target, "source": e.source,
+            }
+            for e in events
+        ]
     )
 
 
@@ -298,6 +315,31 @@ async def get_output(request: web.Request) -> web.StreamResponse:
     )
 
 
+async def answer_help(request: web.Request) -> web.Response:
+    client = _client(request)
+    task_id = request.match_info["id"]
+    if request.app[STORE].task_status(client, task_id) is None:
+        raise web.HTTPNotFound()
+    try:
+        body = await request.json()
+    except ValueError:
+        return web.json_response({"error": "body must be JSON"}, status=400)
+    if not isinstance(body, dict) or set(body) != {"text", "requester"}:
+        return web.json_response({"error": "body must have text and requester"}, status=400)
+    try:
+        text, requester = _text(body, "text"), _text(body, "requester")
+    except RequestError as e:
+        return web.json_response({"error": str(e)}, status=e.status)
+    payload = json.dumps({"text": text, "requester": requester}).encode()
+    try:
+        code, _, err = await run_remote(request.app[CONFIG], ["answer", task_id], payload)
+    except RuntimeError as e:
+        return web.json_response({"error": f"answer failed: {e}"}, status=502)
+    if code:
+        return web.json_response({"error": err or f"launcher exited {code}"}, status=409)
+    return web.Response(status=204)
+
+
 async def ack_event(request: web.Request) -> web.Response:
     if not request.app[STORE].ack(_client(request), int(request.match_info["seq"])):
         raise web.HTTPNotFound()
@@ -313,6 +355,7 @@ def make_app(config: dict, poll: bool = True) -> web.Application:
     app.router.add_get("/v1/events", list_events)
     app.router.add_get(r"/v1/tasks/{id:ms-[a-z2-7]{5}}/outputs/{seq:\d+}.zip", get_output)
     app.router.add_post(r"/v1/events/{seq:\d+}/ack", ack_event)
+    app.router.add_post(r"/v1/tasks/{id:ms-[a-z2-7]{5}}/answer", answer_help)
     if poll:
         app.cleanup_ctx.append(poller)
     return app

@@ -24,6 +24,12 @@ def _mention(names: list[str]) -> str:
     return rf"(?<!\w)@?(?:{alts})(?!\w):?[ \t]*"
 
 
+def strip_mention(text: str, bot_names: list[str]) -> str:
+    if not any(bot_names):
+        return text
+    return re.sub(rf"^\s*(?:{_mention(bot_names)})+", "", text, flags=re.IGNORECASE)
+
+
 def parse_reply(body: str, bot_names: list[str]) -> Request:
     lines = body.splitlines()
     while lines and lines[0].startswith(">"):
@@ -32,8 +38,7 @@ def parse_reply(body: str, bot_names: list[str]) -> Request:
     values = {"ctx": [], "allow": [], "deps": [], "harness": [], "backend": []}
     context = []
     for line in lines:
-        if mention:
-            line = re.sub(rf"^\s*(?:{mention})+", "", line, flags=re.IGNORECASE)
+        line = strip_mention(line, bot_names)
         if m := KEYWORD.match(line):
             seen = values[m[1].lower()]
             seen += [v for v in dict.fromkeys(re.split(r"[,\s]+", m[2])) if v and v not in seen]

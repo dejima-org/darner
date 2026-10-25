@@ -33,6 +33,8 @@ The bot replies with the task id and its tmux target, or with why it was refused
 
 When the agent delivers output, the bot replies again with the agent's summary and the output as a zip. It also says when the session ends.
 
+When the agent needs something from you, the bot posts its request. If the dejima host allows answers from chat, reply to that message and your reply is typed into the session as the agent's next message; no mention is needed. Otherwise the message says which session to attach to.
+
 ## Prompt
 
 ```
@@ -46,6 +48,7 @@ When the agent delivers output, the bot replies again with the agent's summary a
 
 ## Delivering your output
 <put output in ~/shared, a summary in ~/shared/RESULT.md, then create ~/shared/.done>
+<to ask for something, write ~/shared/HELP.md, create ~/shared/.help and end the turn>
 ```
 
 The last section can be replaced with `output_instructions` in the API config.
@@ -61,6 +64,16 @@ The session is presumed hostile, and so is everything it writes to `~/shared`. C
 - **Entries:** mode `0644`, a fixed timestamp, and no symlink or directory entries.
 - **Re-check:** the API verifies the archive again and rebuilds it with its own writer before storing it, so what it serves is exactly what it checked.
 - **Delivery:** the bot sends the summary as plain text with no mentions, so the agent can't hide a link behind other text or ping the room.
+
+`HELP.md` is read the same way, as a regular file only, at most 16 KiB. Its text is sent as plain text, like the summary.
+
+## Answering from chat
+
+Off by default. Turn it on with `--answers` on the launcher, so the dejima host decides whether chat can type into its sessions. An answer is accepted only for an outstanding help request on a running session, and only once: concurrent answers race for it and only one wins. Answers go to the window by its tmux id, so renaming the window inside the session doesn't redirect them. If typing into the session fails, the chat sees only "couldn't type into the session", with no tmux detail.
+
+Before pasting, the launcher strips control characters, ESC above all, so the text can't end the paste early and have the rest read as keystrokes. It then pastes the answer as `Reply from <user>:` followed by the text. Because of that prefix, the message never starts with `!` or `/`, which Claude Code would run as a shell or slash command. The paste is bracketed, so newlines don't submit it early, and Enter follows after `--paste-delay`.
+
+The bot only treats a reply as an answer when the replied-to message is its own help request, so a forged tag on someone else's message is ignored.
 
 The files are still agent-written: treat what is in the zip as untrusted. Neither the API's `results_dir` nor dejima's `isolated/` share directories are pruned.
 
@@ -84,8 +97,11 @@ command="meeseeks-launch --identity meeseeks --harness claude-code --backend cla
 | `--share-root DIR` | `~/.local/share/dejima/shared/isolated` | where dejima puts isolated sessions' `~/shared`; output is only read from directly under it |
 | `--max-output BYTES` | 50 MiB | largest output that will be collected |
 | `--fetch-timeout SECONDS` | 60 | longest time collecting one output may take |
+| `--answers` | off | allow answering help requests from chat |
+| `--paste-delay SECONDS` | 0.5 | wait between pasting an answer and pressing Enter |
+| `--help-interval SECONDS` | 300 | least time between a task's help requests, so a session can't flood the room |
 
-The API sends one of three commands, which arrive as `SSH_ORIGINAL_COMMAND`: none (launch the job on stdin), `status`, or `fetch <id>`. Anything else is refused.
+The API sends one of these commands, which arrive as `SSH_ORIGINAL_COMMAND`: none (launch the job on stdin), `status`, `fetch <id>`, `help <id>` or `answer <id>`. Anything else is refused.
 
 A detached launch has nobody to answer a prompt, so the host must not raise one:
 
@@ -120,9 +136,10 @@ Every `poll_interval` seconds the API asks the dejima host for the status of lau
 
 | endpoint | |
 |---|---|
-| `GET /v1/events` | unacknowledged events, oldest first: `{seq, id, type, summary, size, source}`, `type` is `output` or `ended` |
+| `GET /v1/events` | unacknowledged events, oldest first: `{seq, id, type, summary, size, answerable, target, source}`, `type` is `output`, `help` or `ended` |
 | `GET /v1/tasks/<id>/outputs/<seq>.zip` | an `output` event's archive (`size` 0 means it was rejected, and `summary` says why) |
 | `POST /v1/events/<seq>/ack` | mark an event delivered |
+| `POST /v1/tasks/<id>/answer` | `{text, requester}`: answer the task's outstanding help request; 409 with the reason if the host refuses |
 
 `source` is echoed back as given, so a client knows where to reply without keeping state.
 

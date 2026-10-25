@@ -14,6 +14,12 @@ STUB = """import json, os, sys
 command = sys.argv[1:]
 if command == ["status"]:
     sys.stdout.write(open(os.environ["STUB_STATUS"]).read())
+elif command[:1] == ["help"]:
+    sys.stdout.buffer.write(os.environ.get("STUB_HELP", "").encode())
+elif command[:1] == ["answer"]:
+    open(os.environ["STUB_LOG"], "a").write(json.dumps([*command, json.load(sys.stdin)]) + "\\n")
+    if os.environ.get("STUB_ANSWER_ERROR"):
+        sys.exit("meeseeks-launch: " + os.environ["STUB_ANSWER_ERROR"])
 elif command[:1] == ["fetch"]:
     open(os.environ["STUB_LOG"], "a").write(json.dumps(command) + "\\n")
     code = int(os.environ.get("STUB_FETCH_CODE", "0"))
@@ -228,9 +234,12 @@ async def started(aiohttp_client, config, tmp_path, monkeypatch):
     client = await aiohttp_client(app)
     task_id = (await (await client.post("/v1/tasks", json=request(), headers=AUTH)).json())["id"]
 
-    def status(state="running", ready=True):
+    def status(state="running", ready=True, help=False, answerable=False):
         path = tmp_path / "status.json"
-        path.write_text(json.dumps([{"id": task_id, "state": state, "ready": ready}, {"id": "ms-zzzzz", "state": "exited", "ready": True}]))
+        path.write_text(json.dumps([
+            {"id": task_id, "state": state, "ready": ready, "help": help, "answerable": answerable},
+            {"id": "ms-zzzzz", "state": "exited", "ready": True, "help": True},
+        ]))
         monkeypatch.setenv("STUB_STATUS", str(path))
 
     def output(data):
@@ -379,3 +388,47 @@ async def test_one_failing_task_does_not_block_others(aiohttp_client, config, tm
     monkeypatch.setenv("STUB_FETCH", str(tmp_path / "missing.zip"))
     await poll_once(app)
     assert [(e["id"], e["type"]) for e in await events(client)] == [(second, "ended")]
+
+
+@pytest.mark.parametrize("answerable", [True, False])
+async def test_help_request_becomes_event(started, monkeypatch, answerable):
+    app, client, task_id, status, _ = started
+    status(ready=False, help=True, answerable=answerable)
+    monkeypatch.setenv("STUB_HELP", "Which branch?\x1b[2J")
+    await poll_once(app)
+    [event] = await events(client)
+    assert event["type"] == "help" and event["summary"] == "Which branch?[2J"
+    assert event["answerable"] is answerable
+    assert event["target"] == f"meeseeks:{task_id}"
+
+
+async def test_answer_reaches_launcher(started, tmp_path):
+    app, client, task_id, *_ = started
+    body = {"text": "Use main.", "requester": "@alice:example.org"}
+    resp = await client.post(f"/v1/tasks/{task_id}/answer", json=body, headers=AUTH)
+    assert resp.status == 204
+    assert fetches(tmp_path)[-1] == ["answer", task_id, body]
+
+
+async def test_answer_refusal_is_relayed(started, monkeypatch):
+    app, client, task_id, *_ = started
+    monkeypatch.setenv("STUB_ANSWER_ERROR", "answering from chat is not enabled on this host")
+    resp = await client.post(f"/v1/tasks/{task_id}/answer", json={"text": "x", "requester": "@a:example.org"}, headers=AUTH)
+    assert resp.status == 409
+    assert (await resp.json())["error"] == "answering from chat is not enabled on this host"
+
+
+async def test_answer_is_scoped_to_client(started, config, tmp_path):
+    app, client, task_id, *_ = started
+    config["tokens"]["other"] = "0ther"
+    body = {"text": "x", "requester": "@a:example.org"}
+    resp = await client.post(f"/v1/tasks/{task_id}/answer", json=body, headers={"Authorization": "Bearer 0ther"})
+    assert resp.status == 404
+    assert (await client.post(f"/v1/tasks/{task_id}/answer", json=body)).status == 401
+    assert all(f[0] != "answer" for f in fetches(tmp_path))
+
+
+@pytest.mark.parametrize("body", [{"text": ""}, {"text": "x"}, {"text": "x", "requester": "@a", "extra": 1}, ["x"]])
+async def test_answer_rejects_bad_body(started, body):
+    app, client, task_id, *_ = started
+    assert (await client.post(f"/v1/tasks/{task_id}/answer", json=body, headers=AUTH)).status == 400

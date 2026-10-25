@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS events (
     type TEXT NOT NULL,
     summary TEXT NOT NULL DEFAULT '',
     size INTEGER NOT NULL DEFAULT 0,
+    answerable INTEGER NOT NULL DEFAULT 0,
     acked INTEGER NOT NULL DEFAULT 0,
     created REAL NOT NULL
 );
@@ -45,6 +46,8 @@ class Event:
     type: str
     summary: str
     size: int
+    answerable: bool
+    target: str | None
     source: dict
 
 
@@ -88,22 +91,26 @@ class Store:
     def launched(self) -> list[str]:
         return [r[0] for r in self.db.execute("SELECT id FROM tasks WHERE status = 'launched' ORDER BY created")]
 
-    def add_event(self, task_id: str, type: str, summary: str = "", size: int = 0) -> int:
+    def add_event(self, task_id: str, type: str, summary: str = "", size: int = 0, answerable: bool = False) -> int:
         return self.db.execute(
-            "INSERT INTO events (task_id, type, summary, size, created) VALUES (?, ?, ?, ?, ?)",
-            (task_id, type, summary, size, time.time()),
+            "INSERT INTO events (task_id, type, summary, size, answerable, created) VALUES (?, ?, ?, ?, ?, ?)",
+            (task_id, type, summary, size, answerable, time.time()),
         ).lastrowid
+
+    def task_status(self, client: str, task_id: str) -> str | None:
+        row = self.db.execute("SELECT status FROM tasks WHERE client = ? AND id = ?", (client, task_id)).fetchone()
+        return row[0] if row else None
 
     def remove_event(self, seq: int) -> None:
         self.db.execute("DELETE FROM events WHERE seq = ?", (seq,))
 
     def _events(self, where: str, params: tuple) -> list[Event]:
         rows = self.db.execute(
-            "SELECT e.seq, e.task_id, e.type, e.summary, e.size, t.source_json"
+            "SELECT e.seq, e.task_id, e.type, e.summary, e.size, e.answerable, t.target, t.source_json"
             f" FROM events e JOIN tasks t ON t.id = e.task_id WHERE {where} ORDER BY e.seq",
             params,
         )
-        return [Event(*row[:5], json.loads(row[5])) for row in rows]
+        return [Event(*row[:5], bool(row[5]), row[6], json.loads(row[7])) for row in rows]
 
     def events(self, client: str) -> list[Event]:
         return self._events("t.client = ? AND e.acked = 0", (client,))
