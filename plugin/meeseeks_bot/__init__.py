@@ -1,5 +1,7 @@
+import html
 import re
 from typing import Awaitable, Type
+from urllib.parse import unquote
 
 from maubot import MessageEvent, Plugin
 from maubot.handlers import event
@@ -20,6 +22,8 @@ from mautrix.util.config import BaseProxyConfig, ConfigUpdateHelper
 from .parse import ParseError, parse_reply, strip_mention
 
 TASK_ID = re.compile(r"ms-[a-z2-7]{5}")
+PILL = re.compile(r'<a\s[^>]*href="https://matrix\.to/#/([^"?]+)[^"]*"[^>]*>(.*?)</a>', re.IGNORECASE | re.DOTALL)
+NOT_A_REPLY = "To start a task, reply to a note and mention me. Send `help` with a mention for usage."
 
 USAGE = """\
 **Meeseeks** starts an isolated dejima session for a task.
@@ -83,11 +87,23 @@ class MeeseeksBot(Plugin):
             **kwargs,
         )
 
-    def _mentioned(self, evt: MessageEvent) -> bool:
+    def _names(self, evt: MessageEvent) -> list[str]:
+        """The bot's names, plus whatever text a client gave a pill linking to it.
+
+        A pill's plain-text body is its visible text, usually the bot's display
+        name in that room, which needn't match the names known at startup.
+        """
+        names = list(self.names)
+        for target, text in PILL.findall(evt.content.formatted_body or ""):
+            if unquote(target) == self.client.mxid:
+                names.append(html.unescape(re.sub(r"<[^>]+>", "", text)).strip())
+        return names
+
+    def _mentioned(self, evt: MessageEvent, names: list[str]) -> bool:
         mentions = evt.content.get("m.mentions") or {}
         body = evt.content.body.lower()
         return self.client.mxid in mentions.get("user_ids", []) or any(
-            n.lower() in body for n in self.names
+            n and n.lower() in body for n in names
         )
 
     async def _note_body(self, note: Event | None) -> str:
@@ -114,7 +130,7 @@ class MeeseeksBot(Plugin):
     async def _submit(self, evt: MessageEvent, replied: Event | None) -> tuple[str, bool]:
         try:
             note = await self._note_body(replied)
-            req = parse_reply(evt.content.body, self.names)
+            req = parse_reply(evt.content.body, self._names(evt))
         except (NoteError, ParseError) as e:
             return str(e), False
         payload = {
@@ -147,22 +163,26 @@ class MeeseeksBot(Plugin):
         ):
             return
         content.trim_reply_fallback()
-        if self._mentioned(evt) and strip_mention(content.body, self.names).strip().lower() == "help":
+        names = self._names(evt)
+        mentioned = self._mentioned(evt, names)
+        if mentioned and strip_mention(content.body, names).strip().lower() == "help":
             await evt.reply(await self._usage())
             return
         if not content.get_reply_to():
+            if mentioned:
+                await evt.reply(NOT_A_REPLY)
             return
         try:
             replied = await self.client.get_event(evt.room_id, content.get_reply_to())
         except Exception as e:
             self.log.warning("Couldn't fetch the replied-to event", exc_info=True)
-            if self._mentioned(evt):
+            if mentioned:
                 await evt.reply(_failure(e), markdown=False)
                 await evt.react("❌")
             return
         if task := self._help_task(replied):
             await self._respond(evt, self._answer(evt, task))
-        elif self._mentioned(evt):
+        elif mentioned:
             await self._respond(evt, self._submit(evt, replied))
 
     async def _usage(self) -> str:
@@ -184,7 +204,7 @@ class MeeseeksBot(Plugin):
         return task if isinstance(task, str) and TASK_ID.fullmatch(task) else None
 
     async def _answer(self, evt: MessageEvent, task: str) -> tuple[str | None, bool]:
-        text = strip_mention(evt.content.body, self.names).strip()
+        text = strip_mention(evt.content.body, self._names(evt)).strip()
         if not text:
             return "the answer is empty", False
         payload = {"text": text, "requester": evt.sender}
