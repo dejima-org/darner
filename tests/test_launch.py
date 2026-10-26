@@ -197,8 +197,8 @@ def test_status_states(env, share):
     code, out, _ = run(a, "status")
     assert code == 0
     assert json.loads(out) == [
-        {"id": "ms-abc23", "state": "exited", "ready": True, "unsignalled": False, "help": False, "answerable": False, "run_id": None},
-        {"id": "ms-starx", "state": "starting", "ready": False, "unsignalled": False, "help": False, "answerable": False, "run_id": None},
+        {"id": "ms-abc23", "state": "exited", "ready": True, "unsignalled": False, "help": False, "answerable": False, "run_id": None, "error": None},
+        {"id": "ms-starx", "state": "starting", "ready": False, "unsignalled": False, "help": False, "answerable": False, "run_id": None, "error": None},
     ]
 
 
@@ -632,3 +632,20 @@ def test_concurrent_sessions_each_get_their_own_answer(env, share):
         assert (env / "tmux.log.buffer").read_text().endswith(text)
     assert not (env / "tasks" / "ms-abc23" / "help-pending").exists()
     assert not (env / "tasks" / "ms-defgh" / "help-pending").exists()
+
+
+def test_status_says_why_a_share_cant_be_read(env, share):
+    a, shared = share
+    elsewhere = env / "shared-elsewhere" / "isolated" / "20261025-120000-AbC123"
+    elsewhere.mkdir(parents=True)
+    (elsewhere / ".done").touch()
+    (env / "tasks" / "ms-abc23" / "shared-path").write_text(f"{elsewhere}\n")
+    entry = status(a)[0]
+    assert entry["ready"] is False
+    assert "is not under" in entry["error"] and str(a.share_root) in entry["error"]
+
+
+def test_starting_task_has_no_error(env, share):
+    a, _ = share
+    (env / "tasks" / "ms-abc23" / "shared-path").unlink()
+    assert status(a)[0]["error"] is None

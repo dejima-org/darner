@@ -286,18 +286,25 @@ def _unsignalled(args: argparse.Namespace, fd: int, task_dir: Path) -> str | Non
     return None
 
 
-def _signals(args: argparse.Namespace, task_dir: Path) -> dict[str, bool]:
+def _signals(args: argparse.Namespace, task_dir: Path) -> tuple[dict[str, bool], str | None]:
+    """The task's signals, and why its ~/shared couldn't be read, if it couldn't.
+
+    No shared-path yet just means the session is still starting.
+    """
+    none = {"done": False, "help": False, "unsignalled": False}
     try:
         fd = open_share(args, task_dir)
-    except (OSError, ValueError):
-        return {"done": False, "help": False, "unsignalled": False}
+    except FileNotFoundError as e:
+        return none, None if e.filename == str(task_dir / "shared-path") else str(e)
+    except (OSError, ValueError) as e:
+        return none, str(e)
     try:
         signals = {kind: _signal(fd, task_dir, kind) is not None for kind in SIGNALS}
         signals["unsignalled"] = not signals["done"] and _unsignalled(args, fd, task_dir) is not None
     finally:
         os.close(fd)
     signals["help"] = signals["help"] and _help_allowed(args, task_dir)
-    return signals
+    return signals, None
 
 
 def _state(task_dir: Path) -> str:
@@ -316,7 +323,7 @@ def status(args: argparse.Namespace) -> list[dict]:
         if not valid_task_id(task_dir.name):
             continue
         state = _state(task_dir)
-        signals = _signals(args, task_dir)
+        signals, error = _signals(args, task_dir)
         tasks.append({
             "id": task_dir.name,
             "state": state,
@@ -325,6 +332,7 @@ def status(args: argparse.Namespace) -> list[dict]:
             "help": signals["help"],
             "answerable": args.answers and state == "running",
             "run_id": session_run_id(task_dir) if state == "running" else None,
+            "error": error,
         })
     return tasks
 

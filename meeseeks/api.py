@@ -33,6 +33,7 @@ MAX_TEXT = 32 * 1024
 
 CONFIG = web.AppKey("config", dict)
 STORE = web.AppKey("store", Store)
+SHARE_ERRORS = web.AppKey("share_errors", dict)
 
 
 class RequestError(Exception):
@@ -226,6 +227,11 @@ async def poll_once(app: web.Application) -> None:
     for task in json.loads(out):
         if task["id"] not in ours:
             continue
+        # Logged once per change: it's repeated every poll until fixed.
+        if app[SHARE_ERRORS].get(task["id"]) != task.get("error"):
+            app[SHARE_ERRORS][task["id"]] = task.get("error")
+            if task.get("error"):
+                log.warning("can't read %s's ~/shared, so its output can't be collected: %s", task["id"], task["error"])
         if isinstance(task.get("run_id"), str) and RUN_ID.fullmatch(task["run_id"]):
             store.set_run_id(task["id"], task["run_id"])
         # One task's failure must not hold up the others.
@@ -389,6 +395,7 @@ def make_app(config: dict, poll: bool = True) -> web.Application:
     app[CONFIG] = config
     app[STORE] = Store(config["db_path"])
     app[STORE].fail_pending()
+    app[SHARE_ERRORS] = {}
     app.router.add_post("/v1/tasks", create_task)
     app.router.add_get("/v1/events", list_events)
     app.router.add_get("/v1/blurbs", list_blurbs)

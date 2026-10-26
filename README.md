@@ -181,7 +181,8 @@ On the dejima host, as `DEJIMA_USER`, authorise the API's key to run the launche
 ```sh
 API_ADDR=192.0.2.10
 API_PUBKEY='ssh-ed25519 AAAA... meeseeks-api'
-LAUNCHER_OPTIONS="--dejima $(command -v dejima) --harness claude-code --backend claude-code=anthropic"
+SHARE_DIR=$(dejima --print-config | sed -n 's/^core.share_dir=//p'); SHARE_DIR=${SHARE_DIR/#\~/$HOME}
+LAUNCHER_OPTIONS="--dejima $(command -v dejima) --share-root $SHARE_DIR/isolated --harness claude-code --backend claude-code=anthropic"
 
 install -d -m 700 ~/.ssh
 touch ~/.ssh/authorized_keys
@@ -191,7 +192,7 @@ echo "from=\"$API_ADDR\",command=\"$HOME/.local/bin/meeseeks-launch $LAUNCHER_OP
 ssh-keygen -lf ~/.ssh/authorized_keys | grep meeseeks-api   # no output means sshd can't read the line
 ```
 
-- `command=` makes the launcher the only thing this key can run, whatever the client asks for. Its paths are absolute, since a non-interactive ssh login has a minimal `PATH` without `~/.local/bin`. That is also why `--dejima` gives dejima's full path.
+- `command=` makes the launcher the only thing this key can run, whatever the client asks for. Its paths are absolute, since a non-interactive ssh login has a minimal `PATH` without `~/.local/bin`. That is also why `--dejima` gives dejima's full path. `--share-root` comes from dejima's own `share_dir`, since output is only read from where dejima puts isolated sessions' `~/shared`.
 - `restrict` turns off forwarding and terminals, and `from=` accepts the key only from `API_ADDR`.
 - `LAUNCHER_OPTIONS` holds the defaults every session gets. Add `--identity meeseeks` if you set one up in step 1, and `--answers` if replies in chat may be typed into sessions. All options are listed under [Launcher options](#launcher-options).
 - To change the options later, delete the `meeseeks-api` line and run this step again with new `LAUNCHER_OPTIONS`. Don't edit it in place: an option outside the quotes makes sshd skip the whole line, which shows up as `Permission denied (publickey)`.
