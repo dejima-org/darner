@@ -737,7 +737,10 @@ def test_exec_records_dejima_pid(env):
 
 FAKE_DEJIMA_ALLOW = """#!/bin/sh
 python3 -c 'import json, sys; print(json.dumps(sys.argv[1:]))' "$@" >> "$FAKE_ALLOW_LOG"
-case "$*" in *blocked.example*) echo "blocked.example: unreachable after allowing" >&2; exit 1 ;; esac
+case "$*" in
+    *blocked.example*) echo "blocked.example: unreachable after allowing" >&2; exit 1 ;;
+    *quiet.example*) echo "WARNING: quiet.example is still NOT reachable (curl exit 28)." >&2; exit 2 ;;
+esac
 """
 
 
@@ -818,7 +821,7 @@ def test_allow_grants_the_saved_request_within_what_the_api_passes(env, allow_en
     data = {"requester": "@alice:example.org", "domains": ["pypi.org", "mirror.internal.example", "evil.example.com"]}
     code, out, err = decide(a, "allow", 1, data)
     assert code == 0, err
-    assert json.loads(out) == {"granted": ["pypi.org", "mirror.internal.example"], "failed": [], "told": False}
+    assert json.loads(out) == {"granted": ["pypi.org", "mirror.internal.example"], "failed": [], "unverified": [], "told": False}
     dejima_allow = str(env / "bin" / "dejima-allow")
     assert allow_calls(env) == [
         ["--container", "c0ffee", "pypi.org"],
@@ -971,3 +974,17 @@ def test_new_request_waits_while_one_is_undecided(env, allow_env):
     (shared / ".domains").touch()
     assert status(a)[0]["domains"] is False
     assert run(a, "domains", "ms-abc23")[0] == 1
+
+
+def test_permitted_but_unverified_domain_counts_as_allowed(env, allow_env):
+    a, shared = allow_env
+    request_domains(a, shared, "internal quiet.example\n")
+    (env / "tmux.log").write_text("")
+    code, out, _ = decide(
+        a, "allow", 1, {"requester": "@a:example.org", "domains": ["quiet.example"]}, "--answers", "--paste-delay", "0"
+    )
+    result = json.loads(out)
+    assert code == 0 and result["granted"] == ["quiet.example"] and result["failed"] == []
+    assert result["unverified"] == [{"domain": "quiet.example", "warning": "WARNING: quiet.example is still NOT reachable (curl exit 28)."}]
+    assert "allowed but not reachable on port 443 when checked: quiet.example" in (env / "tmux.log.buffer").read_text()
+    assert json.loads((a.tasks_dir / "ms-abc23" / "domains-granted").read_text()) == ["quiet.example"]

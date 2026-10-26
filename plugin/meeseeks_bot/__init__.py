@@ -297,6 +297,8 @@ class MeeseeksBot(Plugin):
             text = f"Allowed for {task}: {', '.join(data['granted']) or 'none'}."
             for failure in data.get("failed", []):
                 text += f"\nCouldn't allow {failure['domain']}: {failure['error']}"
+            for check in data.get("unverified", []):
+                text += f"\n{check['domain']} is allowed, but didn't answer on port 443 from the session: {check['warning']}"
         else:
             text = f"Denied the domain request from {task}."
         if not data.get("told"):

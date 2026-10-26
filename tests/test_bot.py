@@ -890,11 +890,12 @@ def domains_message(sender=BOT, **content):
 @pytest.fixture
 def decisions(api):
     api.decisions = []
+    api.allow_response = {"granted": ["pypi.org"], "failed": [{"domain": "x.example.com", "error": "unreachable"}], "told": False}
 
     async def decide(request):
         api.decisions.append((request.match_info["verb"], request.match_info["n"], await request.json()))
         if request.match_info["verb"] == "allow":
-            return web.json_response({"granted": ["pypi.org"], "failed": [{"domain": "x.example.com", "error": "unreachable"}], "told": False})
+            return web.json_response(api.allow_response)
         return web.json_response({"told": True})
 
     api.server.app.router._frozen = False
@@ -1026,3 +1027,16 @@ async def test_tell_without_a_session_is_a_task(maubot_plugin, maubot_test_bot, 
     await send(maubot_test_bot, message("@meeseeks:example.org tell me why the build fails", reply_to=None))
     assert sessions.messages == []
     assert sessions.requests[0][1]["task"] == "tell me why the build fails"
+
+
+async def test_unverified_domain_is_reported_as_allowed(maubot_plugin, maubot_test_bot, decisions):
+    decisions.allow_response = {
+        "granted": ["recipes.example.com"], "failed": [],
+        "unverified": [{"domain": "recipes.example.com", "warning": "curl exit 28"}], "told": True,
+    }
+    maubot_test_bot.events["$domains"] = domains_message(**DOMAINS_TAG)
+    await send(maubot_test_bot, message("@meeseeks:example.org allow", reply_to="$domains"))
+    assert replies(maubot_test_bot) == [
+        "Allowed for ms-7f3k2: recipes.example.com.\n"
+        "recipes.example.com is allowed, but didn't answer on port 443 from the session: curl exit 28"
+    ]

@@ -692,7 +692,7 @@ def allow_domains(args: argparse.Namespace, task_id: str, number: int, data: obj
     held_file = task_dir / "domains-granted"
     held = json.loads(held_file.read_text()) if held_file.exists() else []
     launched_with = sum(1 for line in (task_dir / "domains").read_text().splitlines() if line.strip())
-    granted, failed = [], []
+    granted, failed, unverified = [], [], []
     for entry in request["domains"]:
         if entry["domain"] not in approved:
             continue
@@ -701,17 +701,27 @@ def allow_domains(args: argparse.Namespace, task_id: str, number: int, data: obj
             continue
         argv = [dejima_allow, "--container", containers[0], *(["--internal"] if entry["internal"] else []), entry["domain"]]
         result = subprocess.run(argv, capture_output=True, text=True)
-        if result.returncode:
-            failed.append({"domain": entry["domain"], "error": archive.clean_text(result.stderr.encode(), 300)})
-        else:
+        message = archive.clean_text(result.stderr.encode(), 300)
+        # dejima-allow exits 2 when the permit landed but its check that the
+        # domain answers on 443 failed, which a service on another port fails
+        # spuriously. The domain is allowed either way.
+        if result.returncode in (0, 2):
             granted.append(entry["domain"])
+            if result.returncode == 2:
+                unverified.append({"domain": entry["domain"], "warning": message})
+        else:
+            failed.append({"domain": entry["domain"], "error": message})
     _write_atomic(held_file, json.dumps(held + granted))
     requester = " ".join(archive.clean_text(data["requester"].encode(), 255).split())
     note = f"Domain request from {requester}: allowed {', '.join(granted) or 'none'}"
     if failed:
         note += "; couldn't allow " + "; ".join(f"{f['domain']} ({f['error']})" for f in failed)
+    if unverified:
+        note += "; allowed but not reachable on port 443 when checked: " + "; ".join(
+            f"{u['domain']} ({u['warning']})" for u in unverified
+        )
     told = _tell_agent(args, task_dir, task_id, note + ". Carry on with your task.")
-    return {"granted": granted, "failed": failed, "told": told}
+    return {"granted": granted, "failed": failed, "unverified": unverified, "told": told}
 
 
 def deny_domains(args: argparse.Namespace, task_id: str, number: int, data: object) -> dict:
