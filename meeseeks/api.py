@@ -175,12 +175,12 @@ def _limits(config: dict) -> archive.Limits:
     return archive.Limits(**config.get("limits", {}))
 
 
-async def collect(app: web.Application, task_id: str) -> bool:
+async def collect(app: web.Application, task_id: str, signalled: bool = True) -> bool:
     """Fetch a task's output into an event. False means try again later."""
     config, store = app[CONFIG], app[STORE]
     code, out, err = await run_remote(config, ["fetch", task_id])
     if code == FETCH_REJECTED:
-        store.add_event(task_id, "output", f"output rejected: {err}")
+        store.add_event(task_id, "output", f"output rejected: {err}", signalled=signalled)
         return True
     if code:
         log.warning("fetch %s failed: %s", task_id, err or f"exit {code}")
@@ -188,14 +188,14 @@ async def collect(app: web.Application, task_id: str) -> bool:
     try:
         packed, summary = archive.repack(out, _limits(config))
     except archive.ArchiveError as e:
-        store.add_event(task_id, "output", f"output rejected: {e}")
+        store.add_event(task_id, "output", f"output rejected: {e}", signalled=signalled)
         return True
     task_dir = Path(config["results_dir"]) / task_id
     task_dir.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=task_dir, suffix=".tmp")
     with os.fdopen(fd, "wb") as f:
         f.write(packed)
-    seq = store.add_event(task_id, "output", summary, len(packed))
+    seq = store.add_event(task_id, "output", summary, len(packed), signalled=signalled)
     try:
         os.replace(tmp, task_dir / f"{seq}.zip")
     except OSError:
@@ -231,7 +231,12 @@ async def poll_once(app: web.Application) -> None:
         try:
             if task.get("help"):
                 await collect_help(app, task)
-            collected = await collect(app, task["id"]) if task["ready"] else True
+            # An unsignalled RESULT.md is the agent's output all the same, collected
+            # once the launcher judges it finished.
+            if task["ready"] or task.get("unsignalled"):
+                collected = await collect(app, task["id"], signalled=task["ready"])
+            else:
+                collected = True
         except Exception:
             log.exception("collecting %s failed", task["id"])
             continue
@@ -315,7 +320,8 @@ async def list_events(request: web.Request) -> web.Response:
         [
             {
                 "seq": e.seq, "id": e.id, "type": e.type, "summary": e.summary, "size": e.size,
-                "answerable": e.answerable, "target": e.target, "link": session_link(config, e.run_id),
+                "answerable": e.answerable, "signalled": e.signalled,
+                "target": e.target, "link": session_link(config, e.run_id),
                 "source": e.source,
             }
             for e in events

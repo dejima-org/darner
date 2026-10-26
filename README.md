@@ -407,6 +407,7 @@ The session is presumed hostile, and so is everything it writes to `~/shared`. C
 - **Walk:** by file descriptor, never by path. Each entry is opened with `O_PATH`, so no device driver is ever opened, and its type is checked on that handle. Only a regular file is reopened, through `/proc/self/fd`. Swapping in a symlink mid-walk therefore gains nothing.
 - **Skipped:** symlinks, FIFOs, devices, and names outside `[A-Za-z0-9][A-Za-z0-9._ +-]*`. That covers dotfiles, `..`, backslashes, control and bidi characters, and invalid UTF-8. Also skipped: Windows reserved names, and names that differ only in case. `MANIFEST.txt` in the zip lists what was included and what was skipped, and why.
 - **Limits:** bytes actually read (50 MiB by default), files included, entries visited, depth, path length and time taken. Going over one rejects the output and tells the requester why.
+- **Forgotten signal:** an agent can forget `.done`. A new `RESULT.md` is collected anyway once nothing directly in `~/shared` has changed for `--quiet-period`, or as soon as the session ends. The bot says so in its reply. Each delivery records the `RESULT.md` it carried, so the same one isn't sent twice.
 - **Signal:** a `.done` is consumed once. The launcher records which one it consumed, so a session that makes `.done` impossible to delete can't trigger repeat deliveries. A new `.done` signals new output.
 - **Entries:** mode `0644`, a fixed timestamp, and no symlink or directory entries.
 - **Re-check:** the API verifies the archive again and rebuilds it with its own writer before storing it, so what it serves is exactly what it checked.
@@ -440,6 +441,7 @@ The files are still agent-written: treat what is in the zip as untrusted. Neithe
 | `--fetch-timeout SECONDS` | 60 | longest time collecting one output may take |
 | `--answers` | off | allow answering help requests from chat |
 | `--paste-delay SECONDS` | 0.5 | wait between pasting an answer and pressing Enter |
+| `--quiet-period SECONDS` | 600 | after this long without changes in `~/shared`, collect a `RESULT.md` the agent never signalled with `.done`; 0 waits for the session to end |
 | `--help-interval SECONDS` | 300 | least time between a task's help requests, so a session can't flood the room |
 
 The API sends one of these commands, which arrive as `SSH_ORIGINAL_COMMAND`: none (launch the job on stdin), `status`, `fetch <id>`, `help <id>` or `answer <id>`. Anything else is refused.

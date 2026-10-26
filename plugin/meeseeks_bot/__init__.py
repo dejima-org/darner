@@ -273,7 +273,8 @@ class MeeseeksBot(Plugin):
             path = f"/v1/tasks/{e['id']}/outputs/{e['seq']}.zip"
             async with self._api("GET", path, raise_for_status=True) as resp:
                 data = await resp.read()
-        label = f"Output from {e['id']} (written by the agent, treat as untrusted)"
+        unsignalled = ", collected without the agent's done signal" if e.get("signalled") is False else ""
+        label = f"Output from {e['id']}{unsignalled} (written by the agent, treat as untrusted)"
         await self._notice(room, ref, f"{label}:\n\n{e['summary']}" if e["summary"] else f"{label}.")
         if data is not None:
             await self._upload(room, ref, f"{e['id']}-{e['seq']}.zip", data)

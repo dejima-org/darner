@@ -23,11 +23,14 @@ _NAME = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}")
 _ID = re.compile(r"ms-[a-z2-7]{5}")
 
 OUTPUT_INSTRUCTIONS = (
-    "When you finish, put anything the requester should receive in ~/shared, write a short summary "
-    "of what you did and found to ~/shared/RESULT.md, then create the empty file ~/shared/.done. "
-    "If you are asked to do more afterwards, do the same again when that is finished.\n\n"
+    "When you finish:\n"
+    "1. Put anything the requester should receive in ~/shared.\n"
+    "2. Write a short summary of what you did and found to ~/shared/RESULT.md.\n"
+    "3. Last, run `touch ~/shared/.done`. That file is how the requester learns you have finished, "
+    "so the task is not done until it exists.\n"
+    "If you are asked to do more afterwards, repeat these steps when that is finished.\n\n"
     "If you need something from the requester to continue, write what you need to ~/shared/HELP.md, "
-    "create the empty file ~/shared/.help, and end your turn. Their response will arrive as your next message."
+    "run `touch ~/shared/.help`, and end your turn. Their response will arrive as your next message."
 )
 
 

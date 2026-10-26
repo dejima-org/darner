@@ -194,8 +194,8 @@ def test_status_states(env, share):
     code, out, _ = run(a, "status")
     assert code == 0
     assert json.loads(out) == [
-        {"id": "ms-abc23", "state": "exited", "ready": True, "help": False, "answerable": False, "run_id": None},
-        {"id": "ms-starx", "state": "starting", "ready": False, "help": False, "answerable": False, "run_id": None},
+        {"id": "ms-abc23", "state": "exited", "ready": True, "unsignalled": False, "help": False, "answerable": False, "run_id": None},
+        {"id": "ms-starx", "state": "starting", "ready": False, "unsignalled": False, "help": False, "answerable": False, "run_id": None},
     ]
 
 
@@ -438,6 +438,9 @@ def test_help_requests_are_rate_limited(env, share):
     a, shared = share
     (shared / ".help").touch()
     assert run(a, "help", "ms-abc23")[0] == 0
+    # A new signal is a new inode or ctime; wait out the kernel's coarse clock
+    # so a reused inode can't carry the same ctime.
+    __import__("time").sleep(0.05)
     (shared / ".help").touch()
     assert status(a)[0]["help"] is False
     assert run(a, "help", "ms-abc23")[0] == 1
@@ -526,3 +529,78 @@ def test_status_reports_run_id_of_running_task(env, share):
     a, _ = share
     register_session(env)
     assert status(a)[0]["run_id"] == "0123456789abcdef"
+
+
+def age(path, seconds):
+    t = __import__("time").time() - seconds
+    os.utime(path, (t, t), follow_symlinks=False)
+
+
+def quiet(shared, seconds=700):
+    for entry in [shared, *shared.iterdir()]:
+        age(entry, seconds)
+
+
+def test_unsignalled_result_waits_for_quiet(share):
+    a, shared = share
+    (shared / "RESULT.md").write_text("done, forgot .done")
+    (shared / "notes.md").write_text("x")
+    assert status(a)[0]["unsignalled"] is False
+    quiet(shared)
+    assert status(a)[0]["unsignalled"] is True
+
+
+def test_recent_change_anywhere_at_the_top_keeps_waiting(share):
+    a, shared = share
+    (shared / "RESULT.md").write_text("draft")
+    quiet(shared)
+    (shared / "still-writing.md").write_text("x")
+    assert status(a)[0]["unsignalled"] is False
+
+
+def test_unsignalled_result_is_collected_once(share):
+    a, shared = share
+    (shared / "RESULT.md").write_text("forgot .done")
+    quiet(shared)
+    code, out, _ = run(a, "fetch", "ms-abc23")
+    assert code == 0 and "RESULT.md" in zipfile.ZipFile(io.BytesIO(out)).namelist()
+    assert status(a)[0]["unsignalled"] is False
+    assert run(a, "fetch", "ms-abc23")[0] == 1
+
+    (shared / "RESULT.md").write_text("did more, forgot again")
+    quiet(shared)
+    assert status(a)[0]["unsignalled"] is True
+
+
+def test_session_end_collects_without_waiting(env, share):
+    a, shared = share
+    (shared / "RESULT.md").write_text("forgot .done")
+    (env / "tasks" / "ms-abc23" / "exit").write_text("0\n")
+    assert status(parse_args(["--tasks-dir", str(a.tasks_dir), "--share-root", str(a.share_root), "--quiet-period", "0"]))[0]["unsignalled"] is True
+
+
+def test_quiet_period_zero_waits_for_session_end(share):
+    a, shared = share
+    (shared / "RESULT.md").write_text("forgot .done")
+    quiet(shared, 10**6)
+    a0 = parse_args(["--tasks-dir", str(a.tasks_dir), "--share-root", str(a.share_root), "--quiet-period", "0"])
+    assert status(a0)[0]["unsignalled"] is False
+
+
+def test_signalled_delivery_records_its_result(share):
+    a, shared = share
+    (shared / "RESULT.md").write_text("properly done")
+    (shared / ".done").touch()
+    quiet(shared)
+    assert run(a, "fetch", "ms-abc23")[0] == 0
+    age(shared, 700)
+    entry = status(a)[0]
+    assert entry["ready"] is False and entry["unsignalled"] is False
+
+
+def test_result_symlink_is_not_output(env, share):
+    a, shared = share
+    (env / "elsewhere.md").write_text("x")
+    (shared / "RESULT.md").symlink_to(env / "elsewhere.md")
+    quiet(shared)
+    assert status(a)[0]["unsignalled"] is False
