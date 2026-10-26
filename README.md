@@ -529,7 +529,6 @@ To build the plugin locally, run `mbc build` in `plugin/`.
 
 ### Releasing
 
-1. Set the new version in both `plugin/maubot.yaml` and `pyproject.toml`, and merge that.
-2. Tag the merge as `v<version>` and push the tag.
+Set the new version in both `plugin/maubot.yaml` and `pyproject.toml`, and merge that to `main`.
 
-[`.gitea/workflows/release.yml`](.gitea/workflows/release.yml) then builds the plugin on a `dejima-confined` runner and attaches it to the release for that tag. It fails if the tag doesn't match both versions. It uses the job's automatic `GITEA_TOKEN`, so Actions must be enabled for the repository, and the token must be allowed to create releases.
+[`.gitea/workflows/release.yml`](.gitea/workflows/release.yml) runs on every push to `main`. When the version has no `v<version>` tag yet, it creates the release, and with it the tag at that commit. It then builds the plugin on a `dejima-confined` runner and attaches it to the release. A push that doesn't change the version releases nothing. Pushing a `v<version>` tag by hand releases that tag the same way. The workflow fails if the two versions disagree, or if a pushed tag doesn't match them. It uses the job's automatic `GITEA_TOKEN`, so Actions must be enabled for the repository, and the token must be allowed to create releases.

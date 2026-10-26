@@ -1,5 +1,10 @@
-# Builds the maubot plugin and attaches it to a release when a version tag is
-# pushed, so installing or updating the bot needs no local build.
+# Releases each new version: builds the maubot plugin and attaches it to a
+# release, so installing or updating the bot needs no local build.
+#
+# A push to main whose version has no tag yet creates the release, and with it
+# the v<version> tag at that commit. Creating the tag from here is not left to a
+# second workflow, because Gitea doesn't start workflows from events caused by a
+# job's own token. Pushing a v* tag by hand releases that tag the same way.
 #
 # A .mbp is a zip of maubot.yaml, the plugin's modules and its extra files,
 # which is all `mbc build` writes. The stdlib's zipfile CLI builds the same
@@ -9,6 +14,8 @@ name: release
 
 on:
   push:
+    branches:
+      - main
     tags:
       - "v*"
 
@@ -21,33 +28,60 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Check the tag matches the versions in the repository
+      - name: Work out the version to release
+        id: version
+        env:
+          TOKEN: ${{ secrets.GITEA_TOKEN }}
         run: |
           plugin="$(sed -n 's/^version: *//p' plugin/maubot.yaml)"
           package="$(sed -n 's/^version = "\(.*\)"/\1/p' pyproject.toml)"
-          if [ "v$plugin" != "$GITHUB_REF_NAME" ] || [ "v$package" != "$GITHUB_REF_NAME" ]; then
-            echo "tag $GITHUB_REF_NAME does not match plugin/maubot.yaml ($plugin) and pyproject.toml ($package)" >&2
+          if [ "$plugin" != "$package" ]; then
+            echo "plugin/maubot.yaml ($plugin) and pyproject.toml ($package) disagree on the version" >&2
             exit 1
           fi
+          tag="v$plugin"
+          case "$GITHUB_REF" in
+            refs/tags/*)
+              if [ "$GITHUB_REF_NAME" != "$tag" ]; then
+                echo "tag $GITHUB_REF_NAME does not match the version in the repository ($plugin)" >&2
+                exit 1
+              fi ;;
+            *)
+              if curl -fsS -o /dev/null -H "Authorization: token $TOKEN" \
+                "$GITHUB_SERVER_URL/api/v1/repos/$GITHUB_REPOSITORY/tags/$tag"; then
+                echo "$tag already exists, so there is nothing new to release"
+                echo "release=false" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi ;;
+          esac
+          echo "TAG=$tag" >> "$GITHUB_ENV"
+          echo "release=true" >> "$GITHUB_OUTPUT"
 
       - name: Build the plugin
+        if: steps.version.outputs.release == 'true'
         working-directory: plugin
         run: |
           id="$(sed -n 's/^id: *//p' maubot.yaml)"
-          echo "MBP=$id-$GITHUB_REF_NAME.mbp" >> "$GITHUB_ENV"
-          python3 -m zipfile -c "../$id-$GITHUB_REF_NAME.mbp" maubot.yaml meeseeks_bot base-config.yaml
-          python3 -m zipfile -l "../$id-$GITHUB_REF_NAME.mbp"
+          echo "MBP=$id-$TAG.mbp" >> "$GITHUB_ENV"
+          python3 -m zipfile -c "../$id-$TAG.mbp" maubot.yaml meeseeks_bot base-config.yaml
+          python3 -m zipfile -l "../$id-$TAG.mbp"
 
       - name: Attach it to the release
+        if: steps.version.outputs.release == 'true'
         env:
           TOKEN: ${{ secrets.GITEA_TOKEN }}
         run: |
           api="$GITHUB_SERVER_URL/api/v1/repos/$GITHUB_REPOSITORY"
           auth="Authorization: token $TOKEN"
-          # A rerun finds the release the first run created.
-          if ! release="$(curl -fsS -H "$auth" "$api/releases/tags/$GITHUB_REF_NAME")"; then
+          # A rerun finds the release the first run created. Creating one with a
+          # target creates its tag there too, when the tag doesn't exist yet.
+          if ! release="$(curl -fsS -H "$auth" "$api/releases/tags/$TAG")"; then
             release="$(curl -fsS -X POST -H "$auth" -H "Content-Type: application/json" \
-              -d "{\"tag_name\": \"$GITHUB_REF_NAME\", \"name\": \"$GITHUB_REF_NAME\"}" "$api/releases")"
+              -d "{\"tag_name\": \"$TAG\", \"name\": \"$TAG\", \"target_commitish\": \"$GITHUB_SHA\"}" "$api/releases")"
+          fi
+          if printf '%s' "$release" | python3 -c 'import json, os, sys; sys.exit(not any(a["name"] == os.environ["MBP"] for a in json.load(sys.stdin)["assets"]))'; then
+            echo "$MBP is already attached"
+            exit 0
           fi
           id="$(printf '%s' "$release" | python3 -c 'import json, sys; print(json.load(sys.stdin)["id"])')"
           curl -fsS -X POST -H "$auth" -F "attachment=@$MBP" "$api/releases/$id/assets?name=$MBP"
