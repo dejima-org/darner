@@ -68,15 +68,14 @@ This installs `~/.local/bin/meeseeks-launch`. Make sure dejima can start a sessi
 - Acknowledge CRITICAL audit findings with `dejima-audit ack`.
 - Pre-record decisions for any credential-shaped values dejima's staging scan flags.
 - Run `sudo loginctl enable-linger "$USER"` (or set `KillUserProcesses=no`), so the tmux server outlives the ssh connection.
-- Pre-answer Claude Code's startup questions. Each isolated session gets a copy of your `~/.claude.json`, narrowed to its working directory `/dejima/work`. Without an entry for that directory, Claude Code asks whether to trust the folder. It also offers its fullscreen renderer until it has done so three times, and a copy never remembers that. With Claude Code closed on this host, record both answers:
+- Pre-answer Claude Code's fullscreen renderer offer. Each isolated session gets a throwaway copy of your `~/.claude.json`, so Claude Code keeps offering the renderer, which it does until it has shown the offer three times. With Claude Code closed on this host, record that it has:
 
   ```sh
   cp ~/.claude.json ~/.claude.json.bak
-  jq '.projects["/dejima/work"].hasTrustDialogAccepted = true | .fullscreenUpsellSeenCount = 3' \
-    ~/.claude.json.bak > ~/.claude.json
+  jq '.fullscreenUpsellSeenCount = 3' ~/.claude.json.bak > ~/.claude.json
   ```
 
-  `/dejima/work` is the empty, container-local directory dejima creates for each isolated session, so trusting it trusts no files of yours.
+  dejima marks an isolated session's working directory, `/dejima/work`, as trusted (dejima #428, after release 2026.10.14). With an older dejima, Claude Code also asks whether to trust that folder. Then add `| .projects["/dejima/work"].hasTrustDialogAccepted = true` to the `jq` filter. The directory is empty and container-local, so trusting it trusts no files of yours.
 
 Optionally, add a `[identity.meeseeks]` section to dejima's config, for the git name and keys every meeseeks session should act as (see dejima's configuration docs). Then add `--identity meeseeks` to the launcher options in step 4.
 
