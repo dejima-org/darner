@@ -740,6 +740,7 @@ python3 -c 'import json, sys; print(json.dumps(sys.argv[1:]))' "$@" >> "$FAKE_AL
 case "$*" in
     *blocked.example*) echo "blocked.example: unreachable after allowing" >&2; exit 1 ;;
     *quiet.example*) echo "WARNING: quiet.example is still NOT reachable (curl exit 28)." >&2; exit 2 ;;
+    *wordy.example*) python3 -c 'import sys; sys.stderr.write("explained at length " * 40 + "the end")'; exit 2 ;;
 esac
 """
 
@@ -988,3 +989,10 @@ def test_permitted_but_unverified_domain_counts_as_allowed(env, allow_env):
     assert result["unverified"] == [{"domain": "quiet.example", "warning": "WARNING: quiet.example is still NOT reachable (curl exit 28)."}]
     assert "allowed but not reachable on port 443 when checked: quiet.example" in (env / "tmux.log.buffer").read_text()
     assert json.loads((a.tasks_dir / "ms-abc23" / "domains-granted").read_text()) == ["quiet.example"]
+
+
+def test_dejima_allow_message_reaches_the_requester_whole(env, allow_env):
+    a, shared = allow_env
+    request_domains(a, shared, "wordy.example\n")
+    result = json.loads(decide(a, "allow", 1, {"requester": "@a:example.org", "domains": ["wordy.example"]})[1])
+    assert result["unverified"][0]["warning"].endswith("the end")

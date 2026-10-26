@@ -701,7 +701,7 @@ def allow_domains(args: argparse.Namespace, task_id: str, number: int, data: obj
             continue
         argv = [dejima_allow, "--container", containers[0], *(["--internal"] if entry["internal"] else []), entry["domain"]]
         result = subprocess.run(argv, capture_output=True, text=True)
-        message = archive.clean_text(result.stderr.encode(), 300)
+        message = archive.clean_text(result.stderr.encode(), 2000)
         # dejima-allow exits 2 when the permit landed but its check that the
         # domain answers on 443 failed, which a service on another port fails
         # spuriously. The domain is allowed either way.
