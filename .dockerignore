@@ -1,0 +1,4 @@
+*
+!pyproject.toml
+!meeseeks/
+**/__pycache__
