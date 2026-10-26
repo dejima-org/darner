@@ -12,6 +12,7 @@ from mautrix.types import (
     Event,
     EventType,
     FileInfo,
+    Format,
     MediaMessageEventContent,
     MessageEvent as RawMessageEvent,
     MessageEventContent,
@@ -20,10 +21,15 @@ from mautrix.types import (
 )
 from mautrix.util.config import BaseProxyConfig, ConfigUpdateHelper
 
+from .markdown import render
 from .parse import ParseError, parse_reply, strip_mention
 
 TASK_ID = re.compile(r"ms-[a-z2-7]{5}")
+# Marks each of the bot's messages about a task, so a reply to any of them can name it.
+TASK_TAG = "io.meeseeks.task"
 PILL = re.compile(r'<a\s[^>]*href="https://matrix\.to/#/([^"?]+)[^"]*"[^>]*>(.*?)</a>', re.IGNORECASE | re.DOTALL)
+STOP = re.compile(r"stop(?:\s+(ms-[a-z2-7]{5}))?", re.IGNORECASE)
+STOP_HOW = "To stop a session, reply `stop` with a mention to one of my messages about it, or send `stop ms-xxxxx` with a mention."
 NO_TASK = "Tell me the task after the mention, or reply to a note to make it the task. Send `help` with a mention for usage."
 
 USAGE = """\
@@ -48,6 +54,8 @@ allow: pypi.org, files.pythonhosted.org
 ```
 
 **Updates:** I reply when the session starts, when it delivers output (a summary and a zip), when it needs something from you, and when it ends. When a help request says "Reply to this message to answer", reply to it and your answer is typed into the session.
+
+**Stop a session:** reply `stop` with a mention to any of my messages about it, or send `stop ms-xxxxx` with a mention.
 
 Only allowlisted users can start tasks, and the note must be from one of them too. Anything the agent writes is untrusted.
 """
@@ -170,7 +178,9 @@ class MeeseeksBot(Plugin):
             text = f"Started {data['id']} → {data['target']}"
             if data.get("link"):
                 text += f"\nOpen the session: {data['link']}"
-            return text, True
+            content = TextMessageEventContent(msgtype=MessageType.TEXT, body=text)
+            content[TASK_TAG] = data["id"]
+            return content, True
         error = data.get("error") if isinstance(data, dict) else None
         return f"Failed: {error or f'HTTP {resp.status}'}", False
 
@@ -187,8 +197,12 @@ class MeeseeksBot(Plugin):
         content.trim_reply_fallback()
         names = self._names(evt)
         mentioned = self._mentioned(evt, names)
-        if mentioned and strip_mention(content.body, names).strip().lower() == "help":
+        command = strip_mention(content.body, names).strip()
+        if mentioned and command.lower() == "help":
             await evt.reply(await self._usage())
+            return
+        if mentioned and (stop := STOP.fullmatch(command)):
+            await self._respond(evt, self._stop(evt, stop[1] and stop[1].lower()))
             return
         if not content.get_reply_to():
             if mentioned:
@@ -225,6 +239,25 @@ class MeeseeksBot(Plugin):
         task = tag.get("task") if isinstance(tag, dict) else None
         return task if isinstance(task, str) and TASK_ID.fullmatch(task) else None
 
+    def _tagged_task(self, replied: Event | None) -> str | None:
+        """The task one of the bot's own messages is about."""
+        if not isinstance(replied, RawMessageEvent) or replied.sender != self.client.mxid:
+            return None
+        task = replied.content.get(TASK_TAG)
+        return task if isinstance(task, str) and TASK_ID.fullmatch(task) else self._help_task(replied)
+
+    async def _stop(self, evt: MessageEvent, task: str | None) -> tuple[str, bool]:
+        if task is None and evt.content.get_reply_to():
+            task = self._tagged_task(await self.client.get_event(evt.room_id, evt.content.get_reply_to()))
+        if task is None:
+            return STOP_HOW, False
+        async with self._api("POST", f"/v1/tasks/{task}/stop") as resp:
+            if resp.ok:
+                return f"Stopped {task}.", True
+            data = await resp.json(content_type=None)
+        error = data.get("error") if isinstance(data, dict) else None
+        return f"Failed: {error or f'HTTP {resp.status}'}", False
+
     async def _answer(self, evt: MessageEvent, task: str) -> tuple[str | None, bool]:
         text = strip_mention(evt.content.body, self._names(evt)).strip()
         if not text:
@@ -237,7 +270,9 @@ class MeeseeksBot(Plugin):
         error = data.get("error") if isinstance(data, dict) else None
         return f"Failed: {error or f'HTTP {resp.status}'}", False
 
-    async def _respond(self, evt: MessageEvent, action: Awaitable[tuple[str | None, bool]]) -> None:
+    async def _respond(
+        self, evt: MessageEvent, action: Awaitable[tuple[str | TextMessageEventContent | None, bool]]
+    ) -> None:
         pending = await evt.react("⏳")
         try:
             text, ok = await action
@@ -261,7 +296,7 @@ class MeeseeksBot(Plugin):
                 self.log.warning("Couldn't deliver event %s", e.get("seq"), exc_info=True)
 
     async def _deliver(self, e: dict) -> None:
-        room, ref = e["source"]["channel"], e["source"]["ref"]
+        room, ref = e["source"]["channel"], (e["source"]["ref"], e["id"])
         if e["type"] == "ended":
             await self._notice(room, ref, f"{e['id']} ended.")
             return
@@ -275,27 +310,26 @@ class MeeseeksBot(Plugin):
                 data = await resp.read()
         unsignalled = ", collected without the agent's done signal" if e.get("signalled") is False else ""
         label = f"Output from {e['id']}{unsignalled} (written by the agent, treat as untrusted)"
-        await self._notice(room, ref, f"{label}:\n\n{e['summary']}" if e["summary"] else f"{label}.")
+        await self._send(room, ref, _agent_notice(label, e["summary"]))
         if data is not None:
             await self._upload(room, ref, f"{e['id']}-{e['seq']}.zip", data)
 
-    async def _help(self, room: str, ref: str, e: dict) -> None:
+    async def _help(self, room: str, ref: tuple[str, str], e: dict) -> None:
         label = f"{e['id']} needs help (written by the agent, treat as untrusted)"
-        text = f"{label}:\n\n{e['summary']}" if e["summary"] else f"{label}."
-        content = TextMessageEventContent(msgtype=MessageType.NOTICE)
         link = e.get("link")
         if e["answerable"]:
-            content.body = f"{text}\n\nReply to this message to answer"
-            content.body += f", or open the session: {link}" if link else "."
-            content["io.meeseeks.help"] = {"task": e["id"]}
+            footer = "Reply to this message to answer" + (f", or open the session: {link}" if link else ".")
         elif link:
-            content.body = f"{text}\n\nOpen the session to respond: {link}"
+            footer = f"Open the session to respond: {link}"
         else:
             target = e["target"] or f"the {e['id']} session"
-            content.body = f"{text}\n\nAttach to {target} to respond."
+            footer = f"Attach to {target} to respond."
+        content = _agent_notice(label, e["summary"], footer)
+        if e["answerable"]:
+            content["io.meeseeks.help"] = {"task": e["id"]}
         await self._send(room, ref, content)
 
-    async def _upload(self, room: str, ref: str, name: str, data: bytes) -> None:
+    async def _upload(self, room: str, ref: tuple[str, str], name: str, data: bytes) -> None:
         try:
             limit = (await self.client.get_media_repo_config()).upload_size
         except Exception:
@@ -321,14 +355,29 @@ class MeeseeksBot(Plugin):
             content.url = await self.client.upload_media(data, "application/zip", name)
         await self._send(room, ref, content)
 
-    async def _notice(self, room: str, ref: str, text: str) -> None:
+    async def _notice(self, room: str, ref: tuple[str, str], text: str) -> None:
         await self._send(room, ref, TextMessageEventContent(msgtype=MessageType.NOTICE, body=text))
 
-    async def _send(self, room: str, ref: str, content: MessageEventContent) -> None:
-        content.set_reply(ref)
+    async def _send(self, room: str, ref: tuple[str, str], content: MessageEventContent) -> None:
+        """Reply to the event a task came from, marking the message as about that task."""
+        event_id, task = ref
+        content.set_reply(event_id)
+        content[TASK_TAG] = task
         # The text is agent-written, so it mustn't ping anyone
         content["m.mentions"] = {}
         await self.client.send_message(room, content)
+
+
+def _agent_notice(label: str, text: str, footer: str = "") -> TextMessageEventContent:
+    """A notice quoting agent-written markdown, rendered so it can't mislead."""
+    if text:
+        body, html_body = f"{label}:\n\n{text}", f"<p>{html.escape(label)}:</p>{render(text)}"
+    else:
+        body, html_body = f"{label}.", f"<p>{html.escape(label)}.</p>"
+    if footer:
+        body += f"\n\n{footer}"
+        html_body += f"<p>{html.escape(footer)}</p>"
+    return TextMessageEventContent(msgtype=MessageType.NOTICE, body=body, format=Format.HTML, formatted_body=html_body)
 
 
 def _failure(e: Exception) -> str:

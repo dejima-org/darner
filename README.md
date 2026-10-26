@@ -366,6 +366,8 @@ Or send the task directly, in a message that mentions the bot and isn't a reply.
 
 `@meeseeks help` replies with this usage, including the available context blurbs.
 
+To end a session, reply `@meeseeks stop` to any of the bot's messages about it, or send `@meeseeks stop ms-xxxxx`. The launcher stops the session's sandbox container, so dejima exits and cleans up as usual, then closes its tmux window.
+
 The note is the task. The rest of the reply, minus the mention and the keyword lines, is extra context. Keyword lines take comma or space separated values and can repeat:
 
 | keyword | meaning |
@@ -411,7 +413,7 @@ The session is presumed hostile, and so is everything it writes to `~/shared`. C
 - **Signal:** a `.done` is consumed once. The launcher records which one it consumed, so a session that makes `.done` impossible to delete can't trigger repeat deliveries. A new `.done` signals new output.
 - **Entries:** mode `0644`, a fixed timestamp, and no symlink or directory entries.
 - **Re-check:** the API verifies the archive again and rebuilds it with its own writer before storing it, so what it serves is exactly what it checked.
-- **Delivery:** the bot sends the summary as plain text with no mentions, so the agent can't hide a link behind other text or ping the room.
+- **Delivery:** the bot renders the summary's markdown with raw HTML escaped, and shows every link and image with its destination in plain sight, so the agent can't hide where a link goes. Messages carry no mentions, so the text can't ping the room.
 
 `HELP.md` is read the same way, as a regular file only, at most 16 KiB. Its text is sent as plain text, like the summary.
 
@@ -442,9 +444,11 @@ The files are still agent-written: treat what is in the zip as untrusted. Neithe
 | `--answers` | off | allow answering help requests from chat |
 | `--paste-delay SECONDS` | 0.5 | wait between pasting an answer and pressing Enter |
 | `--quiet-period SECONDS` | 600 | after this long without changes in `~/shared`, collect a `RESULT.md` the agent never signalled with `.done`; 0 waits for the session to end |
+| `--docker PATH` | `docker` | the docker CLI, used to stop a session's container |
+| `--stop-timeout SECONDS` | 60 | how long a stopped session may take to exit before dejima itself is ended |
 | `--help-interval SECONDS` | 300 | least time between a task's help requests, so a session can't flood the room |
 
-The API sends one of these commands, which arrive as `SSH_ORIGINAL_COMMAND`: none (launch the job on stdin), `status`, `fetch <id>`, `help <id>` or `answer <id>`. Anything else is refused.
+The API sends one of these commands, which arrive as `SSH_ORIGINAL_COMMAND`: none (launch the job on stdin), `status`, `fetch <id>`, `help <id>`, `answer <id>` or `stop <id>`. Anything else is refused.
 
 Grants use `dejima --domains FILE` and `--dependencies FILE`, and output collection uses `--shared-path-file FILE`. A task without grants passes neither grant flag.
 
@@ -495,6 +499,7 @@ Every `poll_interval` seconds the API asks the dejima host for the status of lau
 | `GET /v1/tasks/<id>/outputs/<seq>.zip` | an `output` event's archive (`size` 0 means it was rejected, and `summary` says why) |
 | `POST /v1/events/<seq>/ack` | mark an event delivered |
 | `GET /v1/blurbs` | names of the available context blurbs |
+| `POST /v1/tasks/<id>/stop` | end the task's session and close its tmux window; 409 if it isn't running |
 | `POST /v1/tasks/<id>/answer` | `{text, requester}`: answer the task's outstanding help request; 409 with the reason if the host refuses |
 
 `source` is echoed back as given, so a client knows where to reply without keeping state.

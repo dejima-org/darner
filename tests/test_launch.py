@@ -649,3 +649,87 @@ def test_starting_task_has_no_error(env, share):
     a, _ = share
     (env / "tasks" / "ms-abc23" / "shared-path").unlink()
     assert status(a)[0]["error"] is None
+
+
+FAKE_DOCKER = """#!/bin/sh
+python3 -c 'import json, sys; print(json.dumps(sys.argv[1:]))' "$@" >> "$FAKE_DOCKER_LOG"
+case "$1" in
+    ps) [ -n "$FAKE_DOCKER_PS" ] && echo "$FAKE_DOCKER_PS" ;;
+    stop) [ -n "$FAKE_DOCKER_EXIT" ] && echo 137 > "$FAKE_DOCKER_EXIT" ;;
+esac
+exit 0
+"""
+
+
+@pytest.fixture
+def docker(env, monkeypatch):
+    path = env / "docker"
+    path.write_text(FAKE_DOCKER)
+    path.chmod(0o755)
+    monkeypatch.setenv("FAKE_DOCKER_LOG", str(env / "docker.log"))
+    return path
+
+
+def docker_calls(env):
+    log = env / "docker.log"
+    return [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
+
+
+def test_stop_stops_the_container_then_closes_the_window(env, share, docker, monkeypatch):
+    a, _ = share
+    register_session(env)
+    monkeypatch.setenv("FAKE_DOCKER_PS", "c0ffee")
+    monkeypatch.setenv("FAKE_DOCKER_EXIT", str(env / "tasks" / "ms-abc23" / "exit"))
+    (env / "tmux.log").write_text("")
+    code, _, err = run(a, "--docker", str(docker), "stop", "ms-abc23")
+    assert code == 0, err
+    assert docker_calls(env) == [
+        ["ps", "-q", "--filter", "volume=dejima_isolated-work-0123456789abcdef"],
+        ["stop", "c0ffee"],
+    ]
+    assert tmux_calls(env) == [["kill-window", "-t", "@7"]]
+
+
+def test_stop_before_the_container_exists_ends_dejima(env, share, docker):
+    a, _ = share
+    starting = subprocess.Popen(["sleep", "30"])
+    (env / "tasks" / "ms-abc23" / "pid").write_text(str(starting.pid))
+    (env / "tmux.log").write_text("")
+    code, _, err = run(a, "--docker", str(docker), "--stop-timeout", "1", "stop", "ms-abc23")
+    assert code == 0, err
+    assert starting.wait(timeout=5) == -15
+    assert tmux_calls(env) == [["kill-window", "-t", "@7"]]
+
+
+def test_run_id_comes_from_compose_environment_without_remote_access(env, share, docker, monkeypatch):
+    a, _ = share
+    dejima = subprocess.Popen(
+        ["sh", "-c", "SANDBOX_ISOLATED_WORK=dejima_isolated-work-fedcba9876543210 sleep 30 & wait"],
+        start_new_session=True,
+    )
+    try:
+        (env / "tasks" / "ms-abc23" / "pid").write_text(str(dejima.pid))
+        monkeypatch.setenv("FAKE_DOCKER_PS", "c0ffee")
+        monkeypatch.setenv("FAKE_DOCKER_EXIT", str(env / "tasks" / "ms-abc23" / "exit"))
+        __import__("time").sleep(0.2)
+        assert run(a, "--docker", str(docker), "stop", "ms-abc23")[0] == 0
+        assert docker_calls(env)[0][-1] == "volume=dejima_isolated-work-fedcba9876543210"
+    finally:
+        os.killpg(dejima.pid, __import__("signal").SIGKILL)
+        dejima.wait()
+
+
+def test_stop_refuses_a_task_that_is_not_running(env, share, docker):
+    a, _ = share
+    (env / "tasks" / "ms-abc23" / "exit").write_text("0\n")
+    code, _, err = run(a, "--docker", str(docker), "stop", "ms-abc23")
+    assert code == 1 and "not running" in err
+    assert docker_calls(env) == []
+
+
+def test_exec_records_dejima_pid(env):
+    launch(args(env), {"id": "ms-abc23", "prompt": "p"})
+    task = env / "tasks" / "ms-abc23"
+    subprocess.run([sys.executable, "-m", "meeseeks.launch", "--exec", str(task)], cwd=Path(__file__).parent.parent, check=True,
+                   env={**os.environ, "FAKE_DEJIMA_LOG": str(env / "dejima.log")})
+    assert int((task / "pid").read_text()) > 0
