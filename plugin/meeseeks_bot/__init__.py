@@ -5,6 +5,7 @@ from urllib.parse import unquote
 
 from maubot import MessageEvent, Plugin
 from maubot.handlers import event
+from mautrix.api import Method, Path
 from mautrix.errors import DecryptionError
 from mautrix.types import (
     EncryptedEvent,
@@ -112,20 +113,32 @@ class MeeseeksBot(Plugin):
         # The note becomes the agent's instructions, so it must come from someone trusted to give them.
         if note.sender not in self.config["allowlist"]:
             raise NoteError(f"the note is from {note.sender}, who isn't allowed to start tasks")
-        relations = (note.unsigned.get("m.relations") if note.unsigned else None) or {}
-        if edit := relations.get("m.replace"):
-            if "content" in edit:
-                edit = Event.deserialize({"room_id": note.room_id, **edit})
-            else:
-                edit = await self.client.get_event(note.room_id, edit["event_id"])
-            if isinstance(edit, EncryptedEvent) and self.client.crypto:
+        edited = await self._latest_edit(note)
+        return note.content.body if edited is None else edited
+
+    async def _latest_edit(self, note: Event) -> str | None:
+        """The text of the note's latest edit by its author, if it has one.
+
+        Asked of the relations endpoint rather than read from the event's
+        bundled relations, which a decrypted event doesn't carry.
+        """
+        path = Path.v1.rooms[note.room_id].relations[note.event_id]["m.replace"]
+        try:
+            resp = await self.client.api.request(Method.GET, path, query_params={"dir": "b", "limit": "50"})
+        except Exception as e:
+            raise NoteError(f"couldn't check the note for edits: {e}")
+        for raw in resp.get("chunk", []):
+            edit = Event.deserialize({"room_id": note.room_id, **raw})
+            if edit.sender != note.sender:
+                continue
+            if isinstance(edit, EncryptedEvent):
                 try:
                     edit = await self.client.crypto.decrypt_megolm_event(edit)
-                except DecryptionError:
-                    raise NoteError("couldn't decrypt the note")
-            if isinstance(edit, RawMessageEvent) and edit.sender == note.sender:
+                except (DecryptionError, AttributeError):
+                    raise NoteError("couldn't decrypt the note's latest edit")
+            if isinstance(edit, RawMessageEvent):
                 return edit.content.body
-        return note.content.body
+        return None
 
     async def _submit(self, evt: MessageEvent, replied: Event | None) -> tuple[str, bool]:
         try:

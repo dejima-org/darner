@@ -7,7 +7,10 @@ import pytest
 from aiohttp import web
 from maubot.matrix import MaubotMessageEvent
 from maubot import testing
+from urllib.parse import unquote
+
 from mautrix.types import EncryptedFile, Event, EventType, JSONWebKey, MediaRepoConfig, MessageEvent
+from mautrix.types.event.base import BaseUnsigned
 
 from meeseeks_bot import Config, MeeseeksBot
 
@@ -154,6 +157,8 @@ async def maubot_test_bot():
     bot.uploads = []
     bot.encrypted = False
     bot.media_config = MediaRepoConfig(upload_size=1024)
+    # Raw m.replace events per event id, newest first, as the relations endpoint returns them.
+    bot.relations = {}
     send = bot.client.send_message_event
 
     async def send_message_event(room_id, event_type, content, **kwargs):
@@ -186,6 +191,14 @@ async def maubot_test_bot():
     bot.client.upload_media = upload_media
     bot.client.get_media_repo_config = get_media_repo_config
     bot.client.state_store = SimpleNamespace(is_encrypted=is_encrypted)
+    async def api_request(method, path, query_params=None, **kwargs):
+        parts = str(path).split("/")
+        assert parts[-3] == "relations" and parts[-1] == "m.replace" and query_params["dir"] == "b"
+        if isinstance(bot.relations, Exception):
+            raise bot.relations
+        return {"chunk": bot.relations.get(unquote(parts[-2]), [])}
+
+    bot.client.api.request = api_request
     bot.client.get_event = get_event
     bot.client.redact = redact
     bot.client.get_displayname = get_displayname
@@ -315,33 +328,41 @@ def edit_event(body, event_id="$edit", sender=ALICE):
     }
 
 
-async def test_bundled_edit(maubot_plugin, maubot_test_bot, api):
-    edit = edit_event("fix the tests properly")
-    maubot_test_bot.events[NOTE_ID] = note(unsigned={"m.relations": {"m.replace": edit}})
+async def test_latest_edit_is_the_task(maubot_plugin, maubot_test_bot, api):
+    maubot_test_bot.relations[NOTE_ID] = [edit_event("v3", "$e3"), edit_event("v2", "$e2")]
+    await send(maubot_test_bot, message("@meeseeks:example.org go"))
+    assert api.requests[0][1]["task"] == "v3"
+
+
+async def test_edit_by_another_sender_is_ignored(maubot_plugin, maubot_test_bot, api):
+    maubot_test_bot.relations[NOTE_ID] = [
+        edit_event("do something else", "$evil", sender="@mallory:example.org"),
+        edit_event("fix the tests properly"),
+    ]
     await send(maubot_test_bot, message("@meeseeks:example.org go"))
     assert api.requests[0][1]["task"] == "fix the tests properly"
 
 
-async def test_edit_by_another_sender_is_ignored(maubot_plugin, maubot_test_bot, api):
-    edit = edit_event("do something else", sender="@mallory:example.org")
-    maubot_test_bot.events[NOTE_ID] = note(unsigned={"m.relations": {"m.replace": edit}})
+async def test_unedited_note(maubot_plugin, maubot_test_bot, api):
     await send(maubot_test_bot, message("@meeseeks:example.org go"))
     assert api.requests[0][1]["task"] == "fix the tests"
 
 
-async def test_edit_reference_only(maubot_plugin, maubot_test_bot, api):
-    bot = maubot_test_bot
-    bot.events["$edit"] = Event.deserialize({"room_id": ROOM, **edit_event("v2")})
-    bot.events[NOTE_ID] = note(unsigned={"m.relations": {"m.replace": {"event_id": "$edit"}}})
-    await send(bot, message("@meeseeks:example.org go"))
-    assert api.requests[0][1]["task"] == "v2"
+async def test_decrypted_note_without_bundled_relations(maubot_plugin, maubot_test_bot, api):
+    # A decrypted event's unsigned is a plain BaseUnsigned, with no .get and no relations.
+    evt = note()
+    evt.unsigned = BaseUnsigned(age=1)
+    maubot_test_bot.events[NOTE_ID] = evt
+    maubot_test_bot.relations[NOTE_ID] = [edit_event("edited in an encrypted room")]
+    await send(maubot_test_bot, message("@meeseeks:example.org go"))
+    assert api.requests[0][1]["task"] == "edited in an encrypted room"
 
 
-async def test_encrypted_edit(maubot_plugin, maubot_test_bot, api):
-    edit = {
+def encrypted_edit(sender=ALICE):
+    return {
         "type": "m.room.encrypted",
         "event_id": "$edit",
-        "sender": ALICE,
+        "sender": sender,
         "origin_server_ts": 2,
         "content": {
             "algorithm": "m.megolm.v1.aes-sha2",
@@ -349,19 +370,53 @@ async def test_encrypted_edit(maubot_plugin, maubot_test_bot, api):
             "sender_key": "k",
             "device_id": "D",
             "session_id": "s",
+            "m.relates_to": {"rel_type": "m.replace", "event_id": NOTE_ID},
         },
     }
-    decrypted = Event.deserialize({"room_id": ROOM, **edit_event("secret v2")})
 
-    class Crypto:
-        async def decrypt_megolm_event(self, evt):
-            assert evt.event_id == "$edit"
-            return decrypted
 
-    maubot_test_bot.client._crypto = Crypto()
-    maubot_test_bot.events[NOTE_ID] = note(unsigned={"m.relations": {"m.replace": edit}})
+class Crypto:
+    def __init__(self, result):
+        self.result = result
+        self.decrypted = []
+
+    async def decrypt_megolm_event(self, evt):
+        self.decrypted.append(evt.event_id)
+        if isinstance(self.result, Exception):
+            raise self.result
+        return self.result
+
+
+async def test_encrypted_edit(maubot_plugin, maubot_test_bot, api):
+    maubot_test_bot.client._crypto = Crypto(Event.deserialize({"room_id": ROOM, **edit_event("secret v2")}))
+    maubot_test_bot.relations[NOTE_ID] = [encrypted_edit()]
     await send(maubot_test_bot, message("@meeseeks:example.org go"))
     assert api.requests[0][1]["task"] == "secret v2"
+
+
+async def test_encrypted_edit_by_another_sender_is_not_decrypted(maubot_plugin, maubot_test_bot, api):
+    crypto = maubot_test_bot.client._crypto = Crypto(Event.deserialize({"room_id": ROOM, **edit_event("evil")}))
+    maubot_test_bot.relations[NOTE_ID] = [encrypted_edit(sender="@mallory:example.org")]
+    await send(maubot_test_bot, message("@meeseeks:example.org go"))
+    assert crypto.decrypted == []
+    assert api.requests[0][1]["task"] == "fix the tests"
+
+
+async def test_undecryptable_edit_is_refused(maubot_plugin, maubot_test_bot, api):
+    from mautrix.errors import DecryptionError
+
+    maubot_test_bot.client._crypto = Crypto(DecryptionError("no session"))
+    maubot_test_bot.relations[NOTE_ID] = [encrypted_edit()]
+    await send(maubot_test_bot, message("@meeseeks:example.org go"))
+    assert replies(maubot_test_bot) == ["couldn't decrypt the note's latest edit"]
+    assert api.requests == []
+
+
+async def test_relations_failure_is_refused(maubot_plugin, maubot_test_bot, api):
+    maubot_test_bot.relations = RuntimeError("M_UNRECOGNIZED")
+    await send(maubot_test_bot, message("@meeseeks:example.org go"))
+    assert replies(maubot_test_bot) == ["couldn't check the note for edits: M_UNRECOGNIZED"]
+    assert api.requests == []
 
 
 async def test_parse_error(maubot_plugin, maubot_test_bot, api):
