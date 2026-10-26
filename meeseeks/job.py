@@ -32,8 +32,10 @@ OUTPUT_INSTRUCTIONS = (
     "If you need something from the requester to continue, write what you need to ~/shared/HELP.md, "
     "run `touch ~/shared/.help`, and end your turn. Their response will arrive as your next message.\n\n"
     "If you need to reach domains the sandbox blocks, write them to ~/shared/DOMAINS, one per line, with "
-    "`internal ` in front of internal ones, then run `touch ~/shared/.domains` and end your turn. The requester "
-    "is shown the list to approve, and you will be told what was allowed."
+    "`internal ` in front of internal ones, then run `touch ~/shared/.domains` and end your turn. A domain is "
+    "internal if it's only reachable inside the requester's network, such as a name under a private domain; if one "
+    "you were allowed still can't be reached, request it again as internal. The requester is shown the list to "
+    "approve, and you will be told what was allowed."
 )
 
 

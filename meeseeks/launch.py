@@ -37,6 +37,7 @@ SIGNALS = {
     "domains": (".domains", "consumed-domains"),
 }
 MAX_DOMAIN_REQUEST = 20
+DOMAINS_QUIET = 30
 
 
 def _backend_default(value: str) -> tuple[str, str]:
@@ -253,7 +254,14 @@ def _consume(fd: int, task_dir: Path, kind: str, signal_id: str) -> None:
 
 
 def _request_allowed(args: argparse.Namespace, task_dir: Path, kind: str) -> bool:
-    """Rate-limit help and domain requests, so a session can't flood the room with them."""
+    """Rate-limit help and domain requests, so a session can't flood the room with them.
+
+    A domain request is limited only while the last one awaits a decision:
+    once it's decided, a new one is how the agent follows up, such as asking
+    again for a domain as internal.
+    """
+    if kind == "domains" and not (task_dir / "domains-pending").exists():
+        return True
     last = task_dir / SIGNALS[kind][1]
     return not last.exists() or time.time() - last.stat().st_mtime >= args.help_interval
 
@@ -313,6 +321,7 @@ def _signals(args: argparse.Namespace, task_dir: Path) -> tuple[dict[str, bool],
         return none, str(e)
     try:
         signals = {kind: _signal(fd, task_dir, kind) is not None for kind in SIGNALS}
+        signals["domains"] = signals["domains"] or _domains_changed(fd, task_dir)
         signals["unsignalled"] = not signals["done"] and _unsignalled(args, fd, task_dir) is not None
     finally:
         os.close(fd)
@@ -563,6 +572,32 @@ def _write_atomic(path: Path, text: str) -> None:
     os.replace(tmp, path)
 
 
+def _domains_file_id(fd: int) -> tuple[str, float] | None:
+    try:
+        st = os.lstat("DOMAINS", dir_fd=fd)
+    except OSError:
+        return None
+    if not stat.S_ISREG(st.st_mode):
+        return None
+    return f"{st.st_dev} {st.st_ino} {st.st_mtime_ns} {st.st_size}", st.st_mtime
+
+
+def _domains_changed(fd: int, task_dir: Path) -> bool:
+    """Whether DOMAINS changed since the last request and has since been left alone.
+
+    An agent that edits its request without signalling .domains again is
+    still asking, so a settled change counts as a request too.
+    """
+    found = _domains_file_id(fd)
+    if found is None:
+        return False
+    file_id, mtime = found
+    recorded = task_dir / "domains-file"
+    if recorded.exists() and recorded.read_text() == file_id:
+        return False
+    return time.time() - mtime >= DOMAINS_QUIET
+
+
 def domain_request(args: argparse.Namespace, task_id: str) -> dict:
     """Read a task's DOMAINS request, and keep the validated list host-side for approval.
 
@@ -573,8 +608,10 @@ def domain_request(args: argparse.Namespace, task_id: str) -> dict:
     fd = open_share(args, task_dir)
     try:
         signal_id = _signal(fd, task_dir, "domains")
-        if signal_id is None or not _request_allowed(args, task_dir, "domains"):
+        asked = signal_id is not None or _domains_changed(fd, task_dir)
+        if not asked or not _request_allowed(args, task_dir, "domains"):
             raise RuntimeError(f"{task_id} has no domain request")
+        found = _domains_file_id(fd)
         raw = archive.read_file(fd, "DOMAINS", 8 * 1024) or b""
         domains, rejected = [], 0
         for line in raw.decode(errors="replace").splitlines():
@@ -594,7 +631,10 @@ def domain_request(args: argparse.Namespace, task_id: str) -> dict:
             _write_atomic(counter, str(number))
             request = {"request": number, "domains": domains, "rejected": rejected}
             _write_atomic(task_dir / "domains-pending", json.dumps(request))
-        _consume(fd, task_dir, "domains", signal_id)
+            if found:
+                _write_atomic(task_dir / "domains-file", found[0])
+        if signal_id:
+            _consume(fd, task_dir, "domains", signal_id)
         return request
     finally:
         os.close(fd)
@@ -652,7 +692,7 @@ def allow_domains(args: argparse.Namespace, task_id: str, number: int, data: obj
     held_file = task_dir / "domains-granted"
     held = json.loads(held_file.read_text()) if held_file.exists() else []
     launched_with = sum(1 for line in (task_dir / "domains").read_text().splitlines() if line.strip())
-    granted, failed = [], []
+    granted, failed, unverified = [], [], []
     for entry in request["domains"]:
         if entry["domain"] not in approved:
             continue
@@ -661,17 +701,27 @@ def allow_domains(args: argparse.Namespace, task_id: str, number: int, data: obj
             continue
         argv = [dejima_allow, "--container", containers[0], *(["--internal"] if entry["internal"] else []), entry["domain"]]
         result = subprocess.run(argv, capture_output=True, text=True)
-        if result.returncode:
-            failed.append({"domain": entry["domain"], "error": archive.clean_text(result.stderr.encode(), 300)})
-        else:
+        message = archive.clean_text(result.stderr.encode(), 300)
+        # dejima-allow exits 2 when the permit landed but its check that the
+        # domain answers on 443 failed, which a service on another port fails
+        # spuriously. The domain is allowed either way.
+        if result.returncode in (0, 2):
             granted.append(entry["domain"])
+            if result.returncode == 2:
+                unverified.append({"domain": entry["domain"], "warning": message})
+        else:
+            failed.append({"domain": entry["domain"], "error": message})
     _write_atomic(held_file, json.dumps(held + granted))
     requester = " ".join(archive.clean_text(data["requester"].encode(), 255).split())
     note = f"Domain request from {requester}: allowed {', '.join(granted) or 'none'}"
     if failed:
-        note += f"; couldn't allow {', '.join(f['domain'] for f in failed)}"
+        note += "; couldn't allow " + "; ".join(f"{f['domain']} ({f['error']})" for f in failed)
+    if unverified:
+        note += "; allowed but not reachable on port 443 when checked: " + "; ".join(
+            f"{u['domain']} ({u['warning']})" for u in unverified
+        )
     told = _tell_agent(args, task_dir, task_id, note + ". Carry on with your task.")
-    return {"granted": granted, "failed": failed, "told": told}
+    return {"granted": granted, "failed": failed, "unverified": unverified, "told": told}
 
 
 def deny_domains(args: argparse.Namespace, task_id: str, number: int, data: object) -> dict:

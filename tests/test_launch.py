@@ -737,7 +737,10 @@ def test_exec_records_dejima_pid(env):
 
 FAKE_DEJIMA_ALLOW = """#!/bin/sh
 python3 -c 'import json, sys; print(json.dumps(sys.argv[1:]))' "$@" >> "$FAKE_ALLOW_LOG"
-case "$*" in *blocked.example*) echo "blocked.example: unreachable after allowing" >&2; exit 1 ;; esac
+case "$*" in
+    *blocked.example*) echo "blocked.example: unreachable after allowing" >&2; exit 1 ;;
+    *quiet.example*) echo "WARNING: quiet.example is still NOT reachable (curl exit 28)." >&2; exit 2 ;;
+esac
 """
 
 
@@ -818,7 +821,7 @@ def test_allow_grants_the_saved_request_within_what_the_api_passes(env, allow_en
     data = {"requester": "@alice:example.org", "domains": ["pypi.org", "mirror.internal.example", "evil.example.com"]}
     code, out, err = decide(a, "allow", 1, data)
     assert code == 0, err
-    assert json.loads(out) == {"granted": ["pypi.org", "mirror.internal.example"], "failed": [], "told": False}
+    assert json.loads(out) == {"granted": ["pypi.org", "mirror.internal.example"], "failed": [], "unverified": [], "told": False}
     dejima_allow = str(env / "bin" / "dejima-allow")
     assert allow_calls(env) == [
         ["--container", "c0ffee", "pypi.org"],
@@ -841,7 +844,8 @@ def test_allow_reports_failures_and_tells_the_agent(env, allow_env):
     assert result["granted"] == ["pypi.org"] and result["told"] is True
     assert result["failed"] == [{"domain": "blocked.example", "error": "blocked.example: unreachable after allowing"}]
     assert (env / "tmux.log.buffer").read_text() == (
-        "Domain request from @alice:example.org: allowed pypi.org; couldn't allow blocked.example. Carry on with your task."
+        "Domain request from @alice:example.org: allowed pypi.org; couldn't allow blocked.example "
+        "(blocked.example: unreachable after allowing). Carry on with your task."
     )
 
 
@@ -936,3 +940,51 @@ def test_status_reports_what_a_session_waits_on(env, asked, allow_env):
     assert status(a)[0]["awaiting_answer"] is True
     request_domains(a, shared, "pypi.org\n")
     assert status(a)[0]["domain_request"] == 1
+
+
+def test_changed_domains_file_is_a_request_once_settled(env, allow_env):
+    a, shared = allow_env
+    (shared / "DOMAINS").write_text("pypi.org\n")
+    assert status(a)[0]["domains"] is False
+    age(shared / "DOMAINS", 60)
+    assert status(a)[0]["domains"] is True
+    code, out, _ = run(a, "domains", "ms-abc23")
+    assert code == 0 and json.loads(out)["domains"] == [{"domain": "pypi.org", "internal": False}]
+    assert status(a)[0]["domains"] is False
+
+
+def test_rerequest_after_a_decision_goes_straight_through(env, allow_env):
+    a, shared = allow_env
+    request_domains(a, shared, "recipes.example.com\n")
+    decide(a, "allow", 1, {"requester": "@a:example.org", "domains": ["recipes.example.com"]})
+    # The agent edits its request without signalling again.
+    (shared / "DOMAINS").write_text("internal recipes.example.com\n")
+    age(shared / "DOMAINS", 60)
+    assert status(a)[0]["domains"] is True
+    request = json.loads(run(a, "domains", "ms-abc23")[1])
+    assert request["request"] == 2 and request["domains"] == [{"domain": "recipes.example.com", "internal": True}]
+
+
+def test_new_request_waits_while_one_is_undecided(env, allow_env):
+    a, shared = allow_env
+    request_domains(a, shared, "pypi.org\n")
+    import time
+
+    time.sleep(0.05)
+    (shared / ".domains").touch()
+    assert status(a)[0]["domains"] is False
+    assert run(a, "domains", "ms-abc23")[0] == 1
+
+
+def test_permitted_but_unverified_domain_counts_as_allowed(env, allow_env):
+    a, shared = allow_env
+    request_domains(a, shared, "internal quiet.example\n")
+    (env / "tmux.log").write_text("")
+    code, out, _ = decide(
+        a, "allow", 1, {"requester": "@a:example.org", "domains": ["quiet.example"]}, "--answers", "--paste-delay", "0"
+    )
+    result = json.loads(out)
+    assert code == 0 and result["granted"] == ["quiet.example"] and result["failed"] == []
+    assert result["unverified"] == [{"domain": "quiet.example", "warning": "WARNING: quiet.example is still NOT reachable (curl exit 28)."}]
+    assert "allowed but not reachable on port 443 when checked: quiet.example" in (env / "tmux.log.buffer").read_text()
+    assert json.loads((a.tasks_dir / "ms-abc23" / "domains-granted").read_text()) == ["quiet.example"]
