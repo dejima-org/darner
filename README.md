@@ -21,22 +21,33 @@ You need:
 - git on the API host, plus either Python 3.11 or newer (to run the API under systemd) or Docker with Compose
 - a maubot server, and a Matrix account for the bot
 
-The examples below use these placeholders; substitute your own:
+### Values you'll need
 
-| placeholder | meaning |
-|---|---|
-| `https://git.example.com/example/meeseeks.git` | this repository's clone URL |
-| `dejima.example.com`, `operator` | the dejima host, and the account on it that runs dejima |
-| `192.0.2.10` | the API host's address, as the dejima host sees it |
-| `@meeseeks:example.org` | the bot's Matrix account |
-| `@you:example.org` | your Matrix account |
+The commands below take your values from shell variables, so they can be pasted as they are. Each step starts by setting the variables it uses, on the machine it runs on. Replace the example values there with yours:
+
+| variable | what it is | where the value comes from |
+|---|---|---|
+| `MEESEEKS_REPO` | this repository's clone URL | your forge's clone button |
+| `DEJIMA_HOST` | the dejima host's hostname or IP, as the API host reaches it over ssh | your network; test with `ssh $DEJIMA_HOST` from the API host |
+| `DEJIMA_USER` | the account on the dejima host that runs dejima; the API logs in as it | `whoami` on the dejima host, as the user you run dejima as |
+| `API_ADDR` | the address the API host's connections arrive from, as the dejima host sees them. Under Docker, that's the Docker host's address | `ip -brief addr` on the API host. For the address the dejima host actually sees, run `echo $SSH_CLIENT` in an ssh session from the API host, or check the `from=` on a key that machine already uses, such as dejima-guard's |
+| `API_PUBKEY` | the API's ssh public key | printed in step 3 |
+| `API_TOKEN` | the secret the bot uses to authenticate to the API | generated in step 5 |
+| `MAUBOT_URL` | your maubot server's URL | where you open maubot's web UI |
+| `MAUBOT_ADMIN` | a maubot admin user | `admins:` in maubot's config |
+| `MAUBOT_HOMESERVER` | the bot's homeserver, by its name in maubot's config | the keys under `homeservers:` in maubot's config; `mbc auth --list` shows them |
+| `BOT_USER` | the bot's Matrix username, without `@` or `:server` | you choose it when creating the account |
+
+Values you type somewhere other than a shell, such as maubot's web UI, are called out where they come up.
 
 ### 1. Install the launcher on the dejima host
 
-As `operator`:
+On the dejima host, as `DEJIMA_USER`:
 
 ```sh
-git clone https://git.example.com/example/meeseeks.git ~/src/meeseeks
+MEESEEKS_REPO=https://git.example.com/example/meeseeks.git
+
+git clone "$MEESEEKS_REPO" ~/src/meeseeks
 pipx install --editable ~/src/meeseeks
 ```
 
@@ -44,9 +55,9 @@ This installs `~/.local/bin/meeseeks-launch`. Make sure dejima can start a sessi
 
 - Acknowledge CRITICAL audit findings with `dejima-audit ack`.
 - Pre-record decisions for any credential-shaped values dejima's staging scan flags.
-- Run `sudo loginctl enable-linger operator` (or set `KillUserProcesses=no`), so the tmux server outlives the ssh connection.
+- Run `sudo loginctl enable-linger "$USER"` (or set `KillUserProcesses=no`), so the tmux server outlives the ssh connection.
 
-Optionally, add a `[identity.meeseeks]` section to dejima's config, for the git name and keys every meeseeks session should act as (see dejima's configuration docs). Then pass `--identity meeseeks` in step 4.
+Optionally, add a `[identity.meeseeks]` section to dejima's config, for the git name and keys every meeseeks session should act as (see dejima's configuration docs). Then add `--identity meeseeks` to the launcher options in step 4.
 
 Try a launch by hand:
 
@@ -62,13 +73,15 @@ Quit the session when you're done, then remove `~/meeseeks/tasks/ms-hello`.
 
 ### 2. Install the API
 
-The API runs either as a systemd service or in Docker Compose. Steps 2, 3 and 5 give both; pick one and follow it throughout.
+The API runs either as a systemd service or in Docker Compose. Steps 2, 3 and 5 give both; pick one and follow it throughout. All of it runs on the API host.
 
 **With systemd:** create a service user and install into a virtualenv:
 
 ```sh
+MEESEEKS_REPO=https://git.example.com/example/meeseeks.git
+
 sudo useradd --system --create-home --home-dir /var/lib/meeseeks --shell /usr/sbin/nologin meeseeks
-sudo git clone https://git.example.com/example/meeseeks.git /opt/meeseeks/src
+sudo git clone "$MEESEEKS_REPO" /opt/meeseeks/src
 sudo python3 -m venv /opt/meeseeks/venv
 sudo /opt/meeseeks/venv/bin/pip install --editable '/opt/meeseeks/src[api]'
 ```
@@ -76,8 +89,10 @@ sudo /opt/meeseeks/venv/bin/pip install --editable '/opt/meeseeks/src[api]'
 **With Docker Compose:** lay out a deployment directory around a clone, and build the image. The container runs as uid 10001, so its data directory belongs to that uid:
 
 ```sh
+MEESEEKS_REPO=https://git.example.com/example/meeseeks.git
+
 sudo install -d /opt/meeseeks && cd /opt/meeseeks
-sudo git clone https://git.example.com/example/meeseeks.git src
+sudo git clone "$MEESEEKS_REPO" src
 sudo cp src/examples/compose.yaml .
 sudo install -d -m 700 -o 10001 -g 10001 data
 sudo install -d -m 750 -g 10001 config config/blurbs
@@ -86,23 +101,18 @@ sudo docker compose build
 
 ### 3. Give the API an ssh key and the dejima host's host key
 
-The API reaches the dejima host as `operator`, with a key of its own.
+The API reaches the dejima host with a key of its own. On the API host:
+
+```sh
+DEJIMA_HOST=dejima.example.com
+```
 
 **With systemd:**
 
 ```sh
 sudo -u meeseeks install -d -m 700 /var/lib/meeseeks/.ssh
 sudo -u meeseeks ssh-keygen -t ed25519 -N '' -C meeseeks-api -f /var/lib/meeseeks/.ssh/id_ed25519
-sudo cat /var/lib/meeseeks/.ssh/id_ed25519.pub     # you need this in step 4
-```
-
-Record the dejima host's host key, after checking that it is the right one:
-
-```sh
-ssh-keyscan -t ed25519 dejima.example.com > /tmp/dejima.hostkey
-ssh-keygen -lf /tmp/dejima.hostkey                 # on the API host
-ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub   # on the dejima host: must match
-sudo -u meeseeks tee -a /var/lib/meeseeks/.ssh/known_hosts < /tmp/dejima.hostkey
+sudo cat /var/lib/meeseeks/.ssh/id_ed25519.pub     # this is API_PUBKEY, for step 4
 ```
 
 **With Docker Compose:** generate the key inside the container, so it lands in `data/.ssh` with the right owner:
@@ -111,62 +121,75 @@ sudo -u meeseeks tee -a /var/lib/meeseeks/.ssh/known_hosts < /tmp/dejima.hostkey
 cd /opt/meeseeks
 sudo docker compose run --rm --entrypoint sh api -c \
   'install -d -m 700 ~/.ssh && ssh-keygen -t ed25519 -N "" -C meeseeks-api -f ~/.ssh/id_ed25519'
-sudo cat data/.ssh/id_ed25519.pub                  # you need this in step 4
+sudo cat data/.ssh/id_ed25519.pub                  # this is API_PUBKEY, for step 4
 ```
 
-Then check and record the host key as above, writing it to the container's `known_hosts`:
+Give meeseeks this key of its own even if the API host already reaches the dejima host over ssh, for instance because it runs dejima-guard. Each existing key is locked to its own forced command, and loosening one to also run the launcher would hand that tool's machine the ability to start sessions.
+
+Then record the dejima host's host key, after checking that it's the right one. If this machine already trusts it, for instance in dejima-guard's `known_hosts`, you can copy that entry instead. Otherwise, fetch it and print its fingerprint:
 
 ```sh
-ssh-keyscan -t ed25519 dejima.example.com > /tmp/dejima.hostkey
-ssh-keygen -lf /tmp/dejima.hostkey                 # must match the dejima host's
-sudo install -m 644 -o 10001 -g 10001 /tmp/dejima.hostkey data/.ssh/known_hosts
+ssh-keyscan -t ed25519 "$DEJIMA_HOST" > /tmp/dejima.hostkey
+ssh-keygen -lf /tmp/dejima.hostkey
+```
+
+On the dejima host, print the fingerprint of its real host key. It must match:
+
+```sh
+ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub
+```
+
+If they match, save it on the API host:
+
+```sh
+# With systemd:
+sudo -u meeseeks tee -a /var/lib/meeseeks/.ssh/known_hosts < /tmp/dejima.hostkey
+# With Docker Compose:
+sudo install -m 644 -o 10001 -g 10001 /tmp/dejima.hostkey /opt/meeseeks/data/.ssh/known_hosts
 ```
 
 ### 4. Lock the key to the launcher on the dejima host
 
-Append one line to `operator`'s `~/.ssh/authorized_keys`, with the public key from step 3:
+On the dejima host, as `DEJIMA_USER`, authorise the API's key to run the launcher and nothing else. If dejima-guard watches the dejima host, this edit to `authorized_keys` raises its critical-path alert. Run `dejima-guard expect 30m` on the guard's machine first, then `dejima-guard accept` once this step is done.
 
-```
-from="192.0.2.10",command="/home/operator/.local/bin/meeseeks-launch --harness claude-code --backend claude-code=anthropic",restrict ssh-ed25519 AAAA... meeseeks-api
+```sh
+API_ADDR=192.0.2.10
+API_PUBKEY='ssh-ed25519 AAAA... meeseeks-api'
+LAUNCHER_OPTIONS='--harness claude-code --backend claude-code=anthropic'
+
+install -d -m 700 ~/.ssh
+echo "from=\"$API_ADDR\",command=\"$HOME/.local/bin/meeseeks-launch $LAUNCHER_OPTIONS\",restrict $API_PUBKEY" \
+  >> ~/.ssh/authorized_keys
+tail -n 1 ~/.ssh/authorized_keys
 ```
 
-- `command=` makes the launcher the only thing this key can run, whatever the client asks for. Use the absolute path, since a non-interactive ssh login may not have `~/.local/bin` on its `PATH`.
-- `restrict` turns off forwarding and terminals, and `from=` accepts the key only from the API host. Under Docker, connections come from the Docker host's address.
-- Put the launcher's options in the command: the defaults every session gets, plus `--identity` from step 1 and `--answers` if replies in chat may be typed into sessions. All options are listed under [Launcher options](#launcher-options).
+- `command=` makes the launcher the only thing this key can run, whatever the client asks for. The path is absolute, since a non-interactive ssh login may not have `~/.local/bin` on its `PATH`.
+- `restrict` turns off forwarding and terminals, and `from=` accepts the key only from `API_ADDR`.
+- `LAUNCHER_OPTIONS` holds the defaults every session gets. Add `--identity meeseeks` if you set one up in step 1, and `--answers` if replies in chat may be typed into sessions. All options are listed under [Launcher options](#launcher-options). To change them later, edit this line in `~/.ssh/authorized_keys`.
 
 ### 5. Configure and start the API
 
-Generate a token for the bot to authenticate to the API:
+On the API host, set the values the config needs, and generate the bot's token:
 
 ```sh
-python3 -c 'import secrets; print(secrets.token_urlsafe(32))'
+DEJIMA_HOST=dejima.example.com
+DEJIMA_USER=operator
+API_TOKEN=$(openssl rand -hex 32)
+echo "$API_TOKEN"     # keep this for step 6
 ```
 
-**With systemd:** install the example config, readable only by root and the service:
+**With systemd:** install the example config, readable only by root and the service, and fill in your values:
 
 ```sh
 sudo install -d -m 750 -g meeseeks /etc/meeseeks /etc/meeseeks/blurbs
 sudo install -m 640 -g meeseeks /opt/meeseeks/src/examples/api.toml /etc/meeseeks/api.toml
-sudoedit /etc/meeseeks/api.toml
+sudo sed -i -e "s/operator@dejima.example.com/$DEJIMA_USER@$DEJIMA_HOST/" \
+  -e "s/replace-with-a-long-random-token/$API_TOKEN/" /etc/meeseeks/api.toml
 ```
 
-**With Docker Compose:** the config directory is mounted at `/etc/meeseeks` in the container, so the example's paths work unchanged:
+`listen` stays on `127.0.0.1:8080`, which is right if maubot runs on the same machine. Otherwise, edit it to a private address, or put a TLS reverse proxy in front: the token travels in every request.
 
-```sh
-cd /opt/meeseeks
-sudo install -m 640 -g 10001 src/examples/api.toml config/api.toml
-sudoedit config/api.toml
-```
-
-In either case, edit the config:
-- Set `launch_command` to `["ssh", "-T", "-o", "BatchMode=yes", "operator@dejima.example.com"]`.
-- Put the token under `[tokens]` as `maubot = "..."`.
-- Under systemd, leave `listen` on `127.0.0.1:8080` if maubot runs on the same machine. Otherwise, listen on a private address, or put a TLS reverse proxy in front: the token travels in every request.
-- Under Docker, set `listen` to `0.0.0.0:8080`. That is inside the container, and `compose.yaml` decides what reaches it: by default only `127.0.0.1:8080` on the host. If maubot runs in Docker too, drop the published port and put both on a shared network.
-
-Context blurbs go in the blurbs directory as `<name>.md`: `/etc/meeseeks/blurbs`, or `config/blurbs` under Docker. [`examples/blurbs`](examples/blurbs) has one. Every key is described under [API config](#api-config).
-
-**Start it with systemd:**
+Start it:
 
 ```sh
 sudo cp /opt/meeseeks/src/examples/meeseeks-api.service /etc/systemd/system/
@@ -177,38 +200,51 @@ sudo systemctl enable --now meeseeks-api
 Check both links:
 
 ```sh
-sudo -u meeseeks ssh -T -o BatchMode=yes operator@dejima.example.com status   # prints []
-curl -H "Authorization: Bearer <token>" http://127.0.0.1:8080/v1/blurbs        # prints the blurb names
+sudo -u meeseeks ssh -T -o BatchMode=yes "$DEJIMA_USER@$DEJIMA_HOST" status   # prints []
+curl -H "Authorization: Bearer $API_TOKEN" http://127.0.0.1:8080/v1/blurbs   # prints []
 ```
 
-If the first command asks for a password or prints anything but JSON, recheck step 4. `journalctl -u meeseeks-api` shows the API's log.
+`journalctl -u meeseeks-api` shows the API's log.
 
-**Start it with Docker Compose:**
+**With Docker Compose:** the config directory is mounted at `/etc/meeseeks` in the container, so the example's paths work unchanged. `listen` becomes `0.0.0.0:8080`, which is inside the container. `compose.yaml` decides what reaches it: by default, only `127.0.0.1:8080` on the host. If maubot runs in Docker too, drop the published port and put both on a shared network.
 
 ```sh
 cd /opt/meeseeks
+sudo install -m 640 -g 10001 src/examples/api.toml config/api.toml
+sudo sed -i -e "s/operator@dejima.example.com/$DEJIMA_USER@$DEJIMA_HOST/" \
+  -e "s/replace-with-a-long-random-token/$API_TOKEN/" \
+  -e 's/127.0.0.1:8080/0.0.0.0:8080/' config/api.toml
 sudo docker compose up -d
 ```
 
 Check both links:
 
 ```sh
-sudo docker compose exec api ssh -T -o BatchMode=yes operator@dejima.example.com status   # prints []
-curl -H "Authorization: Bearer <token>" http://127.0.0.1:8080/v1/blurbs                  # prints the blurb names
+sudo docker compose exec api ssh -T -o BatchMode=yes "$DEJIMA_USER@$DEJIMA_HOST" status   # prints []
+curl -H "Authorization: Bearer $API_TOKEN" http://127.0.0.1:8080/v1/blurbs               # prints []
 ```
 
 `docker compose logs api` shows the API's log.
 
+If the ssh check asks for a password or prints anything but JSON, recheck step 4. A common cause is `API_ADDR` not matching where the connection really comes from.
+
+Context blurbs go in the blurbs directory as `<name>.md`: `/etc/meeseeks/blurbs`, or `/opt/meeseeks/config/blurbs` under Docker. [`examples/blurbs`](examples/blurbs) has one. Every config key is described under [API config](#api-config).
+
 ### 6. Set up the bot in maubot
 
-Create the bot's Matrix account. Use your homeserver's registration, or `register_new_matrix_user` on Synapse.
+Create the bot's Matrix account, named `BOT_USER`. Use your homeserver's registration, or `register_new_matrix_user` on Synapse.
 
-On any machine, install maubot's CLI. Log in to your maubot server, then log the bot in through it. `--update-client` creates the bot's client in maubot with a device of its own, which encrypted rooms need:
+On any machine, install maubot's CLI, log in to your maubot server, and log the bot in through it. The bot's homeserver has to be listed under `homeservers:` in maubot's config. `--update-client` creates the bot's client in maubot with a device of its own, which encrypted rooms need.
 
 ```sh
+MAUBOT_URL=https://maubot.example.org
+MAUBOT_ADMIN=admin
+MAUBOT_HOMESERVER=example.org
+BOT_USER=meeseeks
+
 pipx install maubot
-mbc login -s https://maubot.example.org -u <maubot admin user>
-mbc auth -h example.org -u meeseeks --update-client
+mbc login -s "$MAUBOT_URL" -u "$MAUBOT_ADMIN"
+mbc auth -h "$MAUBOT_HOMESERVER" -u "$BOT_USER" --update-client
 ```
 
 Download the plugin, `io.example.meeseeks-v<version>.mbp`, from the repository's latest release, then upload it in maubot's web UI under **Plugins**. `mbc upload <file>` does the same from the command line.
@@ -217,18 +253,18 @@ In maubot's web UI:
 
 1. Under **Instances**, create one with the bot's client as the primary user and `io.example.meeseeks` as the type.
 2. Set the instance config:
-   - `allowlist`: the Matrix IDs that may start tasks, e.g. `["@you:example.org"]`
-   - `api_url`: where the API is reachable from maubot, e.g. `http://127.0.0.1:8080`, or `http://api:8080` from a container on the same Docker network
-   - `api_token`: the token from step 5
+   - `allowlist`: your Matrix ID, and anyone else's who may start tasks, e.g. `["@you:example.org"]`
+   - `api_url`: where the API is reachable from maubot. That's `http://127.0.0.1:8080` with the defaults on the same machine, or `http://api:8080` from a container on the same Docker network
+   - `api_token`: `API_TOKEN` from step 5
 3. Invite the bot to the room you keep notes in, and accept the invite. The simplest way is to turn on **Autojoin** on the bot's client, invite it, then turn autojoin off again, so only rooms you choose matter.
 
 Encrypted rooms need maubot's encryption support installed on the maubot server; see maubot's documentation.
 
 ### 7. Check it end to end
 
-In the room, send `@meeseeks help`. The reply lists your context blurbs, which also shows that the bot reaches the API.
+In the room, send a message that mentions the bot and says `help`. The reply lists your context blurbs, which also shows that the bot reaches the API.
 
-Then reply to a note with `@meeseeks` and a line of context. The bot answers with the task id, and `tmux attach -t meeseeks` on the dejima host shows the session. When the agent finishes, the bot replies again with its summary and a zip.
+Then reply to a note, mentioning the bot, with a line of context. The bot answers with the task id, and `tmux attach -t meeseeks` on the dejima host shows the session. When the agent finishes, the bot replies again with its summary and a zip.
 
 ## Updating
 
