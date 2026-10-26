@@ -852,3 +852,79 @@ async def test_stop_without_mention_answers_a_help_request(maubot_plugin, maubot
     await send(maubot_test_bot, message("stop", reply_to=HELP_ID, mention=False))
     assert api.stops == []
     assert api.answers == [("ms-7f3k2", {"text": "stop", "requester": ALICE})]
+
+
+REQUEST = {
+    "request": 3,
+    "domains": [
+        {"domain": "pypi.org", "internal": False, "denied": False},
+        {"domain": "mirror.internal.example", "internal": True, "denied": False},
+        {"domain": "api.example.net", "internal": False, "denied": True},
+    ],
+    "rejected": 1,
+}
+DOMAINS_TAG = {"io.meeseeks.domains": {"task": "ms-7f3k2", "request": 3}}
+
+
+async def test_domain_request_lists_every_domain(maubot_plugin, maubot_test_bot, api):
+    api.add(4, type="domains", summary="", data=None)
+    api.events[-1]["data"] = REQUEST
+    await maubot_plugin.poll_once()
+    [msg] = sent(maubot_test_bot)
+    assert msg["body"] == (
+        "ms-7f3k2 asks to reach these domains (requested by the agent, check each one before allowing):\n\n"
+        "- pypi.org\n- mirror.internal.example (internal)\n- api.example.net (refused by policy, won't be allowed)\n\n"
+        "1 line(s) in the request weren't valid domains and were dropped.\n\n"
+        "Reply `allow` with a mention to allow them, or `deny`."
+    )
+    assert "<li><code>mirror.internal.example</code> (internal)</li>" in msg["formatted_body"]
+    assert msg["io.meeseeks.domains"] == {"task": "ms-7f3k2", "request": 3}
+    assert msg["io.meeseeks.task"] == "ms-7f3k2" and msg["m.mentions"] == {}
+    assert api.acked == [4]
+
+
+def domains_message(sender=BOT, **content):
+    return message("ms-7f3k2 asks to reach these domains", sender=sender, event_id="$domains", reply_to="$trigger", mention=False, **content)
+
+
+@pytest.fixture
+def decisions(api):
+    api.decisions = []
+
+    async def decide(request):
+        api.decisions.append((request.match_info["verb"], request.match_info["n"], await request.json()))
+        if request.match_info["verb"] == "allow":
+            return web.json_response({"granted": ["pypi.org"], "failed": [{"domain": "x.example.com", "error": "unreachable"}], "told": False})
+        return web.json_response({"told": True})
+
+    api.server.app.router._frozen = False
+    api.server.app.router.add_post("/v1/tasks/{id}/domains/{n}/{verb}", decide)
+    return api
+
+
+async def test_allow_reply_grants_the_request(maubot_plugin, maubot_test_bot, decisions):
+    maubot_test_bot.events["$domains"] = domains_message(**DOMAINS_TAG)
+    await send(maubot_test_bot, message("@meeseeks:example.org allow", reply_to="$domains"))
+    assert decisions.decisions == [("allow", "3", {"requester": ALICE})]
+    assert replies(maubot_test_bot) == [
+        "Allowed for ms-7f3k2: pypi.org.\nCouldn't allow x.example.com: unreachable\n"
+        "Tell the agent in its session that it can carry on."
+    ]
+
+
+async def test_deny_reply(maubot_plugin, maubot_test_bot, decisions):
+    maubot_test_bot.events["$domains"] = domains_message(**DOMAINS_TAG)
+    await send(maubot_test_bot, message("@meeseeks:example.org deny", reply_to="$domains"))
+    assert decisions.decisions == [("deny", "3", {"requester": ALICE})]
+    assert replies(maubot_test_bot) == ["Denied the domain request from ms-7f3k2."]
+
+
+@pytest.mark.parametrize("replied", [None, "foreign", "untagged"])
+async def test_allow_needs_the_bots_domain_request(maubot_plugin, maubot_test_bot, decisions, replied):
+    if replied == "foreign":
+        maubot_test_bot.events["$domains"] = domains_message(sender="@mallory:example.org", **DOMAINS_TAG)
+    elif replied == "untagged":
+        maubot_test_bot.events["$domains"] = domains_message(**{"io.meeseeks.task": "ms-7f3k2"})
+    await send(maubot_test_bot, message("@meeseeks:example.org allow", reply_to="$domains" if replied else None))
+    assert decisions.decisions == []
+    assert replies(maubot_test_bot)[0].startswith("To allow or deny domains")

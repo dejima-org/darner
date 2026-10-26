@@ -197,8 +197,8 @@ def test_status_states(env, share):
     code, out, _ = run(a, "status")
     assert code == 0
     assert json.loads(out) == [
-        {"id": "ms-abc23", "state": "exited", "ready": True, "unsignalled": False, "help": False, "answerable": False, "run_id": None, "error": None},
-        {"id": "ms-starx", "state": "starting", "ready": False, "unsignalled": False, "help": False, "answerable": False, "run_id": None, "error": None},
+        {"id": "ms-abc23", "state": "exited", "ready": True, "unsignalled": False, "help": False, "domains": False, "answerable": False, "run_id": None, "error": None},
+        {"id": "ms-starx", "state": "starting", "ready": False, "unsignalled": False, "help": False, "domains": False, "answerable": False, "run_id": None, "error": None},
     ]
 
 
@@ -733,3 +733,171 @@ def test_exec_records_dejima_pid(env):
     subprocess.run([sys.executable, "-m", "meeseeks.launch", "--exec", str(task)], cwd=Path(__file__).parent.parent, check=True,
                    env={**os.environ, "FAKE_DEJIMA_LOG": str(env / "dejima.log")})
     assert int((task / "pid").read_text()) > 0
+
+
+FAKE_DEJIMA_ALLOW = """#!/bin/sh
+python3 -c 'import json, sys; print(json.dumps(sys.argv[1:]))' "$@" >> "$FAKE_ALLOW_LOG"
+case "$*" in *blocked.example*) echo "blocked.example: unreachable after allowing" >&2; exit 1 ;; esac
+"""
+
+
+@pytest.fixture
+def allow_env(env, share, docker, monkeypatch):
+    a, shared = share
+    tool = env / "bin" / "dejima-allow"
+    tool.write_text(FAKE_DEJIMA_ALLOW)
+    tool.chmod(0o755)
+    monkeypatch.setenv("FAKE_ALLOW_LOG", str(env / "allow.log"))
+    register_session(env)
+    monkeypatch.setenv("FAKE_DOCKER_PS", "c0ffee")
+    return a, shared
+
+
+def request_domains(a, shared, text):
+    (shared / "DOMAINS").write_text(text)
+    (shared / ".domains").touch()
+    code, out, err = run(a, "domains", "ms-abc23")
+    assert code == 0, err
+    return json.loads(out)
+
+
+def decide(a, verb, number, data, *extra):
+    import unittest.mock
+
+    with unittest.mock.patch("sys.stdin", io.StringIO(json.dumps(data))):
+        return run(a, "--docker", str(a.tasks_dir.parent / "docker"), *extra, verb, "ms-abc23", str(number))
+
+
+def allow_calls(env):
+    log = env / "allow.log"
+    return [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
+
+
+def test_domain_request_is_validated_and_saved(env, allow_env):
+    a, shared = allow_env
+    assert status(a)[0]["domains"] is False
+    (shared / ".domains").touch()
+    assert status(a)[0]["domains"] is True
+    request = request_domains(a, shared, (
+        "PyPI.org  # packages\n"
+        "internal mirror.internal.example\n"
+        "pypi.org\n"
+        "not a domain\n"
+        "localhost\n"
+        "$(id).example.com\n"
+        "\n# just a comment\n"
+    ))
+    assert request == {
+        "request": 1,
+        "domains": [{"domain": "pypi.org", "internal": False}, {"domain": "mirror.internal.example", "internal": True}],
+        "rejected": 3,
+    }
+    assert json.loads((env / "tasks" / "ms-abc23" / "domains-pending").read_text()) == request
+    assert status(a)[0]["domains"] is False
+
+
+def test_domain_request_is_capped(allow_env):
+    a, shared = allow_env
+    request = request_domains(a, shared, "".join(f"d{i}.example.com\n" for i in range(25)))
+    assert len(request["domains"]) == 20 and request["rejected"] == 5
+
+
+def test_symlinked_domain_request_is_empty(env, allow_env):
+    a, shared = allow_env
+    (env / "secret").write_text("secret.example.com\n")
+    (shared / "DOMAINS").symlink_to(env / "secret")
+    (shared / ".domains").touch()
+    assert json.loads(run(a, "domains", "ms-abc23")[1])["domains"] == []
+
+
+def test_allow_grants_the_saved_request_within_what_the_api_passes(env, allow_env):
+    a, shared = allow_env
+    request_domains(a, shared, "pypi.org\ninternal mirror.internal.example\nother.example.com\n")
+    # The agent rewriting DOMAINS after the request has no effect on what's granted.
+    (shared / "DOMAINS").write_text("evil.example.com\n")
+    data = {"requester": "@alice:example.org", "domains": ["pypi.org", "mirror.internal.example", "evil.example.com"]}
+    code, out, err = decide(a, "allow", 1, data)
+    assert code == 0, err
+    assert json.loads(out) == {"granted": ["pypi.org", "mirror.internal.example"], "failed": [], "told": False}
+    dejima_allow = str(env / "bin" / "dejima-allow")
+    assert allow_calls(env) == [
+        ["--container", "c0ffee", "pypi.org"],
+        ["--container", "c0ffee", "--internal", "mirror.internal.example"],
+    ]
+    assert not (env / "tasks" / "ms-abc23" / "domains-pending").exists()
+    assert json.loads((env / "tasks" / "ms-abc23" / "domains-granted").read_text()) == ["pypi.org", "mirror.internal.example"]
+    assert decide(a, "allow", 1, data)[0] == 1
+
+
+def test_allow_reports_failures_and_tells_the_agent(env, allow_env):
+    a, shared = allow_env
+    request_domains(a, shared, "pypi.org\nblocked.example\n")
+    (env / "tmux.log").write_text("")
+    code, out, _ = decide(
+        a, "allow", 1, {"requester": "@alice:example.org", "domains": ["pypi.org", "blocked.example"]},
+        "--answers", "--paste-delay", "0",
+    )
+    result = json.loads(out)
+    assert result["granted"] == ["pypi.org"] and result["told"] is True
+    assert result["failed"] == [{"domain": "blocked.example", "error": "blocked.example: unreachable after allowing"}]
+    assert (env / "tmux.log.buffer").read_text() == (
+        "Domain request from @alice:example.org: allowed pypi.org; couldn't allow blocked.example. Carry on with your task."
+    )
+
+
+def test_superseded_request_is_refused(allow_env):
+    a, shared = allow_env
+    request_domains(a, shared, "pypi.org\n")
+    import time
+
+    time.sleep(0.05)
+    (shared / ".domains").touch()
+    for name in ("consumed-domains",):
+        os.utime(a.tasks_dir / "ms-abc23" / name, (0, 0))
+    assert request_domains(a, shared, "files.pythonhosted.org\n")["request"] == 2
+    code, _, err = decide(a, "allow", 1, {"requester": "@a:example.org", "domains": ["pypi.org"]})
+    assert code == 1 and "replaced by a newer one" in err
+    assert decide(a, "allow", 2, {"requester": "@a:example.org", "domains": ["files.pythonhosted.org"]})[0] == 0
+
+
+def test_deny_discards_the_request(env, allow_env):
+    a, shared = allow_env
+    request_domains(a, shared, "pypi.org\n")
+    code, out, _ = decide(a, "deny", 1, {"requester": "@alice:example.org"})
+    assert code == 0 and json.loads(out) == {"told": False}
+    assert decide(a, "allow", 1, {"requester": "@a:example.org", "domains": ["pypi.org"]})[0] == 1
+    assert allow_calls(env) == []
+
+
+def test_allow_needs_the_container(env, allow_env, monkeypatch):
+    a, shared = allow_env
+    request_domains(a, shared, "pypi.org\n")
+    monkeypatch.delenv("FAKE_DOCKER_PS")
+    code, _, err = decide(a, "allow", 1, {"requester": "@a:example.org", "domains": ["pypi.org"]})
+    assert code == 1 and "couldn't find ms-abc23's container" in err
+    assert (a.tasks_dir / "ms-abc23" / "domains-pending").exists()
+
+
+@pytest.mark.parametrize("command", ["allow ms-abc23", "allow ms-abc23 x", "deny ms-abc23 1 2", "allow ms-abc23 ١"])
+def test_bad_decision_commands_are_refused(share, monkeypatch, command):
+    a, _ = share
+    monkeypatch.setenv("SSH_ORIGINAL_COMMAND", command)
+    assert run(a)[0] == 2
+
+
+def test_domain_limit_counts_launch_domains_and_earlier_grants(env, allow_env):
+    a, shared = allow_env
+    (env / "tasks" / "ms-abc23" / "domains").write_text("one.example.com\n")
+    request_domains(a, shared, "two.example.com\n")
+    data = {"requester": "@a:example.org", "domains": ["two.example.com"], "max_domains": 3}
+    assert json.loads(decide(a, "allow", 1, data)[1])["granted"] == ["two.example.com"]
+
+    import time
+
+    time.sleep(0.05)
+    os.utime(a.tasks_dir / "ms-abc23" / "consumed-domains", (0, 0))
+    request_domains(a, shared, "three.example.com\nfour.example.com\n")
+    data = {"requester": "@a:example.org", "domains": ["three.example.com", "four.example.com"], "max_domains": 3}
+    result = json.loads(decide(a, "allow", 2, data)[1])
+    assert result["granted"] == ["three.example.com"]
+    assert result["failed"] == [{"domain": "four.example.com", "error": "over this session's limit of 3 domains"}]

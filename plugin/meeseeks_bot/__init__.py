@@ -30,6 +30,7 @@ TASK_TAG = "io.meeseeks.task"
 PILL = re.compile(r'<a\s[^>]*href="https://matrix\.to/#/([^"?]+)[^"]*"[^>]*>(.*?)</a>', re.IGNORECASE | re.DOTALL)
 STOP = re.compile(r"stop(?:\s+(ms-[a-z2-7]{5}))?", re.IGNORECASE)
 STOP_HOW = "To stop a session, reply `stop` with a mention to one of my messages about it, or send `stop ms-xxxxx` with a mention."
+DECIDE_HOW = "To allow or deny domains, reply `allow` or `deny` with a mention to my message listing them."
 NO_TASK = "Tell me the task after the mention, or reply to a note to make it the task. Send `help` with a mention for usage."
 
 USAGE = """\
@@ -54,6 +55,8 @@ allow: pypi.org, files.pythonhosted.org
 ```
 
 **Updates:** I reply when the session starts, when it delivers output (a summary and a zip), when it needs something from you, and when it ends. When a help request says "Reply to this message to answer", reply to it and your answer is typed into the session.
+
+**Domains:** when the agent asks to reach domains, I list every one. Reply `allow` or `deny` with a mention to that message.
 
 **Stop a session:** reply `stop` with a mention to any of my messages about it, or send `stop ms-xxxxx` with a mention.
 
@@ -204,6 +207,9 @@ class MeeseeksBot(Plugin):
         if mentioned and (stop := STOP.fullmatch(command)):
             await self._respond(evt, self._stop(evt, stop[1] and stop[1].lower()))
             return
+        if mentioned and command.lower() in ("allow", "deny"):
+            await self._respond(evt, self._decide_domains(evt, command.lower()))
+            return
         if not content.get_reply_to():
             if mentioned:
                 await self._respond(evt, self._submit(evt))
@@ -245,6 +251,41 @@ class MeeseeksBot(Plugin):
             return None
         task = replied.content.get(TASK_TAG)
         return task if isinstance(task, str) and TASK_ID.fullmatch(task) else self._help_task(replied)
+
+    def _domain_request(self, replied: Event | None) -> tuple[str, int] | None:
+        """The task and request number of one of the bot's own domain request messages."""
+        if not isinstance(replied, RawMessageEvent) or replied.sender != self.client.mxid:
+            return None
+        tag = replied.content.get("io.meeseeks.domains")
+        if not isinstance(tag, dict):
+            return None
+        task, number = tag.get("task"), tag.get("request")
+        if isinstance(task, str) and TASK_ID.fullmatch(task) and type(number) is int:
+            return task, number
+        return None
+
+    async def _decide_domains(self, evt: MessageEvent, verb: str) -> tuple[str, bool]:
+        found = None
+        if evt.content.get_reply_to():
+            found = self._domain_request(await self.client.get_event(evt.room_id, evt.content.get_reply_to()))
+        if found is None:
+            return DECIDE_HOW, False
+        task, number = found
+        path = f"/v1/tasks/{task}/domains/{number}/{verb}"
+        async with self._api("POST", path, json={"requester": evt.sender}) as resp:
+            data = await resp.json(content_type=None)
+        if not resp.ok:
+            error = data.get("error") if isinstance(data, dict) else None
+            return f"Failed: {error or f'HTTP {resp.status}'}", False
+        if verb == "allow":
+            text = f"Allowed for {task}: {', '.join(data['granted']) or 'none'}."
+            for failure in data.get("failed", []):
+                text += f"\nCouldn't allow {failure['domain']}: {failure['error']}"
+        else:
+            text = f"Denied the domain request from {task}."
+        if not data.get("told"):
+            text += "\nTell the agent in its session that it can carry on."
+        return text, True
 
     async def _stop(self, evt: MessageEvent, task: str | None) -> tuple[str, bool]:
         if task is None and evt.content.get_reply_to():
@@ -302,6 +343,9 @@ class MeeseeksBot(Plugin):
             return
         if e["type"] == "help":
             await self._help(room, ref, e)
+            return
+        if e["type"] == "domains":
+            await self._send(room, ref, _domains_notice(e["id"], e["data"]))
             return
         data = None
         if e["size"]:
@@ -366,6 +410,36 @@ class MeeseeksBot(Plugin):
         # The text is agent-written, so it mustn't ping anyone
         content["m.mentions"] = {}
         await self.client.send_message(room, content)
+
+
+def _domains_notice(task: str, request: dict) -> TextMessageEventContent:
+    """List every requested domain for the requester to read before allowing any."""
+    lines = []
+    for d in request["domains"]:
+        note = " (internal)" if d["internal"] else ""
+        note += " (refused by policy, won't be allowed)" if d["denied"] else ""
+        lines.append((d["domain"], note))
+    if lines:
+        label = f"{task} asks to reach these domains (requested by the agent, check each one before allowing)"
+        body = f"{label}:\n\n" + "\n".join(f"- {name}{note}" for name, note in lines)
+        items = "".join(f"<li><code>{html.escape(name)}</code>{html.escape(note)}</li>" for name, note in lines)
+        html_body = f"<p>{html.escape(label)}:</p><ul>{items}</ul>"
+    else:
+        body = f"{task} sent a domain request with no valid domains."
+        html_body = f"<p>{html.escape(body)}</p>"
+    footer = []
+    if request.get("rejected"):
+        footer.append(f"{request['rejected']} line(s) in the request weren't valid domains and were dropped.")
+    if any(not d["denied"] for d in request["domains"]):
+        footer.append("Reply `allow` with a mention to allow them, or `deny`.")
+    else:
+        footer.append("None of them can be allowed. Reply `deny` with a mention to tell the agent.")
+    for line in footer:
+        body += f"\n\n{line}"
+        html_body += f"<p>{html.escape(line)}</p>"
+    content = TextMessageEventContent(msgtype=MessageType.NOTICE, body=body, format=Format.HTML, formatted_body=html_body)
+    content["io.meeseeks.domains"] = {"task": task, "request": request["request"]}
+    return content
 
 
 def _agent_notice(label: str, text: str, footer: str = "") -> TextMessageEventContent:

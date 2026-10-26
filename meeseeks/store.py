@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS events (
     size INTEGER NOT NULL DEFAULT 0,
     answerable INTEGER NOT NULL DEFAULT 0,
     signalled INTEGER NOT NULL DEFAULT 1,
+    data TEXT,
     acked INTEGER NOT NULL DEFAULT 0,
     created REAL NOT NULL
 );
@@ -54,6 +55,7 @@ class Event:
     run_id: str | None
     source: dict
     signalled: bool = True
+    data: dict | None = None
 
 
 class Store:
@@ -64,6 +66,7 @@ class Store:
         for table, column, definition in (
             ("tasks", "run_id", "TEXT"),
             ("events", "signalled", "INTEGER NOT NULL DEFAULT 1"),
+            ("events", "data", "TEXT"),
         ):
             if column not in {row[1] for row in self.db.execute(f"PRAGMA table_info({table})")}:
                 self.db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
@@ -107,11 +110,19 @@ class Store:
         return [r[0] for r in self.db.execute("SELECT id FROM tasks WHERE status = 'launched' ORDER BY created")]
 
     def add_event(
-        self, task_id: str, type: str, summary: str = "", size: int = 0, answerable: bool = False, signalled: bool = True
+        self,
+        task_id: str,
+        type: str,
+        summary: str = "",
+        size: int = 0,
+        answerable: bool = False,
+        signalled: bool = True,
+        data: dict | None = None,
     ) -> int:
         return self.db.execute(
-            "INSERT INTO events (task_id, type, summary, size, answerable, signalled, created) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (task_id, type, summary, size, answerable, signalled, time.time()),
+            "INSERT INTO events (task_id, type, summary, size, answerable, signalled, data, created)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (task_id, type, summary, size, answerable, signalled, None if data is None else json.dumps(data), time.time()),
         ).lastrowid
 
     def task_status(self, client: str, task_id: str) -> str | None:
@@ -123,11 +134,21 @@ class Store:
 
     def _events(self, where: str, params: tuple) -> list[Event]:
         rows = self.db.execute(
-            "SELECT e.seq, e.task_id, e.type, e.summary, e.size, e.answerable, t.target, t.run_id, t.source_json, e.signalled"
+            "SELECT e.seq, e.task_id, e.type, e.summary, e.size, e.answerable, t.target, t.run_id, t.source_json, e.signalled, e.data"
             f" FROM events e JOIN tasks t ON t.id = e.task_id WHERE {where} ORDER BY e.seq",
             params,
         )
-        return [Event(*row[:5], bool(row[5]), row[6], row[7], json.loads(row[8]), bool(row[9])) for row in rows]
+        return [
+            Event(*row[:5], bool(row[5]), row[6], row[7], json.loads(row[8]), bool(row[9]), row[10] and json.loads(row[10]))
+            for row in rows
+        ]
+
+    def domain_request(self, client: str, task_id: str, number: int) -> dict | None:
+        """A task's domain request, as it was shown to the client."""
+        for event in self._events("t.client = ? AND e.task_id = ? AND e.type = 'domains'", (client, task_id)):
+            if event.data and event.data.get("request") == number:
+                return event.data
+        return None
 
     def events(self, client: str) -> list[Event]:
         return self._events("t.client = ? AND e.acked = 0", (client,))
