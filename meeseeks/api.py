@@ -378,6 +378,15 @@ async def get_output(request: web.Request) -> web.StreamResponse:
 
 
 async def answer_help(request: web.Request) -> web.Response:
+    return await _type_into(request, "answer")
+
+
+async def message_task(request: web.Request) -> web.Response:
+    return await _type_into(request, "message")
+
+
+async def _type_into(request: web.Request, command: str) -> web.Response:
+    """Answer a help request, or send a message, by typing it into the session."""
     client = _client(request)
     task_id = request.match_info["id"]
     if request.app[STORE].task_status(client, task_id) is None:
@@ -394,9 +403,9 @@ async def answer_help(request: web.Request) -> web.Response:
         return web.json_response({"error": str(e)}, status=e.status)
     payload = json.dumps({"text": text, "requester": requester}).encode()
     try:
-        code, _, err = await run_remote(request.app[CONFIG], ["answer", task_id], payload)
+        code, _, err = await run_remote(request.app[CONFIG], [command, task_id], payload)
     except RuntimeError as e:
-        return web.json_response({"error": f"answer failed: {e}"}, status=502)
+        return web.json_response({"error": f"{command} failed: {e}"}, status=502)
     if code:
         return web.json_response({"error": err or f"launcher exited {code}"}, status=409)
     return web.Response(status=204)
@@ -405,6 +414,49 @@ async def answer_help(request: web.Request) -> web.Response:
 async def list_blurbs(request: web.Request) -> web.Response:
     _client(request)
     return web.json_response(available_blurbs(Path(request.app[CONFIG]["blurbs_dir"])))
+
+
+async def _sessions(request: web.Request, task_id: str | None = None) -> list[dict]:
+    """The client's open sessions, with what each is waiting on, asked of the dejima host now."""
+    client, store, config = _client(request), request.app[STORE], request.app[CONFIG]
+    tasks = store.open_tasks(client, task_id)
+    live = {}
+    if tasks:
+        try:
+            code, out, err = await run_remote(config, ["status"])
+            live = {t["id"]: t for t in json.loads(out)} if code == 0 else {}
+        except (RuntimeError, ValueError):
+            pass
+    sessions = []
+    for task in tasks:
+        state = live.get(task["id"], {})
+        waiting = {"answer": None, "domains": None}
+        if state.get("awaiting_answer"):
+            waiting["answer"] = store.latest_summary(client, task["id"], "help") or ""
+        if isinstance(state.get("domain_request"), int):
+            waiting["domains"] = store.domain_request(client, task["id"], state["domain_request"])
+        sessions.append({
+            "id": task["id"],
+            "target": task["target"],
+            "link": session_link(config, task["run_id"]),
+            "requester": task["requester"],
+            "started": task["created"],
+            "state": state.get("state", "unknown"),
+            "answerable": bool(state.get("answerable")),
+            "waiting": waiting,
+        })
+    return sessions
+
+
+async def list_sessions(request: web.Request) -> web.Response:
+    return web.json_response(await _sessions(request))
+
+
+async def get_session(request: web.Request) -> web.Response:
+    found = await _sessions(request, request.match_info["id"])
+    if not found:
+        raise web.HTTPNotFound()
+    return web.json_response(found[0])
 
 
 async def stop_task(request: web.Request) -> web.Response:
@@ -475,6 +527,9 @@ def make_app(config: dict, poll: bool = True) -> web.Application:
     app.router.add_post(r"/v1/events/{seq:\d+}/ack", ack_event)
     app.router.add_post(r"/v1/tasks/{id:ms-[a-z2-7]{5}}/answer", answer_help)
     app.router.add_post(r"/v1/tasks/{id:ms-[a-z2-7]{5}}/stop", stop_task)
+    app.router.add_post(r"/v1/tasks/{id:ms-[a-z2-7]{5}}/message", message_task)
+    app.router.add_get("/v1/tasks", list_sessions)
+    app.router.add_get(r"/v1/tasks/{id:ms-[a-z2-7]{5}}", get_session)
     app.router.add_post(r"/v1/tasks/{id:ms-[a-z2-7]{5}}/domains/{n:\d{1,9}}/{verb:allow|deny}", decide_domains)
     if poll:
         app.cleanup_ctx.append(poller)

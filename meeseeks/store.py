@@ -143,6 +143,20 @@ class Store:
             for row in rows
         ]
 
+    def open_tasks(self, client: str, task_id: str | None = None) -> list[dict]:
+        """The client's launched tasks, or one of them."""
+        where, params = "client = ? AND status = 'launched'", [client]
+        if task_id:
+            where, params = where + " AND id = ?", [client, task_id]
+        rows = self.db.execute(
+            f"SELECT id, target, requester, created, run_id FROM tasks WHERE {where} ORDER BY created", params
+        )
+        return [dict(zip(("id", "target", "requester", "created", "run_id"), row)) for row in rows]
+
+    def latest_summary(self, client: str, task_id: str, type: str) -> str | None:
+        found = self._events("t.client = ? AND e.task_id = ? AND e.type = ?", (client, task_id, type))
+        return found[-1].summary if found else None
+
     def domain_request(self, client: str, task_id: str, number: int) -> dict | None:
         """A task's domain request, as it was shown to the client."""
         for event in self._events("t.client = ? AND e.task_id = ? AND e.type = 'domains'", (client, task_id)):

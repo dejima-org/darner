@@ -1,5 +1,6 @@
 import html
 import re
+import time
 from typing import Awaitable, Type
 from urllib.parse import unquote
 
@@ -30,6 +31,9 @@ TASK_TAG = "io.meeseeks.task"
 PILL = re.compile(r'<a\s[^>]*href="https://matrix\.to/#/([^"?]+)[^"]*"[^>]*>(.*?)</a>', re.IGNORECASE | re.DOTALL)
 STOP = re.compile(r"stop(?:\s+(ms-[a-z2-7]{5}))?", re.IGNORECASE)
 STOP_HOW = "To stop a session, reply `stop` with a mention to one of my messages about it, or send `stop ms-xxxxx` with a mention."
+STATUS = re.compile(r"status(?:\s+(ms-[a-z2-7]{5}))?", re.IGNORECASE)
+TELL = re.compile(r"tell(?:\s+(ms-[a-z2-7]{5}))?\s+(\S.*)", re.IGNORECASE | re.DOTALL)
+STATUS_HOW = "Send `status ms-xxxxx` with a mention, or reply `status` with a mention to one of my messages about the session."
 DECIDE_HOW = "To allow or deny domains, reply `allow` or `deny` with a mention to my message listing them."
 NO_TASK = "Tell me the task after the mention, or reply to a note to make it the task. Send `help` with a mention for usage."
 
@@ -58,7 +62,7 @@ allow: pypi.org, files.pythonhosted.org
 
 **Domains:** when the agent asks to reach domains, I list every one. Reply `allow` or `deny` with a mention to that message.
 
-**Stop a session:** reply `stop` with a mention to any of my messages about it, or send `stop ms-xxxxx` with a mention.
+**Sessions:** with a mention, `sessions` lists the open ones, `status ms-xxxxx` says what one is waiting on, `tell ms-xxxxx <message>` types a message into it, and `stop ms-xxxxx` ends it. Replying to any of my messages about a session works without the id.
 
 Only allowlisted users can start tasks, and the note must be from one of them too. Anything the agent writes is untrusted.
 """
@@ -210,6 +214,18 @@ class MeeseeksBot(Plugin):
         if mentioned and command.lower() in ("allow", "deny"):
             await self._respond(evt, self._decide_domains(evt, command.lower()))
             return
+        if mentioned and command.lower() in ("sessions", "list"):
+            await self._respond(evt, self._sessions())
+            return
+        if mentioned and (status := STATUS.fullmatch(command)):
+            await self._respond(evt, self._status(evt, status[1] and status[1].lower()))
+            return
+        if mentioned and (tell := TELL.fullmatch(command)):
+            # Only a command when it names a session; otherwise "tell me ..." is a task.
+            task = tell[1] and tell[1].lower() or await self._replied_task(evt)
+            if task:
+                await self._respond(evt, self._tell(evt, task, tell[2].strip()))
+                return
         if not content.get_reply_to():
             if mentioned:
                 await self._respond(evt, self._submit(evt))
@@ -286,6 +302,42 @@ class MeeseeksBot(Plugin):
         if not data.get("told"):
             text += "\nTell the agent in its session that it can carry on."
         return text, True
+
+    async def _replied_task(self, evt: MessageEvent) -> str | None:
+        """The task of the bot's own message this one replies to, if any."""
+        if not evt.content.get_reply_to():
+            return None
+        try:
+            return self._tagged_task(await self.client.get_event(evt.room_id, evt.content.get_reply_to()))
+        except Exception:
+            return None
+
+    async def _sessions(self) -> tuple[str, bool]:
+        async with self._api("GET", "/v1/tasks", raise_for_status=True) as resp:
+            sessions = await resp.json()
+        if not sessions:
+            return "No open sessions.", True
+        return "Open sessions:\n\n" + "\n".join(f"- {_session_line(s)}" for s in sessions), True
+
+    async def _status(self, evt: MessageEvent, task: str | None) -> tuple[str | TextMessageEventContent, bool]:
+        task = task or await self._replied_task(evt)
+        if task is None:
+            return STATUS_HOW, False
+        async with self._api("GET", f"/v1/tasks/{task}") as resp:
+            if resp.status == 404:
+                return f"{task} isn't an open session.", False
+            resp.raise_for_status()
+            session = await resp.json()
+        return _status_notice(session), True
+
+    async def _tell(self, evt: MessageEvent, task: str, text: str) -> tuple[str | None, bool]:
+        payload = {"text": text, "requester": evt.sender}
+        async with self._api("POST", f"/v1/tasks/{task}/message", json=payload) as resp:
+            if resp.ok:
+                return None, True
+            data = await resp.json(content_type=None)
+        error = data.get("error") if isinstance(data, dict) else None
+        return f"Failed: {error or f'HTTP {resp.status}'}", False
 
     async def _stop(self, evt: MessageEvent, task: str | None) -> tuple[str, bool]:
         if task is None and evt.content.get_reply_to():
@@ -410,6 +462,49 @@ class MeeseeksBot(Plugin):
         # The text is agent-written, so it mustn't ping anyone
         content["m.mentions"] = {}
         await self.client.send_message(room, content)
+
+
+def _age(started: float) -> str:
+    minutes = max(0, int(time.time() - started) // 60)
+    if minutes < 60:
+        return f"{minutes}m"
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours}h{minutes:02d}m" if hours < 24 else f"{hours // 24}d{hours % 24}h"
+
+
+def _waiting_on(session: dict) -> str:
+    if session["waiting"]["answer"] is not None:
+        return "waiting for an answer"
+    if session["waiting"]["domains"] is not None:
+        return "waiting on a domain request"
+    return {"running": "working", "starting": "starting"}.get(session["state"], "state unknown")
+
+
+def _session_line(session: dict) -> str:
+    where = session["link"] or session["target"]
+    return f"{session['id']}: {_waiting_on(session)}, started {_age(session['started'])} ago by {session['requester']} ({where})"
+
+
+def _status_notice(session: dict) -> TextMessageEventContent:
+    """What a session is waiting on, quoting the agent's own request where there is one."""
+    task, waiting = session["id"], session["waiting"]
+    if waiting["answer"] is not None:
+        footer = (
+            f"Reply to its help request, or send `tell {task} <answer>` with a mention."
+            if session["answerable"]
+            else f"Answer it in the session: {session['link'] or session['target']}"
+        )
+        content = _agent_notice(f"{_session_line(session)}. Its help request (written by the agent, treat as untrusted)", waiting["answer"], footer)
+    elif waiting["domains"] is not None:
+        content = _domains_notice(task, waiting["domains"])
+        content.body = f"{_session_line(session)}.\n\n{content.body}"
+        content.formatted_body = f"<p>{html.escape(_session_line(session))}.</p>{content.formatted_body}"
+    else:
+        line = f"{_session_line(session)}. It isn't waiting on you."
+        content = TextMessageEventContent(msgtype=MessageType.NOTICE, body=line, format=Format.HTML, formatted_body=f"<p>{html.escape(line)}</p>")
+    content[TASK_TAG] = task
+    content["m.mentions"] = {}
+    return content
 
 
 def _domains_notice(task: str, request: dict) -> TextMessageEventContent:
