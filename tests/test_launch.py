@@ -16,7 +16,10 @@ python3 -c 'import json, sys; print(json.dumps(sys.argv[1:]))' "$@" >> "$FAKE_TM
 case "$1" in
     has-session) exit "${FAKE_TMUX_HAS:-1}" ;;
     load-buffer) cat > "$FAKE_TMUX_LOG.buffer" ;;
-    new-window) while [ "$1" != -n ]; do shift; done; echo "meeseeks:$2 @7 %3" ;;
+    new-window)
+        # Every window gets its own ids, as tmux gives them: @7 %7 for the first.
+        n=$(( $(cat "$FAKE_TMUX_LOG.n" 2>/dev/null || echo 6) + 1 )); echo "$n" > "$FAKE_TMUX_LOG.n"
+        while [ "$1" != -n ]; do shift; done; echo "meeseeks:$2 @$n %$n" ;;
 esac
 """
 
@@ -493,7 +496,7 @@ def test_exec_records_a_dejima_that_cannot_start(env):
     assert "couldn't start" in result.stderr and "Press Enter" in result.stdout
 
 
-def register_session(env, pane="%3", run_id="0123456789abcdef"):
+def register_session(env, pane="%7", run_id="0123456789abcdef"):
     sessions = env / "run" / "dejima" / "sessions"
     sessions.mkdir(parents=True, exist_ok=True)
     (sessions / run_id).write_text(f"workspace=isolated\npane={pane}\nlabel=meeseeks:1\n")
@@ -501,7 +504,7 @@ def register_session(env, pane="%3", run_id="0123456789abcdef"):
 
 def test_pane_is_recorded(env):
     launch(args(env), {"id": "ms-abc23", "prompt": "p"})
-    assert (env / "tasks" / "ms-abc23" / "pane").read_text() == "%3"
+    assert (env / "tasks" / "ms-abc23" / "pane").read_text() == "%7"
 
 
 def test_launch_waits_for_the_session_run_id(env):
@@ -604,3 +607,28 @@ def test_result_symlink_is_not_output(env, share):
     (shared / "RESULT.md").symlink_to(env / "elsewhere.md")
     quiet(shared)
     assert status(a)[0]["unsignalled"] is False
+
+
+def test_concurrent_sessions_each_get_their_own_answer(env, share):
+    a, first = share
+    second = a.share_root / "20261025-120500-XyZ789"
+    second.mkdir()
+    launch(a, {"id": "ms-defgh", "prompt": "p"})
+    (env / "tasks" / "ms-defgh" / "shared-path").write_text(f"{second}\n")
+    for shared, task in ((first, "ms-abc23"), (second, "ms-defgh")):
+        (shared / ".help").touch()
+        assert run(a, "help", task)[0] == 0
+    windows = {t: (env / "tasks" / t / "window").read_text() for t in ("ms-abc23", "ms-defgh")}
+    assert windows["ms-abc23"] != windows["ms-defgh"]
+
+    import unittest.mock
+
+    for task, text in (("ms-defgh", "answer for the second"), ("ms-abc23", "answer for the first")):
+        (env / "tmux.log").write_text("")
+        with unittest.mock.patch("sys.stdin", io.StringIO(json.dumps({"requester": "@a:example.org", "text": text}))):
+            assert run(a, "--answers", "--paste-delay", "0", "answer", task)[0] == 0
+        paste = next(c for c in tmux_calls(env) if c[0] == "paste-buffer")
+        assert paste[paste.index("-t") + 1] == windows[task]
+        assert (env / "tmux.log.buffer").read_text().endswith(text)
+    assert not (env / "tasks" / "ms-abc23" / "help-pending").exists()
+    assert not (env / "tasks" / "ms-defgh" / "help-pending").exists()

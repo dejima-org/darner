@@ -2,6 +2,7 @@ import io
 import json
 import sys
 import zipfile
+from pathlib import Path
 
 import pytest
 
@@ -556,3 +557,24 @@ def test_existing_events_table_gains_signalled_column(tmp_path):
     assert event.signalled is True
     store.add_event("ms-aaaaa", "output", signalled=False)
     assert store.events("maubot")[1].signalled is False
+
+
+@pytest.mark.parametrize(
+    "toml, message",
+    [
+        ('listen = "127.0.0.1:8080"\nremote_access_url = https://x\n', "line 2, column 21); text values need double quotes"),
+        ('listen = "127.0.0.1:8080"\n', "missing setting 'db_path'"),
+    ],
+)
+def test_config_errors_are_one_line(tmp_path, toml, message):
+    import subprocess
+
+    path = tmp_path / "api.toml"
+    path.write_text(toml)
+    result = subprocess.run(
+        [sys.executable, "-c", "from meeseeks.api import main; main()", "--config", str(path)],
+        capture_output=True, text=True, cwd=Path(__file__).parent.parent,
+    )
+    assert result.returncode == 1
+    assert result.stderr.strip().startswith(f"meeseeks-api: {path}: ")
+    assert message in result.stderr and "Traceback" not in result.stderr
