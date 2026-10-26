@@ -68,15 +68,14 @@ This installs `~/.local/bin/meeseeks-launch`. Make sure dejima can start a sessi
 - Acknowledge CRITICAL audit findings with `dejima-audit ack`.
 - Pre-record decisions for any credential-shaped values dejima's staging scan flags.
 - Run `sudo loginctl enable-linger "$USER"` (or set `KillUserProcesses=no`), so the tmux server outlives the ssh connection.
-- Pre-answer Claude Code's startup questions. Each isolated session gets a copy of your `~/.claude.json`, narrowed to its working directory `/dejima/work`. Without an entry for that directory, Claude Code asks whether to trust the folder. It also offers its fullscreen renderer until it has done so three times, and a copy never remembers that. With Claude Code closed on this host, record both answers:
+- Pre-answer Claude Code's fullscreen renderer offer. Each isolated session gets a throwaway copy of your `~/.claude.json`, so Claude Code keeps offering the renderer, which it does until it has shown the offer three times. With Claude Code closed on this host, record that it has:
 
   ```sh
   cp ~/.claude.json ~/.claude.json.bak
-  jq '.projects["/dejima/work"].hasTrustDialogAccepted = true | .fullscreenUpsellSeenCount = 3' \
-    ~/.claude.json.bak > ~/.claude.json
+  jq '.fullscreenUpsellSeenCount = 3' ~/.claude.json.bak > ~/.claude.json
   ```
 
-  `/dejima/work` is the empty, container-local directory dejima creates for each isolated session, so trusting it trusts no files of yours.
+  dejima marks an isolated session's working directory, `/dejima/work`, as trusted (dejima #428, after release 2026.10.14). With an older dejima, Claude Code also asks whether to trust that folder. Then add `| .projects["/dejima/work"].hasTrustDialogAccepted = true` to the `jq` filter. The directory is empty and container-local, so trusting it trusts no files of yours.
 
 Optionally, add a `[identity.meeseeks]` section to dejima's config, for the git name and keys every meeseeks session should act as (see dejima's configuration docs). Then add `--identity meeseeks` to the launcher options in step 4.
 
@@ -181,7 +180,8 @@ On the dejima host, as `DEJIMA_USER`, authorise the API's key to run the launche
 ```sh
 API_ADDR=192.0.2.10
 API_PUBKEY='ssh-ed25519 AAAA... meeseeks-api'
-LAUNCHER_OPTIONS="--dejima $(command -v dejima) --harness claude-code --backend claude-code=anthropic"
+SHARE_DIR=$(dejima --print-config | sed -n 's/^core.share_dir=//p'); SHARE_DIR=${SHARE_DIR/#\~/$HOME}
+LAUNCHER_OPTIONS="--dejima $(command -v dejima) --share-root $SHARE_DIR/isolated --harness claude-code --backend claude-code=anthropic"
 
 install -d -m 700 ~/.ssh
 touch ~/.ssh/authorized_keys
@@ -191,7 +191,7 @@ echo "from=\"$API_ADDR\",command=\"$HOME/.local/bin/meeseeks-launch $LAUNCHER_OP
 ssh-keygen -lf ~/.ssh/authorized_keys | grep meeseeks-api   # no output means sshd can't read the line
 ```
 
-- `command=` makes the launcher the only thing this key can run, whatever the client asks for. Its paths are absolute, since a non-interactive ssh login has a minimal `PATH` without `~/.local/bin`. That is also why `--dejima` gives dejima's full path.
+- `command=` makes the launcher the only thing this key can run, whatever the client asks for. Its paths are absolute, since a non-interactive ssh login has a minimal `PATH` without `~/.local/bin`. That is also why `--dejima` gives dejima's full path. `--share-root` comes from dejima's own `share_dir`, since output is only read from where dejima puts isolated sessions' `~/shared`.
 - `restrict` turns off forwarding and terminals, and `from=` accepts the key only from `API_ADDR`.
 - `LAUNCHER_OPTIONS` holds the defaults every session gets. Add `--identity meeseeks` if you set one up in step 1, and `--answers` if replies in chat may be typed into sessions. All options are listed under [Launcher options](#launcher-options).
 - To change the options later, delete the `meeseeks-api` line and run this step again with new `LAUNCHER_OPTIONS`. Don't edit it in place: an option outside the quotes makes sshd skip the whole line, which shows up as `Permission denied (publickey)`.

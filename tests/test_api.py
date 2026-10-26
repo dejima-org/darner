@@ -578,3 +578,15 @@ def test_config_errors_are_one_line(tmp_path, toml, message):
     assert result.returncode == 1
     assert result.stderr.strip().startswith(f"meeseeks-api: {path}: ")
     assert message in result.stderr and "Traceback" not in result.stderr
+
+
+async def test_share_error_is_logged_once(started, tmp_path, monkeypatch, caplog):
+    app, client, task_id, *_ = started
+    path = tmp_path / "status.json"
+    path.write_text(json.dumps([{"id": task_id, "state": "running", "ready": False, "error": "shared path '/x' is not under /y"}]))
+    monkeypatch.setenv("STUB_STATUS", str(path))
+    with caplog.at_level("WARNING", logger="meeseeks.api"):
+        await poll_once(app)
+        await poll_once(app)
+    warnings = [r.getMessage() for r in caplog.records if "can't read" in r.getMessage()]
+    assert warnings == [f"can't read {task_id}'s ~/shared, so its output can't be collected: shared path '/x' is not under /y"]
