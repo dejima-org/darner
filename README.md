@@ -38,6 +38,17 @@ The commands below take your values from shell variables, so they can be pasted 
 | `MAUBOT_HOMESERVER` | the bot's homeserver, by its name in maubot's config | the keys under `homeservers:` in maubot's config; `mbc auth --list` shows them |
 | `BOT_USER` | the bot's Matrix username, without `@` or `:server` | you choose it when creating the account |
 
+These set where things are installed. The defaults work as they are:
+
+| variable | default | what goes there |
+|---|---|---|
+| `LAUNCHER_SRC` | `~/src/meeseeks` | the launcher's clone, on the dejima host |
+| `MEESEEKS_DIR` | `/opt/meeseeks` | on the API host: the clone and virtualenv under systemd, or the whole deployment directory under Docker Compose |
+| `MEESEEKS_CONFIG` | `/etc/meeseeks` | systemd only: `api.toml` and the blurbs |
+| `MEESEEKS_STATE` | `/var/lib/meeseeks` | systemd only: the database, results and ssh key; also the service user's home |
+
+Under systemd, the service user `meeseeks` must be able to read `MEESEEKS_DIR` and `MEESEEKS_CONFIG` and write `MEESEEKS_STATE`. A directory inside a private home directory won't work.
+
 Values you type somewhere other than a shell, such as maubot's web UI, are called out where they come up.
 
 ### 1. Install the launcher on the dejima host
@@ -46,9 +57,10 @@ On the dejima host, as `DEJIMA_USER`:
 
 ```sh
 MEESEEKS_REPO=https://git.example.com/example/meeseeks.git
+LAUNCHER_SRC=~/src/meeseeks
 
-git clone "$MEESEEKS_REPO" ~/src/meeseeks
-pipx install --editable ~/src/meeseeks
+git clone "$MEESEEKS_REPO" "$LAUNCHER_SRC"
+pipx install --editable "$LAUNCHER_SRC"
 ```
 
 This installs `~/.local/bin/meeseeks-launch`. Make sure dejima can start a session in a detached tmux window without stopping to ask anything:
@@ -79,21 +91,24 @@ The API runs either as a systemd service or in Docker Compose. Steps 2, 3 and 5 
 
 ```sh
 MEESEEKS_REPO=https://git.example.com/example/meeseeks.git
+MEESEEKS_DIR=/opt/meeseeks
+MEESEEKS_STATE=/var/lib/meeseeks
 
-sudo useradd --system --create-home --home-dir /var/lib/meeseeks --shell /usr/sbin/nologin meeseeks
-sudo git clone "$MEESEEKS_REPO" /opt/meeseeks/src
-sudo python3 -m venv /opt/meeseeks/venv
-sudo /opt/meeseeks/venv/bin/pip install --editable '/opt/meeseeks/src[api]'
+sudo useradd --system --create-home --home-dir "$MEESEEKS_STATE" --shell /usr/sbin/nologin meeseeks
+sudo git clone "$MEESEEKS_REPO" "$MEESEEKS_DIR/src"
+sudo python3 -m venv "$MEESEEKS_DIR/venv"
+sudo "$MEESEEKS_DIR/venv/bin/pip" install --editable "$MEESEEKS_DIR/src[api]"
 ```
 
 **With Docker Compose:** lay out a deployment directory around a clone, and build the image. The container runs as uid 10001, so its data directory belongs to that uid:
 
 ```sh
 MEESEEKS_REPO=https://git.example.com/example/meeseeks.git
+MEESEEKS_DIR=/opt/meeseeks
 
-sudo install -d /opt/meeseeks && cd /opt/meeseeks
-sudo git clone "$MEESEEKS_REPO" src
-sudo cp src/examples/compose.yaml .
+sudo install -d -o "$USER" "$MEESEEKS_DIR" && cd "$MEESEEKS_DIR"
+git clone "$MEESEEKS_REPO" src
+cp src/examples/compose.yaml .
 sudo install -d -m 700 -o 10001 -g 10001 data
 sudo install -d -m 750 -g 10001 config config/blurbs
 sudo docker compose build
@@ -105,20 +120,22 @@ The API reaches the dejima host with a key of its own. On the API host:
 
 ```sh
 DEJIMA_HOST=dejima.example.com
+MEESEEKS_DIR=/opt/meeseeks          # Docker Compose
+MEESEEKS_STATE=/var/lib/meeseeks    # systemd
 ```
 
 **With systemd:**
 
 ```sh
-sudo -u meeseeks install -d -m 700 /var/lib/meeseeks/.ssh
-sudo -u meeseeks ssh-keygen -t ed25519 -N '' -C meeseeks-api -f /var/lib/meeseeks/.ssh/id_ed25519
-sudo cat /var/lib/meeseeks/.ssh/id_ed25519.pub     # this is API_PUBKEY, for step 4
+sudo -u meeseeks install -d -m 700 "$MEESEEKS_STATE/.ssh"
+sudo -u meeseeks ssh-keygen -t ed25519 -N '' -C meeseeks-api -f "$MEESEEKS_STATE/.ssh/id_ed25519"
+sudo cat "$MEESEEKS_STATE/.ssh/id_ed25519.pub"     # this is API_PUBKEY, for step 4
 ```
 
 **With Docker Compose:** generate the key inside the container, so it lands in `data/.ssh` with the right owner:
 
 ```sh
-cd /opt/meeseeks
+cd "$MEESEEKS_DIR"
 sudo docker compose run --rm --entrypoint sh api -c \
   'install -d -m 700 ~/.ssh && ssh-keygen -t ed25519 -N "" -C meeseeks-api -f ~/.ssh/id_ed25519'
 sudo cat data/.ssh/id_ed25519.pub                  # this is API_PUBKEY, for step 4
@@ -143,9 +160,9 @@ If they match, save it on the API host:
 
 ```sh
 # With systemd:
-sudo -u meeseeks tee -a /var/lib/meeseeks/.ssh/known_hosts < /tmp/dejima.hostkey
+sudo -u meeseeks tee -a "$MEESEEKS_STATE/.ssh/known_hosts" < /tmp/dejima.hostkey
 # With Docker Compose:
-sudo install -m 644 -o 10001 -g 10001 /tmp/dejima.hostkey /opt/meeseeks/data/.ssh/known_hosts
+sudo install -m 644 -o 10001 -g 10001 /tmp/dejima.hostkey "$MEESEEKS_DIR/data/.ssh/known_hosts"
 ```
 
 ### 4. Lock the key to the launcher on the dejima host
@@ -174,17 +191,22 @@ On the API host, set the values the config needs, and generate the bot's token:
 ```sh
 DEJIMA_HOST=dejima.example.com
 DEJIMA_USER=operator
+MEESEEKS_DIR=/opt/meeseeks
+MEESEEKS_CONFIG=/etc/meeseeks       # systemd
+MEESEEKS_STATE=/var/lib/meeseeks    # systemd
 API_TOKEN=$(openssl rand -hex 32)
 echo "$API_TOKEN"     # keep this for step 6
 ```
 
-**With systemd:** install the example config, readable only by root and the service, and fill in your values:
+**With systemd:** install the example config, readable only by root and the service, and fill in your values and directories:
 
 ```sh
-sudo install -d -m 750 -g meeseeks /etc/meeseeks /etc/meeseeks/blurbs
-sudo install -m 640 -g meeseeks /opt/meeseeks/src/examples/api.toml /etc/meeseeks/api.toml
+sudo install -d -m 750 -g meeseeks "$MEESEEKS_CONFIG" "$MEESEEKS_CONFIG/blurbs"
+sudo install -m 640 -g meeseeks "$MEESEEKS_DIR/src/examples/api.toml" "$MEESEEKS_CONFIG/api.toml"
 sudo sed -i -e "s/operator@dejima.example.com/$DEJIMA_USER@$DEJIMA_HOST/" \
-  -e "s/replace-with-a-long-random-token/$API_TOKEN/" /etc/meeseeks/api.toml
+  -e "s/replace-with-a-long-random-token/$API_TOKEN/" \
+  -e "s|/var/lib/meeseeks|$MEESEEKS_STATE|g" -e "s|/etc/meeseeks|$MEESEEKS_CONFIG|g" \
+  "$MEESEEKS_CONFIG/api.toml"
 ```
 
 `listen` stays on `127.0.0.1:8080`, which is right if maubot runs on the same machine. Otherwise, edit it to a private address, or put a TLS reverse proxy in front: the token travels in every request.
@@ -192,7 +214,9 @@ sudo sed -i -e "s/operator@dejima.example.com/$DEJIMA_USER@$DEJIMA_HOST/" \
 Start it:
 
 ```sh
-sudo cp /opt/meeseeks/src/examples/meeseeks-api.service /etc/systemd/system/
+sed -e "s|/opt/meeseeks|$MEESEEKS_DIR|g" -e "s|/var/lib/meeseeks|$MEESEEKS_STATE|g" \
+  -e "s|/etc/meeseeks|$MEESEEKS_CONFIG|g" "$MEESEEKS_DIR/src/examples/meeseeks-api.service" \
+  | sudo tee /etc/systemd/system/meeseeks-api.service > /dev/null
 sudo systemctl daemon-reload
 sudo systemctl enable --now meeseeks-api
 ```
@@ -209,7 +233,7 @@ curl -H "Authorization: Bearer $API_TOKEN" http://127.0.0.1:8080/v1/blurbs   # p
 **With Docker Compose:** the config directory is mounted at `/etc/meeseeks` in the container, so the example's paths work unchanged. `listen` becomes `0.0.0.0:8080`, which is inside the container. `compose.yaml` decides what reaches it: by default, only `127.0.0.1:8080` on the host. If maubot runs in Docker too, drop the published port and put both on a shared network.
 
 ```sh
-cd /opt/meeseeks
+cd "$MEESEEKS_DIR"
 sudo install -m 640 -g 10001 src/examples/api.toml config/api.toml
 sudo sed -i -e "s/operator@dejima.example.com/$DEJIMA_USER@$DEJIMA_HOST/" \
   -e "s/replace-with-a-long-random-token/$API_TOKEN/" \
@@ -228,7 +252,7 @@ curl -H "Authorization: Bearer $API_TOKEN" http://127.0.0.1:8080/v1/blurbs      
 
 If the ssh check asks for a password or prints anything but JSON, recheck step 4. A common cause is `API_ADDR` not matching where the connection really comes from.
 
-Context blurbs go in the blurbs directory as `<name>.md`: `/etc/meeseeks/blurbs`, or `/opt/meeseeks/config/blurbs` under Docker. [`examples/blurbs`](examples/blurbs) has one. Every config key is described under [API config](#api-config).
+Context blurbs go in the blurbs directory as `<name>.md`: `$MEESEEKS_CONFIG/blurbs`, or `$MEESEEKS_DIR/config/blurbs` under Docker. [`examples/blurbs`](examples/blurbs) has one. Every config key is described under [API config](#api-config).
 
 ### 6. Set up the bot in maubot
 
@@ -270,10 +294,11 @@ Then reply to a note, mentioning the bot, with a line of context. The bot answer
 
 Update in this order, because each part may rely on commands or fields added to the one after it: the dejima host, then the API, then the plugin. Look at the commit log first for anything that needs a step of its own.
 
-**Dejima host**, as `operator`. The install is editable, so pulling is the update:
+**Dejima host**, as `DEJIMA_USER`. The install is editable, so pulling is the update:
 
 ```sh
-git -C ~/src/meeseeks pull
+LAUNCHER_SRC=~/src/meeseeks
+git -C "$LAUNCHER_SRC" pull
 ```
 
 Sessions already running are unaffected.
@@ -283,20 +308,25 @@ Sessions already running are unaffected.
 With systemd:
 
 ```sh
+MEESEEKS_DIR=/opt/meeseeks
+MEESEEKS_STATE=/var/lib/meeseeks
+
 sudo systemctl stop meeseeks-api
-sudo -u meeseeks cp /var/lib/meeseeks/tasks.db /var/lib/meeseeks/tasks.db.bak
-sudo git -C /opt/meeseeks/src pull
-sudo /opt/meeseeks/venv/bin/pip install --editable '/opt/meeseeks/src[api]'   # picks up new dependencies
+sudo -u meeseeks cp "$MEESEEKS_STATE/tasks.db" "$MEESEEKS_STATE/tasks.db.bak"
+sudo git -C "$MEESEEKS_DIR/src" pull
+sudo "$MEESEEKS_DIR/venv/bin/pip" install --editable "$MEESEEKS_DIR/src[api]"   # picks up new dependencies
 sudo systemctl start meeseeks-api
 ```
 
 With Docker Compose:
 
 ```sh
-cd /opt/meeseeks
+MEESEEKS_DIR=/opt/meeseeks
+
+cd "$MEESEEKS_DIR"
 sudo docker compose stop
 sudo cp data/tasks.db data/tasks.db.bak
-sudo git -C src pull
+git -C src pull
 sudo docker compose build --pull
 sudo docker compose up -d
 ```
