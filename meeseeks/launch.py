@@ -72,6 +72,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         "--quiet-period", default=600, type=int,
         help="seconds without changes after which an unsignalled RESULT.md is collected; 0 waits for the session to end",
     )
+    p.add_argument("--keep-records", action="store_true", help="pass --keep-records to every dejima session")
     p.add_argument("--docker", default="docker")
     p.add_argument("--dejima-allow", default="dejima-allow")
     p.add_argument("--stop-timeout", default=60, type=int, help="seconds to wait for a stopped session to exit")
@@ -84,6 +85,8 @@ def dejima_argv(args: argparse.Namespace, job, task_dir: Path, dejima: str) -> l
     harness = job.harness or args.harness
     backend = job.backend or dict(args.backend).get(harness)
     argv = [dejima, "--isolated", "--no-pause", "--shared-path-file", str(task_dir / "shared-path")]
+    if args.keep_records:
+        argv.append("--keep-records")
     for flag, value in (("--identity", args.identity), ("--harness", harness), ("--backend", backend)):
         if value:
             argv += [flag, value]

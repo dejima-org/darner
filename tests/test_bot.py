@@ -1040,3 +1040,17 @@ async def test_unverified_domain_is_reported_as_allowed(maubot_plugin, maubot_te
         "Allowed for ms-7f3k2: recipes.example.com.\n"
         "recipes.example.com is allowed, but didn't answer on port 443 from the session: curl exit 28"
     ]
+
+
+async def test_mentioned_reply_to_a_session_message_is_told_to_it(maubot_plugin, maubot_test_bot, sessions):
+    maubot_test_bot.events["$started"] = bot_message(**{"io.meeseeks.task": "ms-7f3k2"})
+    await send(maubot_test_bot, message("@meeseeks:example.org try port 8443 instead", reply_to="$started"))
+    assert sessions.messages == [("ms-7f3k2", {"text": "try port 8443 instead", "requester": ALICE})]
+    assert sessions.requests == []
+
+
+async def test_mention_alone_in_reply_to_a_session_message(maubot_plugin, maubot_test_bot, sessions):
+    maubot_test_bot.events["$started"] = bot_message(**{"io.meeseeks.task": "ms-7f3k2"})
+    await send(maubot_test_bot, message("@meeseeks:example.org", reply_to="$started"))
+    assert replies(maubot_test_bot) == ["Say what to tell ms-7f3k2 after the mention."]
+    assert sessions.messages == [] and sessions.requests == []

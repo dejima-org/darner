@@ -749,3 +749,20 @@ async def test_message_reaches_launcher(started, tmp_path):
     body = {"text": "Also check the logs.", "requester": "@alice:example.org"}
     assert (await client.post(f"/v1/tasks/{task_id}/message", json=body, headers=AUTH)).status == 204
     assert fetches(tmp_path)[-1] == ["message", task_id, body]
+
+
+async def test_default_blurbs_come_first_in_every_prompt(aiohttp_client, config, tmp_path):
+    (Path(config["blurbs_dir"]) / "network.md").write_text("Reach internal services through the proxy on port 8443.\n")
+    config["default_blurbs"] = ["network"]
+    client = await aiohttp_client(make_app(config, poll=False))
+    resp = await client.post("/v1/tasks", json=request(blurbs=["myapp", "network"]), headers=AUTH)
+    assert resp.status == 201
+    prompt = launched(tmp_path)[0]["prompt"]
+    assert prompt.index("## Context: network") < prompt.index("## Context: myapp")
+    assert prompt.count("## Context: network") == 1
+
+
+def test_missing_default_blurb_is_a_config_error(config):
+    config["default_blurbs"] = ["nope"]
+    with pytest.raises(ValueError, match="default blurb 'nope' has no nope.md"):
+        make_app(config, poll=False)

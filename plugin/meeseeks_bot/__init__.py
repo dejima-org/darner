@@ -240,6 +240,12 @@ class MeeseeksBot(Plugin):
             return
         if task := self._help_task(replied):
             await self._respond(evt, self._answer(evt, task))
+        elif mentioned and (task := self._tagged_task(replied)):
+            # A reply to the bot about a session is for that session, not a new task.
+            if command:
+                await self._respond(evt, self._tell(evt, task, command))
+            else:
+                await evt.reply(f"Say what to tell {task} after the mention.", markdown=False)
         elif mentioned:
             await self._respond(evt, self._submit(evt, replied))
 
