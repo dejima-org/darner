@@ -17,7 +17,8 @@ Meeseeks has three parts, which can share a machine or not:
 You need:
 
 - dejima, working on the dejima host, with `--isolated`, `--domains`, `--dependencies` and `--shared-path-file`
-- tmux, pipx and git on the dejima host, and Python 3.11 or newer on both hosts
+- tmux, pipx, git and Python 3.11 or newer on the dejima host
+- git on the API host, plus either Python 3.11 or newer (to run the API under systemd) or Docker with Compose
 - a maubot server, and a Matrix account for the bot
 
 The examples below use these placeholders; substitute your own:
@@ -61,7 +62,9 @@ Quit the session when you're done, then remove `~/meeseeks/tasks/ms-hello`.
 
 ### 2. Install the API
 
-On the API host, create a service user and install into a virtualenv:
+The API runs either as a systemd service or in Docker Compose. Steps 2, 3 and 5 give both; pick one and follow it throughout.
+
+**With systemd:** create a service user and install into a virtualenv:
 
 ```sh
 sudo useradd --system --create-home --home-dir /var/lib/meeseeks --shell /usr/sbin/nologin meeseeks
@@ -70,9 +73,22 @@ sudo python3 -m venv /opt/meeseeks/venv
 sudo /opt/meeseeks/venv/bin/pip install --editable '/opt/meeseeks/src[api]'
 ```
 
+**With Docker Compose:** lay out a deployment directory around a clone, and build the image. The container runs as uid 10001, so its data directory belongs to that uid:
+
+```sh
+sudo install -d /opt/meeseeks && cd /opt/meeseeks
+sudo git clone https://git.example.com/example/meeseeks.git src
+sudo cp src/examples/compose.yaml .
+sudo install -d -m 700 -o 10001 -g 10001 data
+sudo install -d -m 750 -g 10001 config config/blurbs
+sudo docker compose build
+```
+
 ### 3. Give the API an ssh key and the dejima host's host key
 
-The API reaches the dejima host as `operator`, with a key of its own:
+The API reaches the dejima host as `operator`, with a key of its own.
+
+**With systemd:**
 
 ```sh
 sudo -u meeseeks install -d -m 700 /var/lib/meeseeks/.ssh
@@ -89,6 +105,23 @@ ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub   # on the dejima host: must ma
 sudo -u meeseeks tee -a /var/lib/meeseeks/.ssh/known_hosts < /tmp/dejima.hostkey
 ```
 
+**With Docker Compose:** generate the key inside the container, so it lands in `data/.ssh` with the right owner:
+
+```sh
+cd /opt/meeseeks
+sudo docker compose run --rm --entrypoint sh api -c \
+  'install -d -m 700 ~/.ssh && ssh-keygen -t ed25519 -N "" -C meeseeks-api -f ~/.ssh/id_ed25519'
+sudo cat data/.ssh/id_ed25519.pub                  # you need this in step 4
+```
+
+Then check and record the host key as above, writing it to the container's `known_hosts`:
+
+```sh
+ssh-keyscan -t ed25519 dejima.example.com > /tmp/dejima.hostkey
+ssh-keygen -lf /tmp/dejima.hostkey                 # must match the dejima host's
+sudo install -m 644 -o 10001 -g 10001 /tmp/dejima.hostkey data/.ssh/known_hosts
+```
+
 ### 4. Lock the key to the launcher on the dejima host
 
 Append one line to `operator`'s `~/.ssh/authorized_keys`, with the public key from step 3:
@@ -98,7 +131,7 @@ from="192.0.2.10",command="/home/operator/.local/bin/meeseeks-launch --harness c
 ```
 
 - `command=` makes the launcher the only thing this key can run, whatever the client asks for. Use the absolute path, since a non-interactive ssh login may not have `~/.local/bin` on its `PATH`.
-- `restrict` turns off forwarding and terminals, and `from=` accepts the key only from the API host.
+- `restrict` turns off forwarding and terminals, and `from=` accepts the key only from the API host. Under Docker, connections come from the Docker host's address.
 - Put the launcher's options in the command: the defaults every session gets, plus `--identity` from step 1 and `--answers` if replies in chat may be typed into sessions. All options are listed under [Launcher options](#launcher-options).
 
 ### 5. Configure and start the API
@@ -109,7 +142,7 @@ Generate a token for the bot to authenticate to the API:
 python3 -c 'import secrets; print(secrets.token_urlsafe(32))'
 ```
 
-Install the example config, readable only by root and the service:
+**With systemd:** install the example config, readable only by root and the service:
 
 ```sh
 sudo install -d -m 750 -g meeseeks /etc/meeseeks /etc/meeseeks/blurbs
@@ -117,14 +150,23 @@ sudo install -m 640 -g meeseeks /opt/meeseeks/src/examples/api.toml /etc/meeseek
 sudoedit /etc/meeseeks/api.toml
 ```
 
-In it:
+**With Docker Compose:** the config directory is mounted at `/etc/meeseeks` in the container, so the example's paths work unchanged:
+
+```sh
+cd /opt/meeseeks
+sudo install -m 640 -g 10001 src/examples/api.toml config/api.toml
+sudoedit config/api.toml
+```
+
+In either case, edit the config:
 - Set `launch_command` to `["ssh", "-T", "-o", "BatchMode=yes", "operator@dejima.example.com"]`.
 - Put the token under `[tokens]` as `maubot = "..."`.
-- Leave `listen` on `127.0.0.1:8080` if maubot runs on the same machine. Otherwise, listen on a private address, or put a TLS reverse proxy in front: the token travels in every request.
+- Under systemd, leave `listen` on `127.0.0.1:8080` if maubot runs on the same machine. Otherwise, listen on a private address, or put a TLS reverse proxy in front: the token travels in every request.
+- Under Docker, set `listen` to `0.0.0.0:8080`. That is inside the container, and `compose.yaml` decides what reaches it: by default only `127.0.0.1:8080` on the host. If maubot runs in Docker too, drop the published port and put both on a shared network.
 
-Context blurbs go in `/etc/meeseeks/blurbs` as `<name>.md`, and [`examples/blurbs`](examples/blurbs) has one. Every key is described under [API config](#api-config).
+Context blurbs go in the blurbs directory as `<name>.md`: `/etc/meeseeks/blurbs`, or `config/blurbs` under Docker. [`examples/blurbs`](examples/blurbs) has one. Every key is described under [API config](#api-config).
 
-Run it as a systemd service:
+**Start it with systemd:**
 
 ```sh
 sudo cp /opt/meeseeks/src/examples/meeseeks-api.service /etc/systemd/system/
@@ -140,6 +182,22 @@ curl -H "Authorization: Bearer <token>" http://127.0.0.1:8080/v1/blurbs        #
 ```
 
 If the first command asks for a password or prints anything but JSON, recheck step 4. `journalctl -u meeseeks-api` shows the API's log.
+
+**Start it with Docker Compose:**
+
+```sh
+cd /opt/meeseeks
+sudo docker compose up -d
+```
+
+Check both links:
+
+```sh
+sudo docker compose exec api ssh -T -o BatchMode=yes operator@dejima.example.com status   # prints []
+curl -H "Authorization: Bearer <token>" http://127.0.0.1:8080/v1/blurbs                  # prints the blurb names
+```
+
+`docker compose logs api` shows the API's log.
 
 ### 6. Set up the bot in maubot
 
@@ -160,7 +218,7 @@ In maubot's web UI:
 1. Under **Instances**, create one with the bot's client as the primary user and `io.example.meeseeks` as the type.
 2. Set the instance config:
    - `allowlist`: the Matrix IDs that may start tasks, e.g. `["@you:example.org"]`
-   - `api_url`: where the API is reachable from maubot, e.g. `http://127.0.0.1:8080`
+   - `api_url`: where the API is reachable from maubot, e.g. `http://127.0.0.1:8080`, or `http://api:8080` from a container on the same Docker network
    - `api_token`: the token from step 5
 3. Invite the bot to the room you keep notes in, and accept the invite. The simplest way is to turn on **Autojoin** on the bot's client, invite it, then turn autojoin off again, so only rooms you choose matter.
 
@@ -184,7 +242,9 @@ git -C ~/src/meeseeks pull
 
 Sessions already running are unaffected.
 
-**API host.** Back up the database while the service is stopped:
+**API host.** Back up the database while the service is stopped.
+
+With systemd:
 
 ```sh
 sudo systemctl stop meeseeks-api
@@ -192,6 +252,17 @@ sudo -u meeseeks cp /var/lib/meeseeks/tasks.db /var/lib/meeseeks/tasks.db.bak
 sudo git -C /opt/meeseeks/src pull
 sudo /opt/meeseeks/venv/bin/pip install --editable '/opt/meeseeks/src[api]'   # picks up new dependencies
 sudo systemctl start meeseeks-api
+```
+
+With Docker Compose:
+
+```sh
+cd /opt/meeseeks
+sudo docker compose stop
+sudo cp data/tasks.db data/tasks.db.bak
+sudo git -C src pull
+sudo docker compose build --pull
+sudo docker compose up -d
 ```
 
 **Plugin.** Download the `.mbp` from the new release and upload it, as in setup step 6. Maubot replaces the plugin and restarts its instances. Instance config is kept, and new keys get their defaults.

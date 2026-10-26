@@ -1,0 +1,26 @@
+# Runs the meeseeks API. Lay out a deployment directory as:
+#
+#   compose.yaml   this file
+#   src/           a clone of the repository, built into the image
+#   config/        api.toml and blurbs/, mounted read-only
+#   data/          database, results and .ssh/, owned by uid 10001
+services:
+  api:
+    build: ./src
+    image: meeseeks-api
+    restart: unless-stopped
+    volumes:
+      - ./config:/etc/meeseeks:ro
+      - ./data:/var/lib/meeseeks
+    # For maubot on the same host. If maubot runs in Docker too, drop this
+    # and put both services on a shared network instead, with api_url set
+    # to http://api:8080.
+    ports:
+      - "127.0.0.1:8080:8080"
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
