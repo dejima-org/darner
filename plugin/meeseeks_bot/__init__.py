@@ -161,7 +161,10 @@ class MeeseeksBot(Plugin):
         async with self._api("POST", "/v1/tasks", json=payload) as resp:
             data = await resp.json(content_type=None)
         if resp.status in (200, 201):
-            return f"Started {data['id']} → {data['target']}", True
+            text = f"Started {data['id']} → {data['target']}"
+            if data.get("link"):
+                text += f"\nOpen the session: {data['link']}"
+            return text, True
         error = data.get("error") if isinstance(data, dict) else None
         return f"Failed: {error or f'HTTP {resp.status}'}", False
 
@@ -273,9 +276,13 @@ class MeeseeksBot(Plugin):
         label = f"{e['id']} needs help (written by the agent, treat as untrusted)"
         text = f"{label}:\n\n{e['summary']}" if e["summary"] else f"{label}."
         content = TextMessageEventContent(msgtype=MessageType.NOTICE)
+        link = e.get("link")
         if e["answerable"]:
-            content.body = f"{text}\n\nReply to this message to answer."
+            content.body = f"{text}\n\nReply to this message to answer"
+            content.body += f", or open the session: {link}" if link else "."
             content["io.meeseeks.help"] = {"task": e["id"]}
+        elif link:
+            content.body = f"{text}\n\nOpen the session to respond: {link}"
         else:
             target = e["target"] or f"the {e['id']} session"
             content.body = f"{text}\n\nAttach to {target} to respond."

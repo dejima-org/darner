@@ -9,6 +9,7 @@ import secrets
 from dataclasses import dataclass, field
 
 MAX_PROMPT = 64 * 1024
+MAX_SESSION_WAIT = 60
 MAX_GRANTS = 64
 
 _LABEL = r"[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?"
@@ -42,6 +43,7 @@ class Job:
     dependencies: list[str] = field(default_factory=list)
     harness: str | None = None
     backend: str | None = None
+    session_wait: int = 0
 
 
 def new_task_id() -> str:
@@ -85,7 +87,7 @@ def _optional_name(d: dict, key: str) -> str | None:
 def validate_job(d: object) -> Job:
     if not isinstance(d, dict):
         raise JobError("job must be an object")
-    unknown = set(d) - {"id", "prompt", "domains", "dependencies", "harness", "backend"}
+    unknown = set(d) - {"id", "prompt", "domains", "dependencies", "harness", "backend", "session_wait"}
     if unknown:
         raise JobError(f"unknown job keys: {', '.join(sorted(unknown))}")
     if not valid_task_id(d.get("id")):
@@ -95,6 +97,9 @@ def validate_job(d: object) -> Job:
         raise JobError(f"prompt must be non-empty text of at most {MAX_PROMPT} characters")
     if "\0" in prompt:
         raise JobError("prompt contains a NUL byte")
+    session_wait = d.get("session_wait", 0)
+    if type(session_wait) is not int or not 0 <= session_wait <= MAX_SESSION_WAIT:
+        raise JobError(f"session_wait must be whole seconds from 0 to {MAX_SESSION_WAIT}")
     return Job(
         id=d["id"],
         prompt=prompt,
@@ -102,6 +107,7 @@ def validate_job(d: object) -> Job:
         dependencies=_str_list(d, "dependencies", valid_dependency, "dependency spec"),
         harness=_optional_name(d, "harness"),
         backend=_optional_name(d, "backend"),
+        session_wait=session_wait,
     )
 
 

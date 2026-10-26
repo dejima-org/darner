@@ -16,7 +16,7 @@ python3 -c 'import json, sys; print(json.dumps(sys.argv[1:]))' "$@" >> "$FAKE_TM
 case "$1" in
     has-session) exit "${FAKE_TMUX_HAS:-1}" ;;
     load-buffer) cat > "$FAKE_TMUX_LOG.buffer" ;;
-    new-window) while [ "$1" != -n ]; do shift; done; echo "meeseeks:$2 @7" ;;
+    new-window) while [ "$1" != -n ]; do shift; done; echo "meeseeks:$2 @7 %3" ;;
 esac
 """
 
@@ -39,6 +39,7 @@ def env(tmp_path, monkeypatch):
     (bin_dir / "dejima").chmod(0o755)
     monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
     monkeypatch.setenv("FAKE_TMUX_LOG", str(tmp_path / "tmux.log"))
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "run"))
     return tmp_path
 
 
@@ -193,8 +194,8 @@ def test_status_states(env, share):
     code, out, _ = run(a, "status")
     assert code == 0
     assert json.loads(out) == [
-        {"id": "ms-abc23", "state": "exited", "ready": True, "help": False, "answerable": False},
-        {"id": "ms-starx", "state": "starting", "ready": False, "help": False, "answerable": False},
+        {"id": "ms-abc23", "state": "exited", "ready": True, "help": False, "answerable": False, "run_id": None},
+        {"id": "ms-starx", "state": "starting", "ready": False, "help": False, "answerable": False, "run_id": None},
     ]
 
 
@@ -487,3 +488,41 @@ def test_exec_records_a_dejima_that_cannot_start(env):
     assert result.returncode == 127
     assert (task / "exit").read_text() == "127\n"
     assert "couldn't start" in result.stderr and "Press Enter" in result.stdout
+
+
+def register_session(env, pane="%3", run_id="0123456789abcdef"):
+    sessions = env / "run" / "dejima" / "sessions"
+    sessions.mkdir(parents=True, exist_ok=True)
+    (sessions / run_id).write_text(f"workspace=isolated\npane={pane}\nlabel=meeseeks:1\n")
+
+
+def test_pane_is_recorded(env):
+    launch(args(env), {"id": "ms-abc23", "prompt": "p"})
+    assert (env / "tasks" / "ms-abc23" / "pane").read_text() == "%3"
+
+
+def test_launch_waits_for_the_session_run_id(env):
+    register_session(env, pane="%9", run_id="ffffffffffffffff")
+    register_session(env)
+    (env / "run" / "dejima" / "sessions" / "not-a-run-id").write_text("pane=%3\n")
+    result = launch(args(env), {"id": "ms-abc23", "prompt": "p", "session_wait": 5})
+    assert result["run_id"] == "0123456789abcdef"
+
+
+def test_launch_gives_up_waiting(env):
+    import time
+
+    start = time.monotonic()
+    result = launch(args(env), {"id": "ms-abc23", "prompt": "p", "session_wait": 1})
+    assert "run_id" not in result and time.monotonic() - start < 3
+
+
+def test_launch_without_session_wait_does_not_look(env):
+    register_session(env)
+    assert "run_id" not in launch(args(env), {"id": "ms-abc23", "prompt": "p"})
+
+
+def test_status_reports_run_id_of_running_task(env, share):
+    a, _ = share
+    register_session(env)
+    assert status(a)[0]["run_id"] == "0123456789abcdef"

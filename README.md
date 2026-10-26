@@ -255,6 +255,8 @@ curl -H "Authorization: Bearer $API_TOKEN" http://127.0.0.1:8080/v1/blurbs      
 
 If the ssh check asks for a password or prints anything but JSON, recheck step 4. A common cause is `API_ADDR` not matching where the connection really comes from.
 
+To link sessions from chat, set `remote_access_url` to the `base_url` of dejima's web remote access, if you use it. The bot then adds a link to the "Started" reply and to help requests. Opening the link is protected however your remote access is, such as by the reverse proxy in front of it. The link only works if dejima registers sessions in `/run/user/<uid>`, which needs `loginctl enable-linger` from step 1.
+
 Context blurbs go in the blurbs directory as `<name>.md`: `$MEESEEKS_CONFIG/blurbs`, or `$MEESEEKS_DIR/config/blurbs` under Docker. [`examples/blurbs`](examples/blurbs) has one. Every config key is described under [API config](#api-config).
 
 ### 6. Set up the bot in maubot
@@ -363,7 +365,7 @@ The note is the task. The rest of the reply, minus the mention and the keyword l
 | `harness:` | harness for this task, overriding the default |
 | `backend:` | backend for this task, overriding the harness's default |
 
-The bot replies with the task id and its tmux target, or with why it was refused. It only acts when both the reply and the note are from users in its `allowlist`, since the note becomes the agent's instructions.
+The bot replies with the task id and its tmux target, plus a link to the session if the API has `remote_access_url` set, or with why it was refused. It only acts when both the reply and the note are from users in its `allowlist`, since the note becomes the agent's instructions.
 
 When the agent delivers output, the bot replies again with the agent's summary and the output as a zip. It also says when the session ends.
 
@@ -447,6 +449,8 @@ Grants use `dejima --domains FILE` and `--dependencies FILE`, and output collect
 | `launch_command` | how to reach the launcher; the command is appended, and over ssh arrives as `SSH_ORIGINAL_COMMAND` |
 | `launch_timeout` | seconds a launcher call may take |
 | `output_instructions` | replaces the prompt's last section |
+| `remote_access_url` | dejima's web remote access `base_url`, to link each session from chat; unset means no links |
+| `session_wait` | with `remote_access_url`, seconds a launch waits for dejima to register the session (default 20) |
 | `[tokens]` | one bearer token per client, by name |
 | `[policy]` | `deny_domains` (a denied domain's parents are denied too), `max_domains` |
 | `[limits]` | `max_bytes`, `max_files`: should match the launcher's `--max-output` |

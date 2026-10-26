@@ -32,7 +32,10 @@ else:
     open(os.environ["STUB_LOG"], "a").write(json.dumps(job) + "\\n")
     if os.environ.get("STUB_FAIL"):
         sys.exit("no such harness")
-    print(json.dumps({"id": job["id"], "target": "meeseeks:" + job["id"]}))
+    result = {"id": job["id"], "target": "meeseeks:" + job["id"]}
+    if os.environ.get("STUB_RUN_ID"):
+        result["run_id"] = os.environ["STUB_RUN_ID"]
+    print(json.dumps(result))
 """
 
 AUTH = {"Authorization": "Bearer s3cret"}
@@ -442,3 +445,70 @@ async def test_blurbs_are_listed(client):
     resp = await client.get("/v1/blurbs", headers=AUTH)
     assert resp.status == 200 and await resp.json() == ["myapp"]
     assert (await client.get("/v1/blurbs")).status == 401
+
+
+RUN = "0123456789abcdef"
+
+
+async def test_no_link_without_remote_access_url(client, tmp_path):
+    body = await (await client.post("/v1/tasks", json=request(), headers=AUTH)).json()
+    assert body["link"] is None
+    assert "session_wait" not in launched(tmp_path)[0]
+
+
+async def test_started_task_links_to_its_session(aiohttp_client, config, tmp_path, monkeypatch):
+    config["remote_access_url"] = "https://dejima.example.com/"
+    monkeypatch.setenv("STUB_RUN_ID", RUN)
+    client = await aiohttp_client(make_app(config, poll=False))
+    resp = await client.post("/v1/tasks", json=request(), headers=AUTH)
+    assert (await resp.json())["link"] == f"https://dejima.example.com/?arg={RUN}"
+    assert launched(tmp_path)[0]["session_wait"] == 20
+
+    repeat = await (await client.post("/v1/tasks", json=request(), headers=AUTH)).json()
+    assert repeat["link"] == f"https://dejima.example.com/?arg={RUN}"
+
+
+async def test_bad_run_id_from_launcher_is_dropped(aiohttp_client, config, monkeypatch):
+    config["remote_access_url"] = "https://dejima.example.com"
+    monkeypatch.setenv("STUB_RUN_ID", "../../etc")
+    client = await aiohttp_client(make_app(config, poll=False))
+    assert (await (await client.post("/v1/tasks", json=request(), headers=AUTH)).json())["link"] is None
+
+
+async def test_run_id_from_status_links_later_events(started, config, monkeypatch, tmp_path):
+    app, client, task_id, status, _ = started
+    config["remote_access_url"] = "https://dejima.example.com"
+    path = tmp_path / "status.json"
+    path.write_text(json.dumps([
+        {"id": task_id, "state": "running", "ready": False, "help": True, "answerable": False, "run_id": RUN},
+    ]))
+    monkeypatch.setenv("STUB_STATUS", str(path))
+    monkeypatch.setenv("STUB_HELP", "Which branch?")
+    await poll_once(app)
+    [event] = await events(client)
+    assert event["type"] == "help" and event["link"] == f"https://dejima.example.com/?arg={RUN}"
+
+
+def test_remote_access_url_must_be_http(config):
+    config["remote_access_url"] = "javascript:alert(1)"
+    with pytest.raises(ValueError):
+        make_app(config, poll=False)
+
+
+def test_existing_database_gains_run_id_column(tmp_path):
+    import sqlite3
+
+    db = tmp_path / "old.db"
+    old = sqlite3.connect(db)
+    old.executescript(
+        "CREATE TABLE tasks (id TEXT PRIMARY KEY, client TEXT NOT NULL, source_kind TEXT NOT NULL,"
+        " source_ref TEXT NOT NULL, source_json TEXT NOT NULL, requester TEXT NOT NULL, job_json TEXT NOT NULL,"
+        " status TEXT NOT NULL, target TEXT, error TEXT, created REAL NOT NULL, UNIQUE (client, source_kind, source_ref));"
+        "INSERT INTO tasks VALUES ('ms-aaaaa', 'maubot', 'matrix', '$e', '{}', '@u:example.org', '{}', 'launched',"
+        " 'meeseeks:ms-aaaaa', NULL, 0);"
+    )
+    old.commit()
+    old.close()
+    store = Store(str(db))
+    store.set_run_id("ms-aaaaa", RUN)
+    assert store.launched() == ["ms-aaaaa"]

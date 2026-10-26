@@ -13,6 +13,7 @@ sent to its server and the prompt is passed as a single argument.
 import argparse
 import json
 import os
+import re
 import shutil
 import signal
 import stat
@@ -25,6 +26,7 @@ from meeseeks import archive
 from meeseeks.job import JobError, valid_name, valid_task_id, validate_job
 
 FETCH_REJECTED = 3
+RUN_ID = re.compile(r"[0-9a-f]{16}")
 MAX_HELP = 16 * 1024
 SIGNALS = {"done": (".done", "consumed"), "help": (".help", "consumed-help")}
 
@@ -102,7 +104,7 @@ def launch(args: argparse.Namespace, data: object) -> dict:
             raise RuntimeError(created.stderr.decode().strip() or "tmux new-session failed")
     window = subprocess.run(
         [
-            *tmux, "new-window", "-d", "-P", "-F", "#{session_name}:#{window_name} #{window_id}",
+            *tmux, "new-window", "-d", "-P", "-F", "#{session_name}:#{window_name} #{window_id} #{pane_id}",
             "-t", f"={args.session}:", "-n", job.id, "-c", str(task_dir),
             "-e", f"XDG_RUNTIME_DIR={env['XDG_RUNTIME_DIR']}",
             "--", sys.executable, "-m", "meeseeks.launch", "--exec", str(task_dir),
@@ -113,10 +115,43 @@ def launch(args: argparse.Namespace, data: object) -> dict:
     )
     if window.returncode:
         raise RuntimeError(window.stderr.strip() or "tmux new-window failed")
-    target, _, window_id = window.stdout.strip().rpartition(" ")
+    target, window_id, pane_id = window.stdout.strip().rsplit(" ", 2)
     # Answers target the window by id, which a rename inside the session can't change.
     (task_dir / "window").write_text(window_id)
-    return {"id": job.id, "target": target}
+    (task_dir / "pane").write_text(pane_id)
+    result = {"id": job.id, "target": target}
+    deadline = time.monotonic() + job.session_wait
+    while job.session_wait:
+        if run_id := session_run_id(task_dir):
+            result["run_id"] = run_id
+            break
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(0.5)
+    return result
+
+
+def session_run_id(task_dir: Path) -> str | None:
+    """dejima's run id for the session in this task's pane, once dejima has registered it.
+
+    dejima records each session's tmux pane in its remote-access registry, so
+    the pane meeseeks created is what identifies the session there. Nothing
+    is registered unless dejima's remote access is enabled.
+    """
+    try:
+        pane = (task_dir / "pane").read_text()
+    except FileNotFoundError:
+        return None
+    sessions = Path(_tmux_env()["XDG_RUNTIME_DIR"]) / "dejima" / "sessions"
+    for entry in sessions.glob("*") if sessions.is_dir() else ():
+        if not RUN_ID.fullmatch(entry.name):
+            continue
+        try:
+            if f"pane={pane}" in entry.read_text().splitlines():
+                return entry.name
+        except OSError:
+            continue
+    return None
 
 
 def _tmux_env() -> dict:
@@ -242,6 +277,7 @@ def status(args: argparse.Namespace) -> list[dict]:
             "ready": signals["done"],
             "help": signals["help"],
             "answerable": args.answers and state == "running",
+            "run_id": session_run_id(task_dir) if state == "running" else None,
         })
     return tasks
 

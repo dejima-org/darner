@@ -95,6 +95,9 @@ def test_validate_job_full():
         {"id": "ms-abc23", "prompt": "p", "domains": ["localhost"]},
         {"id": "ms-abc23", "prompt": "p", "dependencies": ["x"]},
         {"id": "ms-abc23", "prompt": "p", "harness": "Bad Name"},
+        {"id": "ms-abc23", "prompt": "p", "session_wait": 61},
+        {"id": "ms-abc23", "prompt": "p", "session_wait": True},
+        {"id": "ms-abc23", "prompt": "p", "session_wait": "5"},
     ],
 )
 def test_validate_job_rejects(d):
