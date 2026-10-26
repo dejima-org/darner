@@ -382,6 +382,23 @@ async def list_blurbs(request: web.Request) -> web.Response:
     return web.json_response(available_blurbs(Path(request.app[CONFIG]["blurbs_dir"])))
 
 
+async def stop_task(request: web.Request) -> web.Response:
+    client = _client(request)
+    task_id = request.match_info["id"]
+    status = request.app[STORE].task_status(client, task_id)
+    if status is None:
+        raise web.HTTPNotFound()
+    if status != "launched":
+        return web.json_response({"error": f"{task_id} is not running"}, status=409)
+    try:
+        code, _, err = await run_remote(request.app[CONFIG], ["stop", task_id])
+    except RuntimeError as e:
+        return web.json_response({"error": f"stop failed: {e}"}, status=502)
+    if code:
+        return web.json_response({"error": err or f"launcher exited {code}"}, status=409)
+    return web.Response(status=204)
+
+
 async def ack_event(request: web.Request) -> web.Response:
     if not request.app[STORE].ack(_client(request), int(request.match_info["seq"])):
         raise web.HTTPNotFound()
@@ -402,6 +419,7 @@ def make_app(config: dict, poll: bool = True) -> web.Application:
     app.router.add_get(r"/v1/tasks/{id:ms-[a-z2-7]{5}}/outputs/{seq:\d+}.zip", get_output)
     app.router.add_post(r"/v1/events/{seq:\d+}/ack", ack_event)
     app.router.add_post(r"/v1/tasks/{id:ms-[a-z2-7]{5}}/answer", answer_help)
+    app.router.add_post(r"/v1/tasks/{id:ms-[a-z2-7]{5}}/stop", stop_task)
     if poll:
         app.cleanup_ctx.append(poller)
     return app

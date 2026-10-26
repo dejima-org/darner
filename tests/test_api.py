@@ -17,6 +17,10 @@ if command == ["status"]:
     sys.stdout.write(open(os.environ["STUB_STATUS"]).read())
 elif command[:1] == ["help"]:
     sys.stdout.buffer.write(os.environ.get("STUB_HELP", "").encode())
+elif command[:1] == ["stop"]:
+    open(os.environ["STUB_LOG"], "a").write(json.dumps(command) + "\\n")
+    if os.environ.get("STUB_STOP_ERROR"):
+        sys.exit("meeseeks-launch: " + os.environ["STUB_STOP_ERROR"])
 elif command[:1] == ["answer"]:
     open(os.environ["STUB_LOG"], "a").write(json.dumps([*command, json.load(sys.stdin)]) + "\\n")
     if os.environ.get("STUB_ANSWER_ERROR"):
@@ -590,3 +594,29 @@ async def test_share_error_is_logged_once(started, tmp_path, monkeypatch, caplog
         await poll_once(app)
     warnings = [r.getMessage() for r in caplog.records if "can't read" in r.getMessage()]
     assert warnings == [f"can't read {task_id}'s ~/shared, so its output can't be collected: shared path '/x' is not under /y"]
+
+
+async def test_stop_reaches_launcher(started, tmp_path):
+    app, client, task_id, *_ = started
+    assert (await client.post(f"/v1/tasks/{task_id}/stop", headers=AUTH)).status == 204
+    assert fetches(tmp_path)[-1] == ["stop", task_id]
+
+
+async def test_stop_is_scoped_and_needs_a_running_task(started, config, tmp_path, monkeypatch):
+    app, client, task_id, *_ = started
+    config["tokens"]["other"] = "0ther"
+    assert (await client.post(f"/v1/tasks/{task_id}/stop", headers={"Authorization": "Bearer 0ther"})).status == 404
+    assert (await client.post(f"/v1/tasks/{task_id}/stop")).status == 401
+    monkeypatch.setenv("STUB_STOP_ERROR", "ms-x is not running")
+    resp = await client.post(f"/v1/tasks/{task_id}/stop", headers=AUTH)
+    assert resp.status == 409 and (await resp.json())["error"] == "ms-x is not running"
+
+
+async def test_stop_refuses_an_ended_task(started, tmp_path):
+    from meeseeks.api import STORE
+
+    app, client, task_id, *_ = started
+    app[STORE].mark(task_id, "ended")
+    resp = await client.post(f"/v1/tasks/{task_id}/stop", headers=AUTH)
+    assert resp.status == 409 and "not running" in (await resp.json())["error"]
+    assert ["stop", task_id] not in fetches(tmp_path)

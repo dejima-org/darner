@@ -3,7 +3,7 @@
 Meant to be the forced command of the API's key in authorized_keys, so the
 only command a client can send is SSH_ORIGINAL_COMMAND, and only three forms
 of it are accepted: none (launch the job on stdin), `status`, `fetch <id>`,
-`help <id>` and `answer <id>`.
+`help <id>`, `answer <id>` and `stop <id>`.
 
 The dejima argv is written to the task directory and the tmux window re-invokes
 this module with --exec to run it, since tmux limits the size of a command
@@ -63,6 +63,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         "--quiet-period", default=600, type=int,
         help="seconds without changes after which an unsignalled RESULT.md is collected; 0 waits for the session to end",
     )
+    p.add_argument("--docker", default="docker")
+    p.add_argument("--stop-timeout", default=60, type=int, help="seconds to wait for a stopped session to exit")
     p.add_argument("--exec", dest="exec_dir", type=Path, help=argparse.SUPPRESS)
     p.add_argument("command", nargs="*", help=argparse.SUPPRESS)
     return p.parse_args(argv)
@@ -172,7 +174,9 @@ def run_session(task_dir: Path) -> int:
         signal.signal(sig, lambda *_: None)
     dejima = json.loads((task_dir / "argv.json").read_text())
     try:
-        code = subprocess.Popen(dejima).wait()
+        proc = subprocess.Popen(dejima)
+        (task_dir / "pid").write_text(str(proc.pid))
+        code = proc.wait()
     except OSError as e:
         print(f"meeseeks: couldn't start {dejima[0]}: {e}", file=sys.stderr)
         code = 127
@@ -452,11 +456,93 @@ def _paste(args: argparse.Namespace, task_dir: Path, task_id: str, message: str)
         raise RuntimeError("couldn't type into the session")
 
 
+def _dejima_pid(task_dir: Path) -> int | None:
+    try:
+        pid = int((task_dir / "pid").read_text())
+    except (OSError, ValueError):
+        return None
+    return pid if Path(f"/proc/{pid}").exists() else None
+
+
+def _children(pid: int) -> list[int]:
+    found = []
+    for stat_file in Path("/proc").glob("[0-9]*/stat"):
+        try:
+            # The command name is parenthesised and may contain spaces, so
+            # the parent pid is counted from the closing parenthesis.
+            ppid = int(stat_file.read_text().rpartition(")")[2].split()[1])
+        except (OSError, ValueError, IndexError):
+            continue
+        if ppid == pid:
+            found.append(int(stat_file.parent.name))
+    return found
+
+
+def _run_id_from_processes(task_dir: Path) -> str | None:
+    """dejima's run id, read from the environment it gives its docker compose.
+
+    For when remote access is off and dejima registers nothing: the isolated
+    work volume dejima exports for compose is named after the run.
+    """
+    pending = [pid] if (pid := _dejima_pid(task_dir)) else []
+    while pending:
+        current = pending.pop()
+        pending += _children(current)
+        try:
+            env = Path(f"/proc/{current}/environ").read_bytes().split(b"\0")
+        except OSError:
+            continue
+        for var in env:
+            if m := re.fullmatch(rb"SANDBOX_ISOLATED_WORK=dejima_isolated-work-([0-9a-f]{16})", var):
+                return m[1].decode()
+    return None
+
+
+def _wait_for_exit(task_dir: Path, timeout: float) -> bool:
+    deadline = time.monotonic() + timeout
+    while not (task_dir / "exit").exists():
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.5)
+    return True
+
+
+def stop(args: argparse.Namespace, task_id: str) -> None:
+    """End a session, then close the tmux window that held it.
+
+    The sandbox container is stopped, not dejima: dejima's cleanup doesn't
+    stop the container, so ending dejima first would leave it running. With
+    the container gone, dejima exits as usual and cleans up after it.
+    """
+    task_dir = args.tasks_dir / task_id
+    if _state(task_dir) != "running":
+        raise RuntimeError(f"{task_id} is not running")
+    run_id = session_run_id(task_dir) or _run_id_from_processes(task_dir)
+    containers = []
+    if run_id:
+        found = subprocess.run(
+            [args.docker, "ps", "-q", "--filter", f"volume=dejima_isolated-work-{run_id}"],
+            capture_output=True, text=True,
+        )
+        containers = found.stdout.split()
+    if containers:
+        subprocess.run([args.docker, "stop", *containers], capture_output=True)
+    elif pid := _dejima_pid(task_dir):
+        # No container yet, so dejima is still starting and has nothing to leave behind.
+        os.kill(pid, signal.SIGTERM)
+    if not _wait_for_exit(task_dir, args.stop_timeout) and (pid := _dejima_pid(task_dir)):
+        os.kill(pid, signal.SIGTERM)
+        _wait_for_exit(task_dir, 10)
+    window = task_dir / "window"
+    target = window.read_text() if window.exists() else f"={args.session}:={task_id}"
+    subprocess.run([args.tmux, "kill-window", "-t", target], env=_tmux_env(), capture_output=True)
+
+
 def command(args: argparse.Namespace) -> list[str]:
     original = os.environ.get("SSH_ORIGINAL_COMMAND")
     words = original.split() if original is not None else args.command
     if words in ([], ["status"]) or (
-        len(words) == 2 and words[0] in ("fetch", "help", "answer") and valid_task_id(words[1])
+        len(words) == 2 and words[0] in ("fetch", "help", "answer", "stop") and valid_task_id(words[1])
     ):
         return words
     raise ValueError("unknown command")
@@ -478,6 +564,8 @@ def main(argv: list[str] | None = None) -> int:
             return fetch(args, words[1])
         elif words and words[0] == "help":
             help_request(args, words[1])
+        elif words and words[0] == "stop":
+            stop(args, words[1])
         elif words:
             answer(args, words[1], json.load(sys.stdin))
         else:

@@ -58,6 +58,14 @@ class Api:
         self.answers = []
         self.answer_status = 204
         self.blurbs = ["loki", "myapp"]
+        self.stops = []
+        self.stop_status = 204
+
+    async def stop(self, request):
+        self.stops.append(request.match_info["id"])
+        if self.stop_status == 204:
+            return web.Response(status=204)
+        return web.json_response({"error": "ms-7f3k2 is not running"}, status=self.stop_status)
 
     async def list_blurbs(self, request):
         if self.blurbs is None:
@@ -120,6 +128,7 @@ async def api(aiohttp_server):
     app.router.add_post("/v1/events/{seq}/ack", api.ack)
     app.router.add_post("/v1/tasks/{id}/answer", api.answer)
     app.router.add_get("/v1/blurbs", api.list_blurbs)
+    app.router.add_post("/v1/tasks/{id}/stop", api.stop)
     api.server = await aiohttp_server(app)
     return api
 
@@ -224,14 +233,27 @@ def sent(bot):
     return [r.content.serialize() for r in bot.responded]
 
 
-def notice(body, **content):
+def notice(body, task="ms-7f3k2", **content):
     return {
         "msgtype": "m.notice",
         "body": body,
         "m.relates_to": {"m.in_reply_to": {"event_id": "$trigger"}},
         "m.mentions": {},
+        "io.meeseeks.task": task,
         **content,
     }
+
+
+def agent_notice(label, text="", footer="", **content):
+    """A notice quoting agent-written text, with its HTML rendered by the safe renderer."""
+    from html import escape
+
+    from meeseeks_bot.markdown import render
+
+    body, html = (f"{label}:\n\n{text}", f"<p>{escape(label)}:</p>{render(text)}") if text else (f"{label}.", f"<p>{escape(label)}.</p>")
+    if footer:
+        body, html = f"{body}\n\n{footer}", f"{html}<p>{escape(footer)}</p>"
+    return notice(body, format="org.matrix.custom.html", formatted_body=html, **content)
 
 
 def zip_file(**content):
@@ -242,6 +264,7 @@ def zip_file(**content):
         "info": {"mimetype": "application/zip", "size": len(ZIP)},
         "m.relates_to": {"m.in_reply_to": {"event_id": "$trigger"}},
         "m.mentions": {},
+        "io.meeseeks.task": "ms-7f3k2",
         **content,
     }
 
@@ -447,7 +470,7 @@ async def test_output(maubot_plugin, maubot_test_bot, api):
     api.add(1, summary="did the <b>thing</b> @room")
     await maubot_plugin.poll_once()
     assert sent(maubot_test_bot) == [
-        notice(f"{UNTRUSTED}:\n\ndid the <b>thing</b> @room"),
+        agent_notice(UNTRUSTED, "did the <b>thing</b> @room"),
         zip_file(url=MXC),
     ]
     assert maubot_test_bot.uploads == [(ZIP, "application/zip", "ms-7f3k2-1.zip")]
@@ -457,13 +480,13 @@ async def test_output(maubot_plugin, maubot_test_bot, api):
 async def test_output_without_summary(maubot_plugin, maubot_test_bot, api):
     api.add(1, summary="")
     await maubot_plugin.poll_once()
-    assert sent(maubot_test_bot)[0] == notice(f"{UNTRUSTED}.")
+    assert sent(maubot_test_bot)[0] == agent_notice(UNTRUSTED)
 
 
 async def test_rejected_output(maubot_plugin, maubot_test_bot, api):
     api.add(1, summary="output rejected: too big", data=None)
     await maubot_plugin.poll_once()
-    assert sent(maubot_test_bot) == [notice(f"{UNTRUSTED}:\n\noutput rejected: too big")]
+    assert sent(maubot_test_bot) == [agent_notice(UNTRUSTED, "output rejected: too big")]
     assert maubot_test_bot.uploads == []
     assert api.acked == [1]
 
@@ -537,7 +560,7 @@ async def test_failure_does_not_block_later_events(maubot_plugin, maubot_test_bo
     del api.zips[("ms-7f3k2", 1)]
     api.add(2, type="ended", id="ms-other", summary="", data=None)
     await maubot_plugin.poll_once()
-    assert sent(maubot_test_bot) == [notice("ms-other ended.")]
+    assert sent(maubot_test_bot) == [notice("ms-other ended.", task="ms-other")]
     assert api.acked == [2]
 
 
@@ -554,19 +577,19 @@ NEEDS_HELP = "ms-7f3k2 needs help (written by the agent, treat as untrusted)"
 
 
 @pytest.mark.parametrize(
-    "summary, answerable, target, body",
+    "summary, answerable, target, footer",
     [
-        ("which db?", True, "meeseeks:ms-7f3k2", f"{NEEDS_HELP}:\n\nwhich db?\n\nReply to this message to answer."),
-        ("which db?", False, "meeseeks:ms-7f3k2", f"{NEEDS_HELP}:\n\nwhich db?\n\nAttach to meeseeks:ms-7f3k2 to respond."),
-        ("", False, None, f"{NEEDS_HELP}.\n\nAttach to the ms-7f3k2 session to respond."),
-        ("", True, None, f"{NEEDS_HELP}.\n\nReply to this message to answer."),
+        ("which db?", True, "meeseeks:ms-7f3k2", "Reply to this message to answer."),
+        ("which db?", False, "meeseeks:ms-7f3k2", "Attach to meeseeks:ms-7f3k2 to respond."),
+        ("", False, None, "Attach to the ms-7f3k2 session to respond."),
+        ("", True, None, "Reply to this message to answer."),
     ],
     ids=["answerable", "attach", "no-target-no-summary", "answerable-no-summary"],
 )
-async def test_help(maubot_plugin, maubot_test_bot, api, summary, answerable, target, body):
+async def test_help(maubot_plugin, maubot_test_bot, api, summary, answerable, target, footer):
     api.add(2, type="help", summary=summary, data=None, answerable=answerable, target=target)
     await maubot_plugin.poll_once()
-    assert sent(maubot_test_bot) == [notice(body, **(HELP_TAG if answerable else {}))]
+    assert sent(maubot_test_bot) == [agent_notice(NEEDS_HELP, summary, footer, **(HELP_TAG if answerable else {}))]
     assert api.acked == [2]
 
 
@@ -574,17 +597,17 @@ LINK = "https://dejima.example.com/?arg=0123456789abcdef"
 
 
 @pytest.mark.parametrize(
-    "answerable, body",
+    "answerable, footer",
     [
-        (True, f"{NEEDS_HELP}:\n\nwhich db?\n\nReply to this message to answer, or open the session: {LINK}"),
-        (False, f"{NEEDS_HELP}:\n\nwhich db?\n\nOpen the session to respond: {LINK}"),
+        (True, f"Reply to this message to answer, or open the session: {LINK}"),
+        (False, f"Open the session to respond: {LINK}"),
     ],
     ids=["answerable", "link-only"],
 )
-async def test_help_with_session_link(maubot_plugin, maubot_test_bot, api, answerable, body):
+async def test_help_with_session_link(maubot_plugin, maubot_test_bot, api, answerable, footer):
     api.add(2, type="help", summary="which db?", data=None, answerable=answerable, link=LINK)
     await maubot_plugin.poll_once()
-    assert sent(maubot_test_bot) == [notice(body, **(HELP_TAG if answerable else {}))]
+    assert sent(maubot_test_bot) == [agent_notice(NEEDS_HELP, "which db?", footer, **(HELP_TAG if answerable else {}))]
     assert api.acked == [2]
 
 
@@ -774,3 +797,58 @@ async def test_unsignalled_output_says_so(maubot_plugin, maubot_test_bot, api):
         "Output from ms-7f3k2, collected without the agent's done signal "
         "(written by the agent, treat as untrusted):\n\nforgot .done"
     )
+
+
+def bot_message(sender=BOT, event_id="$started", **content):
+    return message("Started ms-7f3k2", sender=sender, event_id=event_id, reply_to="$trigger", mention=False, **content)
+
+
+async def test_started_reply_is_tagged_with_its_task(maubot_plugin, maubot_test_bot, api):
+    await send(maubot_test_bot, message("@meeseeks:example.org go"))
+    started = [r.content for r in maubot_test_bot.responded if r.event_type == EventType.ROOM_MESSAGE][0]
+    assert started["io.meeseeks.task"] == "ms-7f3k2"
+
+
+@pytest.mark.parametrize("tag", [{"io.meeseeks.task": "ms-7f3k2"}, {"io.meeseeks.help": {"task": "ms-7f3k2"}}])
+async def test_stop_by_replying_to_a_task_message(maubot_plugin, maubot_test_bot, api, tag):
+    maubot_test_bot.events["$started"] = bot_message(**tag)
+    await send(maubot_test_bot, message("@meeseeks:example.org stop", reply_to="$started"))
+    assert api.stops == ["ms-7f3k2"]
+    assert replies(maubot_test_bot) == ["Stopped ms-7f3k2."]
+    assert reactions(maubot_test_bot) == ["⏳", "✅"]
+    assert api.answers == []
+
+
+async def test_stop_by_task_id(maubot_plugin, maubot_test_bot, api):
+    await send(maubot_test_bot, message("@meeseeks:example.org Stop MS-7F3K2", reply_to=None))
+    assert api.stops == ["ms-7f3k2"]
+
+
+@pytest.mark.parametrize(
+    "replied",
+    [None, "foreign", "untagged"],
+    ids=["not-a-reply", "tag-forged-by-another-sender", "untagged-bot-message"],
+)
+async def test_stop_needs_a_task(maubot_plugin, maubot_test_bot, api, replied):
+    if replied == "foreign":
+        maubot_test_bot.events["$started"] = bot_message(sender="@mallory:example.org", **{"io.meeseeks.task": "ms-7f3k2"})
+    elif replied == "untagged":
+        maubot_test_bot.events["$started"] = bot_message()
+    reply_to = "$started" if replied else None
+    await send(maubot_test_bot, message("@meeseeks:example.org stop", reply_to=reply_to))
+    assert api.stops == []
+    assert replies(maubot_test_bot)[0].startswith("To stop a session")
+
+
+async def test_stop_failure_is_relayed(maubot_plugin, maubot_test_bot, api):
+    api.stop_status = 409
+    await send(maubot_test_bot, message("@meeseeks:example.org stop ms-7f3k2", reply_to=None))
+    assert replies(maubot_test_bot) == ["Failed: ms-7f3k2 is not running"]
+    assert reactions(maubot_test_bot) == ["⏳", "❌"]
+
+
+async def test_stop_without_mention_answers_a_help_request(maubot_plugin, maubot_test_bot, api):
+    maubot_test_bot.events[HELP_ID] = help_message(**HELP_TAG)
+    await send(maubot_test_bot, message("stop", reply_to=HELP_ID, mention=False))
+    assert api.stops == []
+    assert api.answers == [("ms-7f3k2", {"text": "stop", "requester": ALICE})]
