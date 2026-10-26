@@ -7,8 +7,10 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 # ssh refuses to run for a uid with no passwd entry, so the user is created
-# with a fixed uid that host directories can be owned by.
-RUN useradd --system --uid 10001 --user-group --home-dir /var/lib/meeseeks --shell /usr/sbin/nologin meeseeks
+# with a fixed uid and gid that host directories can be owned by. The gid is
+# explicit because --user-group alone picks one from the system range.
+RUN groupadd --system --gid 10001 meeseeks \
+    && useradd --system --uid 10001 --gid 10001 --home-dir /var/lib/meeseeks --shell /usr/sbin/nologin meeseeks
 
 COPY pyproject.toml /src/
 COPY meeseeks /src/meeseeks
