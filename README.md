@@ -368,6 +368,15 @@ Or send the task directly, in a message that mentions the bot and isn't a reply.
 
 When the agent needs to reach domains the sandbox blocks, it lists them in `~/shared/DOMAINS` and the bot posts every one for you to check. Reply `@meeseeks allow` to that message to let the running session reach them, or `@meeseeks deny`. Internal domains are marked as such, and any the API's `deny_domains` policy refuses are marked and never allowed. What gets allowed is the list as shown: the launcher keeps its own copy, so the agent can't change it afterwards. If answering from chat is on, the agent is told the outcome. Otherwise, tell it in the session.
 
+To manage open sessions, mention the bot with one of these. Replying to any of the bot's messages about a session works without the id.
+
+| command | |
+|---|---|
+| `sessions` | lists the open sessions: what each is waiting on, its age, who started it, and where to reach it |
+| `status ms-xxxxx` | what a session is waiting on, quoting its help request or listing its requested domains |
+| `tell ms-xxxxx <message>` | types a message into the session, which also answers an outstanding help request; needs `--answers` on the launcher |
+| `stop ms-xxxxx` | ends the session |
+
 To end a session, reply `@meeseeks stop` to any of the bot's messages about it, or send `@meeseeks stop ms-xxxxx`. The launcher stops the session's sandbox container, so dejima exits and cleans up as usual, then closes its tmux window.
 
 The note is the task. The rest of the reply, minus the mention and the keyword lines, is extra context. Keyword lines take comma or space separated values and can repeat:
@@ -452,7 +461,7 @@ The files are still agent-written: treat what is in the zip as untrusted. Neithe
 | `--stop-timeout SECONDS` | 60 | how long a stopped session may take to exit before dejima itself is ended |
 | `--help-interval SECONDS` | 300 | least time between a task's help requests, so a session can't flood the room |
 
-The API sends one of these commands, which arrive as `SSH_ORIGINAL_COMMAND`: none (launch the job on stdin), `status`, `fetch <id>`, `help <id>`, `answer <id>`, `stop <id>`, `domains <id>`, `allow <id> <n>` or `deny <id> <n>`. Anything else is refused.
+The API sends one of these commands, which arrive as `SSH_ORIGINAL_COMMAND`: none (launch the job on stdin), `status`, `fetch <id>`, `help <id>`, `answer <id>`, `message <id>`, `stop <id>`, `domains <id>`, `allow <id> <n>` or `deny <id> <n>`. Anything else is refused.
 
 Grants use `dejima --domains FILE` and `--dependencies FILE`, and output collection uses `--shared-path-file FILE`. A task without grants passes neither grant flag.
 
@@ -505,6 +514,9 @@ Every `poll_interval` seconds the API asks the dejima host for the status of lau
 | `GET /v1/blurbs` | names of the available context blurbs |
 | `POST /v1/tasks/<id>/domains/<n>/allow` | `{requester}`: grant domain request `n` as it was shown, minus what policy refuses |
 | `POST /v1/tasks/<id>/domains/<n>/deny` | `{requester}`: refuse domain request `n` |
+| `GET /v1/tasks` | the client's open sessions, with what each is waiting on: `{id, target, link, requester, started, state, answerable, waiting: {answer, domains}}` |
+| `GET /v1/tasks/<id>` | one open session, in the same form |
+| `POST /v1/tasks/<id>/message` | `{text, requester}`: type a message into the session; 409 with the reason if the host refuses |
 | `POST /v1/tasks/<id>/stop` | end the task's session and close its tmux window; 409 if it isn't running |
 | `POST /v1/tasks/<id>/answer` | `{text, requester}`: answer the task's outstanding help request; 409 with the reason if the host refuses |
 

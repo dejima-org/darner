@@ -928,3 +928,101 @@ async def test_allow_needs_the_bots_domain_request(maubot_plugin, maubot_test_bo
     await send(maubot_test_bot, message("@meeseeks:example.org allow", reply_to="$domains" if replied else None))
     assert decisions.decisions == []
     assert replies(maubot_test_bot)[0].startswith("To allow or deny domains")
+
+
+def session(**overrides):
+    import time
+
+    s = {
+        "id": "ms-7f3k2", "target": "meeseeks:ms-7f3k2", "link": None, "requester": ALICE,
+        "started": time.time() - 3720, "state": "running", "answerable": True,
+        "waiting": {"answer": None, "domains": None},
+    }
+    s.update(overrides)
+    return s
+
+
+@pytest.fixture
+def sessions(api):
+    api.sessions = []
+    api.messages = []
+
+    async def list_sessions(request):
+        return web.json_response(api.sessions)
+
+    async def get_session(request):
+        found = [s for s in api.sessions if s["id"] == request.match_info["id"]]
+        return web.json_response(found[0]) if found else web.json_response({}, status=404)
+
+    async def message(request):
+        api.messages.append((request.match_info["id"], await request.json()))
+        return web.Response(status=204)
+
+    api.server.app.router._frozen = False
+    api.server.app.router.add_get("/v1/tasks", list_sessions)
+    api.server.app.router.add_get("/v1/tasks/{id}", get_session)
+    api.server.app.router.add_post("/v1/tasks/{id}/message", message)
+    return api
+
+
+async def test_sessions_when_none_are_open(maubot_plugin, maubot_test_bot, sessions):
+    await send(maubot_test_bot, message("@meeseeks:example.org sessions", reply_to=None))
+    assert replies(maubot_test_bot) == ["No open sessions."]
+
+
+async def test_sessions_list_what_each_waits_on(maubot_plugin, maubot_test_bot, sessions):
+    sessions.sessions = [
+        session(),
+        session(id="ms-aaaaa", link="https://dejima.example.com/?arg=0123456789abcdef", waiting={"answer": "Which db?", "domains": None}),
+    ]
+    await send(maubot_test_bot, message("@meeseeks:example.org list", reply_to=None))
+    assert replies(maubot_test_bot) == [
+        "Open sessions:\n\n"
+        f"- ms-7f3k2: working, started 1h02m ago by {ALICE} (meeseeks:ms-7f3k2)\n"
+        f"- ms-aaaaa: waiting for an answer, started 1h02m ago by {ALICE} (https://dejima.example.com/?arg=0123456789abcdef)"
+    ]
+
+
+async def test_status_quotes_the_help_request(maubot_plugin, maubot_test_bot, sessions):
+    sessions.sessions = [session(waiting={"answer": "Which **db**?", "domains": None})]
+    await send(maubot_test_bot, message("@meeseeks:example.org status ms-7f3k2", reply_to=None))
+    [msg] = [r.content for r in maubot_test_bot.responded if r.event_type == EventType.ROOM_MESSAGE]
+    assert "Its help request (written by the agent, treat as untrusted):\n\nWhich **db**?" in msg.body
+    assert "<strong>db</strong>" in msg.formatted_body
+    assert msg.body.endswith("Reply to its help request, or send `tell ms-7f3k2 <answer>` with a mention.")
+    assert msg["io.meeseeks.task"] == "ms-7f3k2"
+
+
+async def test_status_lists_requested_domains(maubot_plugin, maubot_test_bot, sessions):
+    sessions.sessions = [session(waiting={"answer": None, "domains": REQUEST})]
+    maubot_test_bot.events["$started"] = bot_message(**{"io.meeseeks.task": "ms-7f3k2"})
+    await send(maubot_test_bot, message("@meeseeks:example.org status", reply_to="$started"))
+    [msg] = [r.content for r in maubot_test_bot.responded if r.event_type == EventType.ROOM_MESSAGE]
+    assert "- mirror.internal.example (internal)" in msg.body
+    assert msg["io.meeseeks.domains"] == {"task": "ms-7f3k2", "request": 3}
+
+
+async def test_status_of_an_idle_or_unknown_session(maubot_plugin, maubot_test_bot, sessions):
+    sessions.sessions = [session()]
+    await send(maubot_test_bot, message("@meeseeks:example.org status ms-7f3k2", reply_to=None))
+    await send(maubot_test_bot, message("@meeseeks:example.org status ms-zzzzz", reply_to=None))
+    bodies = replies(maubot_test_bot)
+    assert bodies[0].endswith("It isn't waiting on you.")
+    assert bodies[1] == "ms-zzzzz isn't an open session."
+
+
+async def test_tell_by_id_and_by_reply(maubot_plugin, maubot_test_bot, sessions):
+    await send(maubot_test_bot, message("@meeseeks:example.org tell ms-7f3k2 Also check\nthe logs.", reply_to=None))
+    maubot_test_bot.events["$started"] = bot_message(**{"io.meeseeks.task": "ms-7f3k2"})
+    await send(maubot_test_bot, message("@meeseeks:example.org tell use main", reply_to="$started"))
+    assert sessions.messages == [
+        ("ms-7f3k2", {"text": "Also check\nthe logs.", "requester": ALICE}),
+        ("ms-7f3k2", {"text": "use main", "requester": ALICE}),
+    ]
+    assert reactions(maubot_test_bot) == ["⏳", "✅", "⏳", "✅"]
+
+
+async def test_tell_without_a_session_is_a_task(maubot_plugin, maubot_test_bot, sessions):
+    await send(maubot_test_bot, message("@meeseeks:example.org tell me why the build fails", reply_to=None))
+    assert sessions.messages == []
+    assert sessions.requests[0][1]["task"] == "tell me why the build fails"

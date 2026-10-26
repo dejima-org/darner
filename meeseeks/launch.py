@@ -3,7 +3,7 @@
 Meant to be the forced command of the API's key in authorized_keys, so the
 only command a client can send is SSH_ORIGINAL_COMMAND, and only three forms
 of it are accepted: none (launch the job on stdin), `status`, `fetch <id>`,
-`help <id>`, `answer <id>`, `stop <id>`, `domains <id>`, and `allow <id> <n>` and
+`help <id>`, `answer <id>`, `message <id>`, `stop <id>`, `domains <id>`, and `allow <id> <n>` and
 `deny <id> <n>` for domain request n.
 
 The dejima argv is written to the task directory and the tmux window re-invokes
@@ -345,6 +345,8 @@ def status(args: argparse.Namespace) -> list[dict]:
             "unsignalled": signals["unsignalled"],
             "help": signals["help"],
             "domains": signals["domains"],
+            "awaiting_answer": (task_dir / "help-pending").exists(),
+            "domain_request": _pending_request_number(task_dir),
             "answerable": args.answers and state == "running",
             "run_id": session_run_id(task_dir) if state == "running" else None,
             "error": error,
@@ -415,8 +417,19 @@ def help_request(args: argparse.Namespace, task_id: str) -> None:
         os.close(fd)
 
 
-def answer(args: argparse.Namespace, task_id: str, data: object) -> None:
-    """Type a requester's answer into the session, as its next message."""
+def _pending_request_number(task_dir: Path) -> int | None:
+    try:
+        return int(json.loads((task_dir / "domains-pending").read_text())["request"])
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+def answer(args: argparse.Namespace, task_id: str, data: object, message: bool = False) -> None:
+    """Type a requester's text into the session, as its next message.
+
+    An answer needs an outstanding help request. A message doesn't, but
+    answers one if it's outstanding.
+    """
     task_dir = args.tasks_dir / task_id
     if not args.answers:
         raise RuntimeError("answering from chat is not enabled on this host")
@@ -437,16 +450,22 @@ def answer(args: argparse.Namespace, task_id: str, data: object) -> None:
     pending, answering = task_dir / "help-pending", task_dir / "help-answering"
     try:
         os.rename(pending, answering)
+        claimed = True
     except FileNotFoundError:
-        raise RuntimeError(f"{task_id} has no help request awaiting an answer")
+        if not message:
+            raise RuntimeError(f"{task_id} has no help request awaiting an answer")
+        claimed = False
     # The prefix also means the message never starts with a character the
     # harness treats as a command, such as Claude Code's ! (shell) or / (slash).
+    heading = "Message" if message else "Reply"
     try:
-        _paste(args, task_dir, task_id, f"Reply from {requester}:\n\n{text}")
+        _paste(args, task_dir, task_id, f"{heading} from {requester}:\n\n{text}")
     except BaseException:
-        os.rename(answering, pending)
+        if claimed:
+            os.rename(answering, pending)
         raise
-    answering.unlink()
+    if claimed:
+        answering.unlink()
 
 
 def _paste(args: argparse.Namespace, task_dir: Path, task_id: str, message: str) -> None:
@@ -694,7 +713,7 @@ def command(args: argparse.Namespace) -> list[str]:
     original = os.environ.get("SSH_ORIGINAL_COMMAND")
     words = original.split() if original is not None else args.command
     if words in ([], ["status"]) or (
-        len(words) == 2 and words[0] in ("fetch", "help", "answer", "stop", "domains") and valid_task_id(words[1])
+        len(words) == 2 and words[0] in ("fetch", "help", "answer", "message", "stop", "domains") and valid_task_id(words[1])
     ) or (
         len(words) == 3 and words[0] in ("allow", "deny") and valid_task_id(words[1])
         and words[2].isascii() and words[2].isdigit() and len(words[2]) <= 9
@@ -719,6 +738,8 @@ def main(argv: list[str] | None = None) -> int:
             return fetch(args, words[1])
         elif words and words[0] == "help":
             help_request(args, words[1])
+        elif words and words[0] == "message":
+            answer(args, words[1], json.load(sys.stdin), message=True)
         elif words and words[0] == "stop":
             stop(args, words[1])
         elif words and words[0] == "domains":
@@ -726,7 +747,7 @@ def main(argv: list[str] | None = None) -> int:
         elif words and words[0] in ("allow", "deny"):
             decide = allow_domains if words[0] == "allow" else deny_domains
             print(json.dumps(decide(args, words[1], int(words[2]), json.load(sys.stdin))))
-        elif words:
+        elif words and words[0] == "answer":
             answer(args, words[1], json.load(sys.stdin))
         else:
             print(json.dumps(launch(args, json.load(sys.stdin))))

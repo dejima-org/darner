@@ -197,8 +197,8 @@ def test_status_states(env, share):
     code, out, _ = run(a, "status")
     assert code == 0
     assert json.loads(out) == [
-        {"id": "ms-abc23", "state": "exited", "ready": True, "unsignalled": False, "help": False, "domains": False, "answerable": False, "run_id": None, "error": None},
-        {"id": "ms-starx", "state": "starting", "ready": False, "unsignalled": False, "help": False, "domains": False, "answerable": False, "run_id": None, "error": None},
+        {"id": "ms-abc23", "state": "exited", "ready": True, "unsignalled": False, "help": False, "domains": False, "answerable": False, "run_id": None, "error": None, "awaiting_answer": False, "domain_request": None},
+        {"id": "ms-starx", "state": "starting", "ready": False, "unsignalled": False, "help": False, "domains": False, "answerable": False, "run_id": None, "error": None, "awaiting_answer": False, "domain_request": None},
     ]
 
 
@@ -901,3 +901,38 @@ def test_domain_limit_counts_launch_domains_and_earlier_grants(env, allow_env):
     result = json.loads(decide(a, "allow", 2, data)[1])
     assert result["granted"] == ["three.example.com"]
     assert result["failed"] == [{"domain": "four.example.com", "error": "over this session's limit of 3 domains"}]
+
+
+def message_run(a, data, *extra):
+    import unittest.mock
+
+    with unittest.mock.patch("sys.stdin", io.StringIO(json.dumps(data))):
+        return run(a, *extra, "message", "ms-abc23")
+
+
+def test_message_needs_no_help_request(env, share):
+    a, _ = share
+    (env / "tmux.log").write_text("")
+    code, _, err = message_run(a, {"requester": "@alice:example.org", "text": "Also check the logs."}, "--answers", "--paste-delay", "0")
+    assert code == 0, err
+    assert (env / "tmux.log.buffer").read_text() == "Message from @alice:example.org:\n\nAlso check the logs."
+
+
+def test_message_answers_an_outstanding_help_request(env, asked):
+    code, _, _ = message_run(asked, {"requester": "@a:example.org", "text": "use main"}, "--answers", "--paste-delay", "0")
+    assert code == 0
+    assert not (env / "tasks" / "ms-abc23" / "help-pending").exists()
+    assert status(asked)[0]["awaiting_answer"] is False
+
+
+def test_message_needs_answers_enabled(env, share):
+    a, _ = share
+    code, _, err = message_run(a, {"requester": "@a:example.org", "text": "x"})
+    assert code == 1 and "not enabled" in err
+
+
+def test_status_reports_what_a_session_waits_on(env, asked, allow_env):
+    a, shared = allow_env
+    assert status(a)[0]["awaiting_answer"] is True
+    request_domains(a, shared, "pypi.org\n")
+    assert status(a)[0]["domain_request"] == 1

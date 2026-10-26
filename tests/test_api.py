@@ -26,7 +26,7 @@ elif command[:1] == ["stop"]:
     open(os.environ["STUB_LOG"], "a").write(json.dumps(command) + "\\n")
     if os.environ.get("STUB_STOP_ERROR"):
         sys.exit("meeseeks-launch: " + os.environ["STUB_STOP_ERROR"])
-elif command[:1] == ["answer"]:
+elif command[:1] in (["answer"], ["message"]):
     open(os.environ["STUB_LOG"], "a").write(json.dumps([*command, json.load(sys.stdin)]) + "\\n")
     if os.environ.get("STUB_ANSWER_ERROR"):
         sys.exit("meeseeks-launch: " + os.environ["STUB_ANSWER_ERROR"])
@@ -690,3 +690,62 @@ async def test_domain_decisions_are_scoped(requested, config, tmp_path):
     assert (await client.post(f"/v1/tasks/{task_id}/domains/9/allow", json=body, headers=AUTH)).status == 404
     assert (await client.post(f"/v1/tasks/{task_id}/domains/3/allow", json={}, headers=AUTH)).status == 400
     assert not any(f[0] == "allow" for f in fetches(tmp_path))
+
+
+async def test_sessions_list_what_each_waits_on(started, tmp_path, monkeypatch, config):
+    app, client, task_id, *_ = started
+    config["remote_access_url"] = "https://dejima.example.com"
+    path = tmp_path / "status.json"
+    path.write_text(json.dumps([{"id": task_id, "state": "running", "ready": False, "help": True, "answerable": True}]))
+    monkeypatch.setenv("STUB_STATUS", str(path))
+    monkeypatch.setenv("STUB_HELP", "Which branch?")
+    await poll_once(app)
+    path.write_text(json.dumps([{
+        "id": task_id, "state": "running", "answerable": True, "awaiting_answer": True, "domain_request": None,
+        "run_id": RUN,
+    }]))
+    await poll_once(app)
+    resp = await client.get("/v1/tasks", headers=AUTH)
+    [session] = await resp.json()
+    assert session["id"] == task_id and session["state"] == "running" and session["answerable"] is True
+    assert session["requester"] == "@u:example.org" and session["started"] > 0
+    assert session["link"] == f"https://dejima.example.com/?arg={RUN}"
+    assert session["waiting"] == {"answer": "Which branch?", "domains": None}
+    single = await (await client.get(f"/v1/tasks/{task_id}", headers=AUTH)).json()
+    assert single == session
+
+
+async def test_session_waiting_on_domains(requested, tmp_path, monkeypatch):
+    app, client, task_id = requested
+    path = tmp_path / "status.json"
+    path.write_text(json.dumps([{"id": task_id, "state": "running", "domain_request": 3}]))
+    monkeypatch.setenv("STUB_STATUS", str(path))
+    [session] = await (await client.get("/v1/tasks", headers=AUTH)).json()
+    assert session["waiting"]["answer"] is None
+    assert [d["domain"] for d in session["waiting"]["domains"]["domains"]] == ["pypi.org", "mirror.internal.example", "api.example.net"]
+
+
+async def test_sessions_are_scoped_and_open_only(started, config, tmp_path, monkeypatch):
+    from meeseeks.api import STORE
+
+    app, client, task_id, *_ = started
+    config["tokens"]["other"] = "0ther"
+    assert await (await client.get("/v1/tasks", headers={"Authorization": "Bearer 0ther"})).json() == []
+    assert (await client.get(f"/v1/tasks/{task_id}", headers={"Authorization": "Bearer 0ther"})).status == 404
+    app[STORE].mark(task_id, "ended")
+    assert await (await client.get("/v1/tasks", headers=AUTH)).json() == []
+    assert (await client.get("/v1/tasks")).status == 401
+
+
+async def test_sessions_survive_an_unreachable_host(started, tmp_path, monkeypatch):
+    app, client, task_id, *_ = started
+    monkeypatch.setenv("STUB_STATUS", str(tmp_path / "missing"))
+    [session] = await (await client.get("/v1/tasks", headers=AUTH)).json()
+    assert session["state"] == "unknown"
+
+
+async def test_message_reaches_launcher(started, tmp_path):
+    app, client, task_id, *_ = started
+    body = {"text": "Also check the logs.", "requester": "@alice:example.org"}
+    assert (await client.post(f"/v1/tasks/{task_id}/message", json=body, headers=AUTH)).status == 204
+    assert fetches(tmp_path)[-1] == ["message", task_id, body]
