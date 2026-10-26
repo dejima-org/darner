@@ -24,12 +24,12 @@ from .parse import ParseError, parse_reply, strip_mention
 
 TASK_ID = re.compile(r"ms-[a-z2-7]{5}")
 PILL = re.compile(r'<a\s[^>]*href="https://matrix\.to/#/([^"?]+)[^"]*"[^>]*>(.*?)</a>', re.IGNORECASE | re.DOTALL)
-NOT_A_REPLY = "To start a task, reply to a note and mention me. Send `help` with a mention for usage."
+NO_TASK = "Tell me the task after the mention, or reply to a note to make it the task. Send `help` with a mention for usage."
 
 USAGE = """\
 **Meeseeks** starts an isolated dejima session for a task.
 
-**Start a task:** reply to a note with a message that mentions me. The note is the task, and the rest of your reply is extra context. Keyword lines configure the session:
+**Start a task:** reply to a note with a message that mentions me. The note is the task, and the rest of your reply is extra context. Or mention me in a message that isn't a reply, and that message is the task. Keyword lines configure the session:
 
 ```
 ctx: <names>       add context blurbs{blurbs}
@@ -140,15 +140,21 @@ class MeeseeksBot(Plugin):
                 return edit.content.body
         return None
 
-    async def _submit(self, evt: MessageEvent, replied: Event | None) -> tuple[str, bool]:
+    async def _submit(self, evt: MessageEvent, replied: Event | None = None) -> tuple[str, bool]:
+        """Start a task: a reply's note is the task, otherwise the message itself is."""
         try:
-            note = await self._note_body(replied)
             req = parse_reply(evt.content.body, self._names(evt))
+            if evt.content.get_reply_to():
+                task, context = await self._note_body(replied), req.context
+            elif req.context:
+                task, context = req.context, ""
+            else:
+                return NO_TASK, False
         except (NoteError, ParseError) as e:
             return str(e), False
         payload = {
-            "task": note,
-            "context": req.context,
+            "task": task,
+            "context": context,
             "blurbs": req.blurbs,
             "grants": {"domains": req.domains, "dependencies": req.dependencies},
             "requester": evt.sender,
@@ -186,7 +192,7 @@ class MeeseeksBot(Plugin):
             return
         if not content.get_reply_to():
             if mentioned:
-                await evt.reply(NOT_A_REPLY)
+                await self._respond(evt, self._submit(evt))
             return
         try:
             replied = await self.client.get_event(evt.room_id, content.get_reply_to())

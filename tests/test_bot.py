@@ -707,9 +707,23 @@ async def test_help_needs_a_mention(maubot_plugin, maubot_test_bot, api):
     assert maubot_test_bot.responded == []
 
 
-async def test_mention_that_is_not_a_reply_gets_a_hint(maubot_plugin, maubot_test_bot, api):
-    await send(maubot_test_bot, message("@meeseeks:example.org do a thing", reply_to=None))
-    assert replies(maubot_test_bot) == ["To start a task, reply to a note and mention me. Send `help` with a mention for usage."]
+NO_TASK = "Tell me the task after the mention, or reply to a note to make it the task. Send `help` with a mention for usage."
+
+
+async def test_message_that_is_not_a_reply_is_the_task(maubot_plugin, maubot_test_bot, api):
+    body = "@meeseeks:example.org find out why the import job fails\nallow: pypi.org\nctx: myapp"
+    await send(maubot_test_bot, message(body, reply_to=None))
+    payload = api.requests[0][1]
+    assert payload["task"] == "find out why the import job fails"
+    assert payload["context"] == ""
+    assert payload["blurbs"] == ["myapp"] and payload["grants"]["domains"] == ["pypi.org"]
+    assert payload["source"]["ref"] == "$trigger"
+    assert replies(maubot_test_bot) == ["Started ms-7f3k2 → meeseeks:ms-7f3k2"]
+
+
+async def test_mention_with_only_keywords_asks_for_a_task(maubot_plugin, maubot_test_bot, api):
+    await send(maubot_test_bot, message("@meeseeks:example.org\nallow: pypi.org", reply_to=None))
+    assert replies(maubot_test_bot) == [NO_TASK]
     assert api.requests == []
 
 
@@ -735,7 +749,7 @@ async def test_pill_to_someone_else_is_not_stripped(maubot_plugin, maubot_test_b
         "Alice: help", reply_to=None, format="org.matrix.custom.html", formatted_body=f"{pill('Alice', ALICE)}: help"
     )
     await send(maubot_test_bot, evt)
-    assert replies(maubot_test_bot) == ["To start a task, reply to a note and mention me. Send `help` with a mention for usage."]
+    assert api.requests[0][1]["task"] == "Alice: help"
 
 
 async def test_pill_text_stays_out_of_task_context(maubot_plugin, maubot_test_bot, api):
