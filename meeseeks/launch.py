@@ -13,6 +13,7 @@ sent to its server and the prompt is passed as a single argument.
 import argparse
 import json
 import os
+import shutil
 import signal
 import stat
 import subprocess
@@ -61,10 +62,10 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     return p.parse_args(argv)
 
 
-def dejima_argv(args: argparse.Namespace, job, task_dir: Path) -> list[str]:
+def dejima_argv(args: argparse.Namespace, job, task_dir: Path, dejima: str) -> list[str]:
     harness = job.harness or args.harness
     backend = job.backend or dict(args.backend).get(harness)
-    argv = [args.dejima, "--isolated", "--no-pause", "--shared-path-file", str(task_dir / "shared-path")]
+    argv = [dejima, "--isolated", "--no-pause", "--shared-path-file", str(task_dir / "shared-path")]
     for flag, value in (("--identity", args.identity), ("--harness", harness), ("--backend", backend)):
         if value:
             argv += [flag, value]
@@ -77,12 +78,18 @@ def dejima_argv(args: argparse.Namespace, job, task_dir: Path) -> list[str]:
 
 def launch(args: argparse.Namespace, data: object) -> dict:
     job = validate_job(data)
+    # Resolved here, where a failure reaches the requester. Under an ssh forced
+    # command PATH is minimal, and a dejima that doesn't start would otherwise
+    # only close its tmux window.
+    dejima = shutil.which(args.dejima)
+    if dejima is None:
+        raise RuntimeError(f"{args.dejima} not found on PATH ({os.environ.get('PATH', '')}); pass --dejima with its full path")
     task_dir = args.tasks_dir / job.id
     args.tasks_dir.mkdir(parents=True, exist_ok=True)
     task_dir.mkdir(mode=0o700)
     (task_dir / "domains").write_text("".join(f"{d}\n" for d in job.domains))
     (task_dir / "dependencies").write_text("".join(f"{d}\n" for d in job.dependencies))
-    (task_dir / "argv.json").write_text(json.dumps(dejima_argv(args, job, task_dir)))
+    (task_dir / "argv.json").write_text(json.dumps(dejima_argv(args, job, task_dir, dejima)))
 
     env = _tmux_env()
     tmux = [args.tmux]
@@ -125,12 +132,23 @@ def run_session(task_dir: Path) -> int:
     for sig in (signal.SIGINT, signal.SIGHUP, signal.SIGTERM, signal.SIGQUIT):
         signal.signal(sig, lambda *_: None)
     dejima = json.loads((task_dir / "argv.json").read_text())
-    code = subprocess.Popen(dejima).wait()
+    try:
+        code = subprocess.Popen(dejima).wait()
+    except OSError as e:
+        print(f"meeseeks: couldn't start {dejima[0]}: {e}", file=sys.stderr)
+        code = 127
     if code < 0:
         code = 128 - code
     tmp = task_dir / "exit.tmp"
     tmp.write_text(f"{code}\n")
     os.replace(tmp, task_dir / "exit")
+    if code:
+        # The window closes when this process exits, taking the error with it.
+        print(f"\nmeeseeks: dejima exited with status {code}. Press Enter to close this window.")
+        try:
+            input()
+        except EOFError:
+            pass
     return code
 
 

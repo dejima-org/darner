@@ -184,8 +184,12 @@ async def test_end_to_end_with_launcher(aiohttp_client, config, tmp_path, monkey
     tmux.write_text(FAKE_TMUX)
     tmux.chmod(0o755)
     monkeypatch.setenv("FAKE_TMUX_LOG", str(tmp_path / "tmux.log"))
+    dejima = tmp_path / "dejima"
+    dejima.write_text("#!/bin/sh\n")
+    dejima.chmod(0o755)
     config["launch_command"] = [
         sys.executable, "-m", "meeseeks.launch", "--tmux", str(tmux), "--tasks-dir", str(tmp_path / "tasks"),
+        "--dejima", str(dejima),
         "--harness", "claude-code", "--backend", "claude-code=anthropic", "--share-root", str(tmp_path / "isolated"),
     ]
     app = make_app(config, poll=False)

@@ -33,6 +33,11 @@ def env(tmp_path, monkeypatch):
     tmux = tmp_path / "tmux"
     tmux.write_text(FAKE_TMUX)
     tmux.chmod(0o755)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "dejima").write_text(FAKE_DEJIMA)
+    (bin_dir / "dejima").chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
     monkeypatch.setenv("FAKE_TMUX_LOG", str(tmp_path / "tmux.log"))
     return tmp_path
 
@@ -67,7 +72,7 @@ def test_launch_creates_session_and_window(env):
     assert (task / "domains").read_text() == "pypi.org\n"
     assert (task / "dependencies").read_text() == "pip:pytest\n"
     assert written_argv(env, "ms-abc23") == [
-        "dejima", "--isolated", "--no-pause", "--shared-path-file", str(task / "shared-path"),
+        str(env / "bin" / "dejima"), "--isolated", "--no-pause", "--shared-path-file", str(task / "shared-path"),
         "--domains", str(task / "domains"), "--dependencies", str(task / "dependencies"),
         "--", PROMPT,
     ]
@@ -88,7 +93,9 @@ def test_duplicate_id_rejected(env):
 def test_no_grants_or_names_leaves_flags_out(env):
     launch(args(env), {"id": "ms-abc23", "prompt": "p"})
     shared = str(env / "tasks" / "ms-abc23" / "shared-path")
-    assert written_argv(env, "ms-abc23") == ["dejima", "--isolated", "--no-pause", "--shared-path-file", shared, "--", "p"]
+    assert written_argv(env, "ms-abc23") == [
+        str(env / "bin" / "dejima"), "--isolated", "--no-pause", "--shared-path-file", shared, "--", "p",
+    ]
 
 
 @pytest.mark.parametrize(
@@ -458,3 +465,25 @@ def test_failed_paste_keeps_request_and_hides_tmux_detail(env, asked, monkeypatc
 def test_long_answer_is_refused_not_truncated(env, asked):
     code, _, err = answer_run(asked, {"requester": "@a:example.org", "text": "x" * 20000}, "--answers")
     assert code == 1 and "over 16 KiB" in err
+
+
+def test_missing_dejima_fails_the_launch(env, monkeypatch):
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    with pytest.raises(RuntimeError, match="dejima not found on PATH .*pass --dejima"):
+        launch(args(env), {"id": "ms-abc23", "prompt": "p"})
+    assert not (env / "tasks" / "ms-abc23").exists()
+    assert not (env / "tmux.log").exists()
+
+
+def test_exec_records_a_dejima_that_cannot_start(env):
+    launch(args(env), {"id": "ms-abc23", "prompt": "p"})
+    task = env / "tasks" / "ms-abc23"
+    argv = json.loads((task / "argv.json").read_text())
+    (task / "argv.json").write_text(json.dumps([str(env / "gone"), *argv[1:]]))
+    result = subprocess.run(
+        [sys.executable, "-m", "meeseeks.launch", "--exec", str(task)],
+        cwd=Path(__file__).parent.parent, input="\n", capture_output=True, text=True,
+    )
+    assert result.returncode == 127
+    assert (task / "exit").read_text() == "127\n"
+    assert "couldn't start" in result.stderr and "Press Enter" in result.stdout
