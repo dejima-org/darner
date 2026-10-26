@@ -172,17 +172,20 @@ On the dejima host, as `DEJIMA_USER`, authorise the API's key to run the launche
 ```sh
 API_ADDR=192.0.2.10
 API_PUBKEY='ssh-ed25519 AAAA... meeseeks-api'
-LAUNCHER_OPTIONS='--harness claude-code --backend claude-code=anthropic'
+LAUNCHER_OPTIONS="--dejima $(command -v dejima) --harness claude-code --backend claude-code=anthropic"
 
 install -d -m 700 ~/.ssh
+touch ~/.ssh/authorized_keys
+[ -z "$(tail -c 1 ~/.ssh/authorized_keys)" ] || echo >> ~/.ssh/authorized_keys   # end the last line first
 echo "from=\"$API_ADDR\",command=\"$HOME/.local/bin/meeseeks-launch $LAUNCHER_OPTIONS\",restrict $API_PUBKEY" \
   >> ~/.ssh/authorized_keys
-tail -n 1 ~/.ssh/authorized_keys
+ssh-keygen -lf ~/.ssh/authorized_keys | grep meeseeks-api   # no output means sshd can't read the line
 ```
 
-- `command=` makes the launcher the only thing this key can run, whatever the client asks for. The path is absolute, since a non-interactive ssh login may not have `~/.local/bin` on its `PATH`.
+- `command=` makes the launcher the only thing this key can run, whatever the client asks for. Its paths are absolute, since a non-interactive ssh login has a minimal `PATH` without `~/.local/bin`. That is also why `--dejima` gives dejima's full path.
 - `restrict` turns off forwarding and terminals, and `from=` accepts the key only from `API_ADDR`.
-- `LAUNCHER_OPTIONS` holds the defaults every session gets. Add `--identity meeseeks` if you set one up in step 1, and `--answers` if replies in chat may be typed into sessions. All options are listed under [Launcher options](#launcher-options). To change them later, edit this line in `~/.ssh/authorized_keys`.
+- `LAUNCHER_OPTIONS` holds the defaults every session gets. Add `--identity meeseeks` if you set one up in step 1, and `--answers` if replies in chat may be typed into sessions. All options are listed under [Launcher options](#launcher-options).
+- To change the options later, delete the `meeseeks-api` line and run this step again with new `LAUNCHER_OPTIONS`. Don't edit it in place: an option outside the quotes makes sshd skip the whole line, which shows up as `Permission denied (publickey)`.
 
 ### 5. Configure and start the API
 
@@ -251,6 +254,8 @@ curl -H "Authorization: Bearer $API_TOKEN" http://127.0.0.1:8080/v1/blurbs      
 `docker compose logs api` shows the API's log.
 
 If the ssh check asks for a password or prints anything but JSON, recheck step 4. A common cause is `API_ADDR` not matching where the connection really comes from.
+
+To link sessions from chat, set `remote_access_url` to the `base_url` of dejima's web remote access, if you use it. The bot then adds a link to the "Started" reply and to help requests. Opening the link is protected however your remote access is, such as by the reverse proxy in front of it. The link only works if dejima registers sessions in `/run/user/<uid>`, which needs `loginctl enable-linger` from step 1.
 
 Context blurbs go in the blurbs directory as `<name>.md`: `$MEESEEKS_CONFIG/blurbs`, or `$MEESEEKS_DIR/config/blurbs` under Docker. [`examples/blurbs`](examples/blurbs) has one. Every config key is described under [API config](#api-config).
 
@@ -360,7 +365,7 @@ The note is the task. The rest of the reply, minus the mention and the keyword l
 | `harness:` | harness for this task, overriding the default |
 | `backend:` | backend for this task, overriding the harness's default |
 
-The bot replies with the task id and its tmux target, or with why it was refused. It only acts when both the reply and the note are from users in its `allowlist`, since the note becomes the agent's instructions.
+The bot replies with the task id and its tmux target, plus a link to the session if the API has `remote_access_url` set, or with why it was refused. It only acts when both the reply and the note are from users in its `allowlist`, since the note becomes the agent's instructions.
 
 When the agent delivers output, the bot replies again with the agent's summary and the output as a zip. It also says when the session ends.
 
@@ -444,6 +449,8 @@ Grants use `dejima --domains FILE` and `--dependencies FILE`, and output collect
 | `launch_command` | how to reach the launcher; the command is appended, and over ssh arrives as `SSH_ORIGINAL_COMMAND` |
 | `launch_timeout` | seconds a launcher call may take |
 | `output_instructions` | replaces the prompt's last section |
+| `remote_access_url` | dejima's web remote access `base_url`, to link each session from chat; unset means no links |
+| `session_wait` | with `remote_access_url`, seconds a launch waits for dejima to register the session (default 20) |
 | `[tokens]` | one bearer token per client, by name |
 | `[policy]` | `deny_domains` (a denied domain's parents are denied too), `max_domains` |
 | `[limits]` | `max_bytes`, `max_files`: should match the launcher's `--max-output` |

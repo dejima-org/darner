@@ -102,6 +102,7 @@ class Api:
                 "source": {"kind": "matrix", "ref": "$trigger", "channel": ROOM},
                 "target": f"meeseeks:{id}",
                 "answerable": False,
+                "link": None,
                 **extra,
             }
         )
@@ -569,6 +570,24 @@ async def test_help(maubot_plugin, maubot_test_bot, api, summary, answerable, ta
     assert api.acked == [2]
 
 
+LINK = "https://dejima.example.com/?arg=0123456789abcdef"
+
+
+@pytest.mark.parametrize(
+    "answerable, body",
+    [
+        (True, f"{NEEDS_HELP}:\n\nwhich db?\n\nReply to this message to answer, or open the session: {LINK}"),
+        (False, f"{NEEDS_HELP}:\n\nwhich db?\n\nOpen the session to respond: {LINK}"),
+    ],
+    ids=["answerable", "link-only"],
+)
+async def test_help_with_session_link(maubot_plugin, maubot_test_bot, api, answerable, body):
+    api.add(2, type="help", summary="which db?", data=None, answerable=answerable, link=LINK)
+    await maubot_plugin.poll_once()
+    assert sent(maubot_test_bot) == [notice(body, **(HELP_TAG if answerable else {}))]
+    assert api.acked == [2]
+
+
 def help_message(sender=BOT, **content):
     return message("ms-7f3k2 needs help", sender=sender, event_id=HELP_ID, reply_to="$trigger", mention=False, **content)
 
@@ -725,3 +744,9 @@ async def test_pill_text_stays_out_of_task_context(maubot_plugin, maubot_test_bo
     )
     await send(maubot_test_bot, evt)
     assert api.requests[0][1]["context"] == "use xdist"
+
+
+async def test_started_reply_links_to_the_session(maubot_plugin, maubot_test_bot, api):
+    api.response = {"id": "ms-7f3k2", "target": "meeseeks:ms-7f3k2", "link": LINK}
+    await send(maubot_test_bot, message("@meeseeks:example.org go"))
+    assert replies(maubot_test_bot) == [f"Started ms-7f3k2 → meeseeks:ms-7f3k2\nOpen the session: {LINK}"]

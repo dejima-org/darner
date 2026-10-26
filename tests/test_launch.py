@@ -16,7 +16,7 @@ python3 -c 'import json, sys; print(json.dumps(sys.argv[1:]))' "$@" >> "$FAKE_TM
 case "$1" in
     has-session) exit "${FAKE_TMUX_HAS:-1}" ;;
     load-buffer) cat > "$FAKE_TMUX_LOG.buffer" ;;
-    new-window) while [ "$1" != -n ]; do shift; done; echo "meeseeks:$2 @7" ;;
+    new-window) while [ "$1" != -n ]; do shift; done; echo "meeseeks:$2 @7 %3" ;;
 esac
 """
 
@@ -33,7 +33,13 @@ def env(tmp_path, monkeypatch):
     tmux = tmp_path / "tmux"
     tmux.write_text(FAKE_TMUX)
     tmux.chmod(0o755)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "dejima").write_text(FAKE_DEJIMA)
+    (bin_dir / "dejima").chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
     monkeypatch.setenv("FAKE_TMUX_LOG", str(tmp_path / "tmux.log"))
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "run"))
     return tmp_path
 
 
@@ -67,7 +73,7 @@ def test_launch_creates_session_and_window(env):
     assert (task / "domains").read_text() == "pypi.org\n"
     assert (task / "dependencies").read_text() == "pip:pytest\n"
     assert written_argv(env, "ms-abc23") == [
-        "dejima", "--isolated", "--no-pause", "--shared-path-file", str(task / "shared-path"),
+        str(env / "bin" / "dejima"), "--isolated", "--no-pause", "--shared-path-file", str(task / "shared-path"),
         "--domains", str(task / "domains"), "--dependencies", str(task / "dependencies"),
         "--", PROMPT,
     ]
@@ -88,7 +94,9 @@ def test_duplicate_id_rejected(env):
 def test_no_grants_or_names_leaves_flags_out(env):
     launch(args(env), {"id": "ms-abc23", "prompt": "p"})
     shared = str(env / "tasks" / "ms-abc23" / "shared-path")
-    assert written_argv(env, "ms-abc23") == ["dejima", "--isolated", "--no-pause", "--shared-path-file", shared, "--", "p"]
+    assert written_argv(env, "ms-abc23") == [
+        str(env / "bin" / "dejima"), "--isolated", "--no-pause", "--shared-path-file", shared, "--", "p",
+    ]
 
 
 @pytest.mark.parametrize(
@@ -186,8 +194,8 @@ def test_status_states(env, share):
     code, out, _ = run(a, "status")
     assert code == 0
     assert json.loads(out) == [
-        {"id": "ms-abc23", "state": "exited", "ready": True, "help": False, "answerable": False},
-        {"id": "ms-starx", "state": "starting", "ready": False, "help": False, "answerable": False},
+        {"id": "ms-abc23", "state": "exited", "ready": True, "help": False, "answerable": False, "run_id": None},
+        {"id": "ms-starx", "state": "starting", "ready": False, "help": False, "answerable": False, "run_id": None},
     ]
 
 
@@ -458,3 +466,63 @@ def test_failed_paste_keeps_request_and_hides_tmux_detail(env, asked, monkeypatc
 def test_long_answer_is_refused_not_truncated(env, asked):
     code, _, err = answer_run(asked, {"requester": "@a:example.org", "text": "x" * 20000}, "--answers")
     assert code == 1 and "over 16 KiB" in err
+
+
+def test_missing_dejima_fails_the_launch(env, monkeypatch):
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    with pytest.raises(RuntimeError, match="dejima not found on PATH .*pass --dejima"):
+        launch(args(env), {"id": "ms-abc23", "prompt": "p"})
+    assert not (env / "tasks" / "ms-abc23").exists()
+    assert not (env / "tmux.log").exists()
+
+
+def test_exec_records_a_dejima_that_cannot_start(env):
+    launch(args(env), {"id": "ms-abc23", "prompt": "p"})
+    task = env / "tasks" / "ms-abc23"
+    argv = json.loads((task / "argv.json").read_text())
+    (task / "argv.json").write_text(json.dumps([str(env / "gone"), *argv[1:]]))
+    result = subprocess.run(
+        [sys.executable, "-m", "meeseeks.launch", "--exec", str(task)],
+        cwd=Path(__file__).parent.parent, input="\n", capture_output=True, text=True,
+    )
+    assert result.returncode == 127
+    assert (task / "exit").read_text() == "127\n"
+    assert "couldn't start" in result.stderr and "Press Enter" in result.stdout
+
+
+def register_session(env, pane="%3", run_id="0123456789abcdef"):
+    sessions = env / "run" / "dejima" / "sessions"
+    sessions.mkdir(parents=True, exist_ok=True)
+    (sessions / run_id).write_text(f"workspace=isolated\npane={pane}\nlabel=meeseeks:1\n")
+
+
+def test_pane_is_recorded(env):
+    launch(args(env), {"id": "ms-abc23", "prompt": "p"})
+    assert (env / "tasks" / "ms-abc23" / "pane").read_text() == "%3"
+
+
+def test_launch_waits_for_the_session_run_id(env):
+    register_session(env, pane="%9", run_id="ffffffffffffffff")
+    register_session(env)
+    (env / "run" / "dejima" / "sessions" / "not-a-run-id").write_text("pane=%3\n")
+    result = launch(args(env), {"id": "ms-abc23", "prompt": "p", "session_wait": 5})
+    assert result["run_id"] == "0123456789abcdef"
+
+
+def test_launch_gives_up_waiting(env):
+    import time
+
+    start = time.monotonic()
+    result = launch(args(env), {"id": "ms-abc23", "prompt": "p", "session_wait": 1})
+    assert "run_id" not in result and time.monotonic() - start < 3
+
+
+def test_launch_without_session_wait_does_not_look(env):
+    register_session(env)
+    assert "run_id" not in launch(args(env), {"id": "ms-abc23", "prompt": "p"})
+
+
+def test_status_reports_run_id_of_running_task(env, share):
+    a, _ = share
+    register_session(env)
+    assert status(a)[0]["run_id"] == "0123456789abcdef"

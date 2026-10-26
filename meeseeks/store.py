@@ -14,6 +14,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     job_json TEXT NOT NULL,
     status TEXT NOT NULL,
     target TEXT,
+    run_id TEXT,
     error TEXT,
     created REAL NOT NULL,
     UNIQUE (client, source_kind, source_ref)
@@ -37,6 +38,7 @@ class Task:
     status: str
     target: str | None
     error: str | None
+    run_id: str | None = None
 
 
 @dataclass
@@ -48,6 +50,7 @@ class Event:
     size: int
     answerable: bool
     target: str | None
+    run_id: str | None
     source: dict
 
 
@@ -55,6 +58,10 @@ class Store:
     def __init__(self, path: str):
         self.db = sqlite3.connect(path, isolation_level=None)
         self.db.executescript(SCHEMA)
+        # Columns added since the first release, for databases created before them.
+        columns = {row[1] for row in self.db.execute("PRAGMA table_info(tasks)")}
+        if "run_id" not in columns:
+            self.db.execute("ALTER TABLE tasks ADD COLUMN run_id TEXT")
 
     def claim(self, task_id: str, client: str, source: dict, requester: str, job_json: str) -> tuple[Task, bool]:
         """Record a task for a source, or return the one already recorded.
@@ -64,7 +71,7 @@ class Store:
         with self.db:
             self.db.execute("BEGIN IMMEDIATE")
             row = self.db.execute(
-                "SELECT id, status, target, error FROM tasks WHERE client = ? AND source_kind = ? AND source_ref = ?",
+                "SELECT id, status, target, error, run_id FROM tasks WHERE client = ? AND source_kind = ? AND source_ref = ?",
                 (client, source["kind"], source["ref"]),
             ).fetchone()
             if row and row[1] != "failed":
@@ -81,6 +88,9 @@ class Store:
     def fail_pending(self) -> None:
         """Release tasks left pending by a previous run, so a resend retries them."""
         self.db.execute("UPDATE tasks SET status = 'failed', error = 'interrupted' WHERE status = 'pending'")
+
+    def set_run_id(self, task_id: str, run_id: str) -> None:
+        self.db.execute("UPDATE tasks SET run_id = ? WHERE id = ?", (run_id, task_id))
 
     def mark(self, task_id: str, status: str, target: str | None = None, error: str | None = None) -> None:
         self.db.execute(
@@ -106,11 +116,11 @@ class Store:
 
     def _events(self, where: str, params: tuple) -> list[Event]:
         rows = self.db.execute(
-            "SELECT e.seq, e.task_id, e.type, e.summary, e.size, e.answerable, t.target, t.source_json"
+            "SELECT e.seq, e.task_id, e.type, e.summary, e.size, e.answerable, t.target, t.run_id, t.source_json"
             f" FROM events e JOIN tasks t ON t.id = e.task_id WHERE {where} ORDER BY e.seq",
             params,
         )
-        return [Event(*row[:5], bool(row[5]), row[6], json.loads(row[7])) for row in rows]
+        return [Event(*row[:5], bool(row[5]), row[6], row[7], json.loads(row[8])) for row in rows]
 
     def events(self, client: str) -> list[Event]:
         return self._events("t.client = ? AND e.acked = 0", (client,))

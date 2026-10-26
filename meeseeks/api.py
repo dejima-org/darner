@@ -5,6 +5,7 @@ import hmac
 import json
 import logging
 import os
+import re
 import tempfile
 import tomllib
 from pathlib import Path
@@ -17,6 +18,14 @@ from meeseeks.launch import FETCH_REJECTED
 from meeseeks.store import Store
 
 log = logging.getLogger("meeseeks.api")
+
+RUN_ID = re.compile(r"[0-9a-f]{16}")
+
+
+def session_link(config: dict, run_id: str | None) -> str | None:
+    """A link to the session in dejima's web remote access, if one is configured."""
+    base = config.get("remote_access_url")
+    return f"{base.rstrip('/')}/?arg={run_id}" if base and run_id else None
 
 REQUEST_KEYS = {"task", "context", "blurbs", "grants", "harness", "backend", "requester", "source"}
 MAX_TEXT = 32 * 1024
@@ -111,6 +120,8 @@ def build_job(config: dict, body: object) -> tuple[dict, dict, str]:
     for key in ("harness", "backend"):
         if body.get(key) is not None:
             job[key] = body[key]
+    if config.get("remote_access_url"):
+        job["session_wait"] = config.get("session_wait", 20)
     try:
         validate_job(job)
     except JobError as e:
@@ -214,6 +225,8 @@ async def poll_once(app: web.Application) -> None:
     for task in json.loads(out):
         if task["id"] not in ours:
             continue
+        if isinstance(task.get("run_id"), str) and RUN_ID.fullmatch(task["run_id"]):
+            store.set_run_id(task["id"], task["run_id"])
         # One task's failure must not hold up the others.
         try:
             if task.get("help"):
@@ -278,7 +291,7 @@ async def create_task(request: web.Request) -> web.Response:
     if not new:
         if task.status == "pending":
             return web.json_response({"error": f"{task.id} is already being launched"}, status=409)
-        return web.json_response({"id": task.id, "target": task.target})
+        return web.json_response({"id": task.id, "target": task.target, "link": session_link(config, task.run_id)})
 
     try:
         result = await run_launcher(config, job)
@@ -287,16 +300,23 @@ async def create_task(request: web.Request) -> web.Response:
         store.mark(job["id"], "failed", error=str(e))
         return web.json_response({"error": f"launch failed: {e}"}, status=502)
     store.mark(job["id"], "launched", target=target)
-    return web.json_response({"id": job["id"], "target": target}, status=201)
+    run_id = result.get("run_id")
+    if isinstance(run_id, str) and RUN_ID.fullmatch(run_id):
+        store.set_run_id(job["id"], run_id)
+    else:
+        run_id = None
+    return web.json_response({"id": job["id"], "target": target, "link": session_link(config, run_id)}, status=201)
 
 
 async def list_events(request: web.Request) -> web.Response:
+    config = request.app[CONFIG]
     events = request.app[STORE].events(_client(request))
     return web.json_response(
         [
             {
                 "seq": e.seq, "id": e.id, "type": e.type, "summary": e.summary, "size": e.size,
-                "answerable": e.answerable, "target": e.target, "source": e.source,
+                "answerable": e.answerable, "target": e.target, "link": session_link(config, e.run_id),
+                "source": e.source,
             }
             for e in events
         ]
@@ -356,6 +376,8 @@ async def ack_event(request: web.Request) -> web.Response:
 
 
 def make_app(config: dict, poll: bool = True) -> web.Application:
+    if config.get("remote_access_url") and not re.match(r"https?://", config["remote_access_url"]):
+        raise ValueError("remote_access_url must start with http:// or https://")
     app = web.Application(client_max_size=256 * 1024)
     app[CONFIG] = config
     app[STORE] = Store(config["db_path"])
