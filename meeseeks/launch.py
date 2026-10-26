@@ -59,6 +59,10 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--answers", action="store_true", help="allow answering help requests from chat")
     p.add_argument("--paste-delay", default=0.5, type=float)
     p.add_argument("--help-interval", default=300, type=int, help="least seconds between a task's help requests")
+    p.add_argument(
+        "--quiet-period", default=600, type=int,
+        help="seconds without changes after which an unsignalled RESULT.md is collected; 0 waits for the session to end",
+    )
     p.add_argument("--exec", dest="exec_dir", type=Path, help=argparse.SUPPRESS)
     p.add_argument("command", nargs="*", help=argparse.SUPPRESS)
     return p.parse_args(argv)
@@ -241,13 +245,55 @@ def _help_allowed(args: argparse.Namespace, task_dir: Path) -> bool:
     return not last.exists() or time.time() - last.stat().st_mtime >= args.help_interval
 
 
+def _result_id(fd: int) -> str | None:
+    try:
+        st = os.lstat("RESULT.md", dir_fd=fd)
+    except OSError:
+        return None
+    if not stat.S_ISREG(st.st_mode):
+        return None
+    return f"{st.st_dev} {st.st_ino} {st.st_mtime_ns} {st.st_size}"
+
+
+def _quiet_for(fd: int) -> float:
+    """Seconds since anything directly in ~/shared last changed."""
+    newest = os.fstat(fd).st_mtime
+    with os.scandir(fd) as entries:
+        for i, entry in enumerate(entries):
+            if i >= archive.Limits.max_entries:
+                break
+            try:
+                newest = max(newest, entry.stat(follow_symlinks=False).st_mtime)
+            except OSError:
+                continue
+    return time.time() - newest
+
+
+def _unsignalled(args: argparse.Namespace, fd: int, task_dir: Path) -> str | None:
+    """A RESULT.md the agent never signalled with .done, if it's time to collect it anyway.
+
+    That is once nothing in ~/shared has changed for the quiet period, or as
+    soon as the session has ended. Returns the RESULT.md's identity.
+    """
+    result = _result_id(fd)
+    delivered = task_dir / "delivered-result"
+    if result is None or (delivered.exists() and delivered.read_text() == result):
+        return None
+    if _state(task_dir) == "exited":
+        return result
+    if args.quiet_period and _quiet_for(fd) >= args.quiet_period:
+        return result
+    return None
+
+
 def _signals(args: argparse.Namespace, task_dir: Path) -> dict[str, bool]:
     try:
         fd = open_share(args, task_dir)
     except (OSError, ValueError):
-        return {kind: False for kind in SIGNALS}
+        return {"done": False, "help": False, "unsignalled": False}
     try:
         signals = {kind: _signal(fd, task_dir, kind) is not None for kind in SIGNALS}
+        signals["unsignalled"] = not signals["done"] and _unsignalled(args, fd, task_dir) is not None
     finally:
         os.close(fd)
     signals["help"] = signals["help"] and _help_allowed(args, task_dir)
@@ -275,6 +321,7 @@ def status(args: argparse.Namespace) -> list[dict]:
             "id": task_dir.name,
             "state": state,
             "ready": signals["done"],
+            "unsignalled": signals["unsignalled"],
             "help": signals["help"],
             "answerable": args.answers and state == "running",
             "run_id": session_run_id(task_dir) if state == "running" else None,
@@ -295,7 +342,8 @@ def fetch(args: argparse.Namespace, task_id: str) -> int:
     fd = open_share(args, task_dir)
     try:
         signal_id = _signal(fd, task_dir, "done")
-        if signal_id is None:
+        result = _result_id(fd)
+        if signal_id is None and _unsignalled(args, fd, task_dir) is None:
             raise RuntimeError(f"{task_id} has no output ready")
         signal.signal(signal.SIGALRM, _timeout)
         signal.alarm(args.fetch_timeout)
@@ -303,7 +351,7 @@ def fetch(args: argparse.Namespace, task_id: str) -> int:
             data, _ = archive.build(fd, archive.Limits(max_bytes=args.max_output))
         except (archive.ArchiveError, _Timeout) as e:
             # Retrying would fail the same way, so the output is consumed.
-            _consume(fd, task_dir, "done", signal_id)
+            _delivered(fd, task_dir, signal_id, result)
             reason = e if isinstance(e, archive.ArchiveError) else f"took longer than {args.fetch_timeout}s to read"
             print(f"meeseeks-launch: {reason}", file=sys.stderr)
             return FETCH_REJECTED
@@ -311,10 +359,20 @@ def fetch(args: argparse.Namespace, task_id: str) -> int:
             signal.alarm(0)
         sys.stdout.buffer.write(data)
         sys.stdout.buffer.flush()
-        _consume(fd, task_dir, "done", signal_id)
+        _delivered(fd, task_dir, signal_id, result)
     finally:
         os.close(fd)
     return 0
+
+
+def _delivered(fd: int, task_dir: Path, signal_id: str | None, result: str | None) -> None:
+    """Record a delivery: the .done it answered, and the RESULT.md it carried."""
+    if signal_id:
+        _consume(fd, task_dir, "done", signal_id)
+    if result:
+        tmp = task_dir / "delivered-result.tmp"
+        tmp.write_text(result)
+        os.replace(tmp, task_dir / "delivered-result")
 
 
 def help_request(args: argparse.Namespace, task_id: str) -> None:

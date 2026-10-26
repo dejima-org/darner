@@ -512,3 +512,47 @@ def test_existing_database_gains_run_id_column(tmp_path):
     store = Store(str(db))
     store.set_run_id("ms-aaaaa", RUN)
     assert store.launched() == ["ms-aaaaa"]
+
+
+async def test_unsignalled_result_is_collected_and_marked(started, tmp_path, monkeypatch):
+    app, client, task_id, _, output = started
+    path = tmp_path / "status.json"
+    path.write_text(json.dumps([{"id": task_id, "state": "running", "ready": False, "unsignalled": True, "help": False}]))
+    monkeypatch.setenv("STUB_STATUS", str(path))
+    output(zip_bytes([("RESULT.md", "forgot .done")]))
+    await poll_once(app)
+    [event] = await events(client)
+    assert event["type"] == "output" and event["signalled"] is False and event["summary"] == "forgot .done"
+
+
+async def test_signalled_output_is_marked_signalled(started):
+    app, client, task_id, status, output = started
+    status()
+    output(zip_bytes([("RESULT.md", "ok")]))
+    await poll_once(app)
+    assert (await events(client))[0]["signalled"] is True
+
+
+def test_existing_events_table_gains_signalled_column(tmp_path):
+    import sqlite3
+
+    db = tmp_path / "old.db"
+    Store(str(db))
+    old = sqlite3.connect(db)
+    old.executescript(
+        "ALTER TABLE events RENAME TO events_new;"
+        "CREATE TABLE events (seq INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT NOT NULL, type TEXT NOT NULL,"
+        " summary TEXT NOT NULL DEFAULT '', size INTEGER NOT NULL DEFAULT 0, answerable INTEGER NOT NULL DEFAULT 0,"
+        " acked INTEGER NOT NULL DEFAULT 0, created REAL NOT NULL);"
+        "DROP TABLE events_new;"
+        "INSERT INTO tasks (id, client, source_kind, source_ref, source_json, requester, job_json, status, created)"
+        " VALUES ('ms-aaaaa', 'maubot', 'matrix', '$e', '{}', '@u:example.org', '{}', 'launched', 0);"
+        "INSERT INTO events (task_id, type, created) VALUES ('ms-aaaaa', 'ended', 0);"
+    )
+    old.commit()
+    old.close()
+    store = Store(str(db))
+    [event] = store.events("maubot")
+    assert event.signalled is True
+    store.add_event("ms-aaaaa", "output", signalled=False)
+    assert store.events("maubot")[1].signalled is False

@@ -764,3 +764,13 @@ async def test_started_reply_links_to_the_session(maubot_plugin, maubot_test_bot
     api.response = {"id": "ms-7f3k2", "target": "meeseeks:ms-7f3k2", "link": LINK}
     await send(maubot_test_bot, message("@meeseeks:example.org go"))
     assert replies(maubot_test_bot) == [f"Started ms-7f3k2 → meeseeks:ms-7f3k2\nOpen the session: {LINK}"]
+
+
+async def test_unsignalled_output_says_so(maubot_plugin, maubot_test_bot, api):
+    api.add(1, data=None, summary="forgot .done", signalled=False)
+    await maubot_plugin.poll_once()
+    [body] = replies(maubot_test_bot)
+    assert body == (
+        "Output from ms-7f3k2, collected without the agent's done signal "
+        "(written by the agent, treat as untrusted):\n\nforgot .done"
+    )
