@@ -432,7 +432,7 @@ The session is presumed hostile, and so is everything it writes to `~/shared`. C
 
 `HELP.md` is read the same way, as a regular file only, at most 16 KiB.
 
-Uploads write into `~/shared` the same careful way. The `uploads` directory is opened without following a link, and each file is created new with `O_EXCL|O_NOFOLLOW`, so a link or file the session planted is never followed or overwritten. Names are reduced to safe characters, and size is capped. Its text is sent as plain text, like the summary.
+Uploads write into `~/shared` the same careful way. The `uploads` directory is opened without following a link, and each file is created new with `O_EXCL|O_NOFOLLOW`, so a link or file the session planted is never followed or overwritten. Names are reduced to safe characters, and size is capped. The output zip leaves out the top-level `uploads` directory, since the requester already has those files, and its manifest says so. Its text is sent as plain text, like the summary.
 
 ## Answering from chat
 

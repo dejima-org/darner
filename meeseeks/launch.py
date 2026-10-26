@@ -688,11 +688,11 @@ def upload(args: argparse.Namespace, task_id: str, stream) -> dict:
         raise RuntimeError("couldn't open the session's ~/shared")
     try:
         try:
-            os.mkdir("uploads", 0o755, dir_fd=fd)
+            os.mkdir(archive.UPLOADS, 0o755, dir_fd=fd)
         except FileExistsError:
             pass
         try:
-            uploads = os.open("uploads", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=fd)
+            uploads = os.open(archive.UPLOADS, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=fd)
         except OSError:
             raise RuntimeError("~/shared/uploads in the session isn't a directory")
     finally:

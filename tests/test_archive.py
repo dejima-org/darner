@@ -286,3 +286,16 @@ def test_repack_rejects_encrypted_entry():
         data[at] |= 0x01
     with pytest.raises(ArchiveError):
         repack(bytes(data))
+
+
+def test_requesters_uploads_are_not_sent_back(tree):
+    root, _ = tree
+    (root / "uploads").mkdir()
+    (root / "uploads" / "access.log").write_text("theirs")
+    (root / "Uploads-analysis.md").write_text("mine")
+    (root / "notes").mkdir()
+    (root / "notes" / "uploads").mkdir()
+    (root / "notes" / "uploads" / "kept.txt").write_text("nested, so the agent's")
+    data, manifest = zip_of(root)
+    assert names(data) == ["Uploads-analysis.md", "notes/uploads/kept.txt", "MANIFEST.txt"]
+    assert ("'uploads'", "uploaded by the requester, not sent back") in manifest.skipped

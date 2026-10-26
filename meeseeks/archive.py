@@ -19,6 +19,8 @@ from collections import Counter
 from dataclasses import dataclass, field
 
 MANIFEST = "MANIFEST.txt"
+# Where requesters' uploads go; they aren't sent back to them.
+UPLOADS = "uploads"
 SUMMARY = "RESULT.md"
 MAX_SUMMARY = 16 * 1024
 MANIFEST_SLACK = 2 * 1024 * 1024
@@ -110,6 +112,9 @@ class _Builder:
             path = prefix + name
             if not prefix and name.casefold() == MANIFEST.casefold():
                 self.manifest.skipped.append((repr(path), "reserved name"))
+                continue
+            if not prefix and name == UPLOADS:
+                self.manifest.skipped.append((repr(path), "uploaded by the requester, not sent back"))
                 continue
             if reason := _skip_reason(name, path, collisions, self.limits):
                 self.manifest.skipped.append((repr(path), reason))
