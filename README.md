@@ -68,6 +68,15 @@ This installs `~/.local/bin/meeseeks-launch`. Make sure dejima can start a sessi
 - Acknowledge CRITICAL audit findings with `dejima-audit ack`.
 - Pre-record decisions for any credential-shaped values dejima's staging scan flags.
 - Run `sudo loginctl enable-linger "$USER"` (or set `KillUserProcesses=no`), so the tmux server outlives the ssh connection.
+- Pre-answer Claude Code's startup questions. Each isolated session gets a copy of your `~/.claude.json`, narrowed to its working directory `/dejima/work`. Without an entry for that directory, Claude Code asks whether to trust the folder. It also offers its fullscreen renderer until it has done so three times, and a copy never remembers that. With Claude Code closed on this host, record both answers:
+
+  ```sh
+  cp ~/.claude.json ~/.claude.json.bak
+  jq '.projects["/dejima/work"].hasTrustDialogAccepted = true | .fullscreenUpsellSeenCount = 3' \
+    ~/.claude.json.bak > ~/.claude.json
+  ```
+
+  `/dejima/work` is the empty, container-local directory dejima creates for each isolated session, so trusting it trusts no files of yours.
 
 Optionally, add a `[identity.meeseeks]` section to dejima's config, for the git name and keys every meeseeks session should act as (see dejima's configuration docs). Then add `--identity meeseeks` to the launcher options in step 4.
 
@@ -352,6 +361,8 @@ deps: apt:jq pip:pytest-xdist
 harness: claude-code
 backend: openrouter
 ```
+
+Or send the task directly, in a message that mentions the bot and isn't a reply. That message, minus the mention and the keyword lines, is the task, with no extra context.
 
 `@meeseeks help` replies with this usage, including the available context blurbs.
 
