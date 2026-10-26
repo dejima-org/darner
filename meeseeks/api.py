@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import re
+import sys
 import tempfile
 import tomllib
 from pathlib import Path
@@ -403,7 +404,19 @@ def main() -> None:
     p = argparse.ArgumentParser(prog="meeseeks-api")
     p.add_argument("--config", default="/etc/meeseeks/api.toml", type=Path)
     args = p.parse_args()
-    config = tomllib.loads(args.config.read_text())
+    # A config mistake is reported in one line rather than a traceback, which
+    # a restarting container would otherwise repeat without end.
+    try:
+        config = tomllib.loads(args.config.read_text())
+        host, _, port = config.get("listen", "127.0.0.1:8080").rpartition(":")
+        app = make_app(config)
+        port = int(port)
+    except tomllib.TOMLDecodeError as e:
+        hint = "; text values need double quotes" if "Invalid value" in str(e) else ""
+        sys.exit(f"meeseeks-api: {args.config}: {e}{hint}")
+    except KeyError as e:
+        sys.exit(f"meeseeks-api: {args.config}: missing setting {e}")
+    except (OSError, ValueError) as e:
+        sys.exit(f"meeseeks-api: {args.config}: {e}")
     logging.basicConfig(level=logging.INFO)
-    host, _, port = config.get("listen", "127.0.0.1:8080").rpartition(":")
-    web.run_app(make_app(config), host=host, port=int(port))
+    web.run_app(app, host=host, port=port)
