@@ -366,7 +366,7 @@ Or send the task directly, in a message that mentions the bot and isn't a reply.
 
 `@meeseeks help` replies with this usage, including the available context blurbs.
 
-When the agent needs to reach domains the sandbox blocks, it lists them in `~/shared/DOMAINS` and the bot posts every one for you to check. Reply `@meeseeks allow` to that message to let the running session reach them, or `@meeseeks deny`. Internal domains are marked as such, and any the API's `deny_domains` policy refuses are marked and never allowed. What gets allowed is the list as shown: the launcher keeps its own copy, so the agent can't change it afterwards. If answering from chat is on, the agent is told the outcome. Otherwise, tell it in the session.
+When the agent needs to reach domains the sandbox blocks, it lists them in `~/shared/DOMAINS` and the bot posts every one for you to check. Reply `@meeseeks allow` to that message to let the running session reach them, or `@meeseeks deny`. Internal domains are marked as such, and any the API's `deny_domains` policy refuses are marked and never allowed. An agent that edits `DOMAINS` without signalling again is still asking: the changed list becomes a request once it has been left alone for 30 seconds. After you decide a request, a follow-up, such as asking again for a domain as internal, comes straight through. What gets allowed is the list as shown: the launcher keeps its own copy, so the agent can't change it afterwards. If answering from chat is on, the agent is told the outcome. Otherwise, tell it in the session.
 
 To manage open sessions, mention the bot with one of these. Replying to any of the bot's messages about a session works without the id.
 
@@ -459,7 +459,7 @@ The files are still agent-written: treat what is in the zip as untrusted. Neithe
 | `--docker PATH` | `docker` | the docker CLI, used to find and stop a session's container |
 | `--dejima-allow PATH` | `dejima-allow` | dejima's `dejima-allow`, used to grant a session the domains it requested |
 | `--stop-timeout SECONDS` | 60 | how long a stopped session may take to exit before dejima itself is ended |
-| `--help-interval SECONDS` | 300 | least time between a task's help requests, so a session can't flood the room |
+| `--help-interval SECONDS` | 300 | least time between a task's help requests, and between domain requests while one awaits a decision, so a session can't flood the room |
 
 The API sends one of these commands, which arrive as `SSH_ORIGINAL_COMMAND`: none (launch the job on stdin), `status`, `fetch <id>`, `help <id>`, `answer <id>`, `message <id>`, `stop <id>`, `domains <id>`, `allow <id> <n>` or `deny <id> <n>`. Anything else is refused.
 
