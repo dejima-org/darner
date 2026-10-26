@@ -17,6 +17,11 @@ if command == ["status"]:
     sys.stdout.write(open(os.environ["STUB_STATUS"]).read())
 elif command[:1] == ["help"]:
     sys.stdout.buffer.write(os.environ.get("STUB_HELP", "").encode())
+elif command[:1] == ["domains"]:
+    sys.stdout.write(os.environ["STUB_DOMAINS"])
+elif command[:1] in (["allow"], ["deny"]):
+    open(os.environ["STUB_LOG"], "a").write(json.dumps([*command, json.load(sys.stdin)]) + "\\n")
+    print(json.dumps({"granted": ["pypi.org"], "failed": [], "told": True}))
 elif command[:1] == ["stop"]:
     open(os.environ["STUB_LOG"], "a").write(json.dumps(command) + "\\n")
     if os.environ.get("STUB_STOP_ERROR"):
@@ -620,3 +625,68 @@ async def test_stop_refuses_an_ended_task(started, tmp_path):
     resp = await client.post(f"/v1/tasks/{task_id}/stop", headers=AUTH)
     assert resp.status == 409 and "not running" in (await resp.json())["error"]
     assert ["stop", task_id] not in fetches(tmp_path)
+
+
+DOMAIN_REQUEST = {
+    "request": 3,
+    "domains": [
+        {"domain": "pypi.org", "internal": False},
+        {"domain": "mirror.internal.example", "internal": True},
+        {"domain": "api.example.net", "internal": False},
+    ],
+    "rejected": 1,
+}
+
+
+@pytest.fixture
+async def requested(started, tmp_path, monkeypatch):
+    app, client, task_id, *_ = started
+    path = tmp_path / "status.json"
+    path.write_text(json.dumps([{"id": task_id, "state": "running", "ready": False, "domains": True}]))
+    monkeypatch.setenv("STUB_STATUS", str(path))
+    monkeypatch.setenv("STUB_DOMAINS", json.dumps(DOMAIN_REQUEST))
+    await poll_once(app)
+    return app, client, task_id
+
+
+async def test_domain_request_becomes_event_with_policy_marked(requested):
+    app, client, task_id = requested
+    [event] = await events(client)
+    assert event["type"] == "domains"
+    assert event["data"] == {
+        "request": 3,
+        "domains": [
+            {"domain": "pypi.org", "internal": False, "denied": False},
+            {"domain": "mirror.internal.example", "internal": True, "denied": False},
+            {"domain": "api.example.net", "internal": False, "denied": True},
+        ],
+        "rejected": 1,
+    }
+
+
+async def test_allow_passes_only_what_policy_permits(requested, tmp_path):
+    app, client, task_id = requested
+    resp = await client.post(f"/v1/tasks/{task_id}/domains/3/allow", json={"requester": "@alice:example.org"}, headers=AUTH)
+    assert resp.status == 200 and (await resp.json())["granted"] == ["pypi.org"]
+    assert fetches(tmp_path)[-1] == [
+        "allow", task_id, "3",
+        {"requester": "@alice:example.org", "domains": ["pypi.org", "mirror.internal.example"], "max_domains": 3},
+    ]
+
+
+async def test_deny_reaches_launcher(requested, tmp_path):
+    app, client, task_id = requested
+    resp = await client.post(f"/v1/tasks/{task_id}/domains/3/deny", json={"requester": "@alice:example.org"}, headers=AUTH)
+    assert resp.status == 200
+    assert fetches(tmp_path)[-1] == ["deny", task_id, "3", {"requester": "@alice:example.org"}]
+
+
+async def test_domain_decisions_are_scoped(requested, config, tmp_path):
+    app, client, task_id = requested
+    config["tokens"]["other"] = "0ther"
+    other = {"Authorization": "Bearer 0ther"}
+    body = {"requester": "@a:example.org"}
+    assert (await client.post(f"/v1/tasks/{task_id}/domains/3/allow", json=body, headers=other)).status == 404
+    assert (await client.post(f"/v1/tasks/{task_id}/domains/9/allow", json=body, headers=AUTH)).status == 404
+    assert (await client.post(f"/v1/tasks/{task_id}/domains/3/allow", json={}, headers=AUTH)).status == 400
+    assert not any(f[0] == "allow" for f in fetches(tmp_path))

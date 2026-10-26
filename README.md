@@ -181,7 +181,7 @@ On the dejima host, as `DEJIMA_USER`, authorise the API's key to run the launche
 API_ADDR=192.0.2.10
 API_PUBKEY='ssh-ed25519 AAAA... meeseeks-api'
 SHARE_DIR=$(dejima --print-config | sed -n 's/^core.share_dir=//p'); SHARE_DIR=${SHARE_DIR/#\~/$HOME}
-LAUNCHER_OPTIONS="--dejima $(command -v dejima) --share-root $SHARE_DIR/isolated --harness claude-code --backend claude-code=anthropic"
+LAUNCHER_OPTIONS="--dejima $(command -v dejima) --dejima-allow $(command -v dejima-allow) --share-root $SHARE_DIR/isolated --harness claude-code --backend claude-code=anthropic"
 
 install -d -m 700 ~/.ssh
 touch ~/.ssh/authorized_keys
@@ -366,6 +366,8 @@ Or send the task directly, in a message that mentions the bot and isn't a reply.
 
 `@meeseeks help` replies with this usage, including the available context blurbs.
 
+When the agent needs to reach domains the sandbox blocks, it lists them in `~/shared/DOMAINS` and the bot posts every one for you to check. Reply `@meeseeks allow` to that message to let the running session reach them, or `@meeseeks deny`. Internal domains are marked as such, and any the API's `deny_domains` policy refuses are marked and never allowed. What gets allowed is the list as shown: the launcher keeps its own copy, so the agent can't change it afterwards. If answering from chat is on, the agent is told the outcome. Otherwise, tell it in the session.
+
 To end a session, reply `@meeseeks stop` to any of the bot's messages about it, or send `@meeseeks stop ms-xxxxx`. The launcher stops the session's sandbox container, so dejima exits and cleans up as usual, then closes its tmux window.
 
 The note is the task. The rest of the reply, minus the mention and the keyword lines, is extra context. Keyword lines take comma or space separated values and can repeat:
@@ -398,6 +400,7 @@ When the agent needs something from you, the bot posts its request. If the dejim
 ## Delivering your output
 <put output in ~/shared, a summary in ~/shared/RESULT.md, then create ~/shared/.done>
 <to ask for something, write ~/shared/HELP.md, create ~/shared/.help and end the turn>
+<to ask for domains, list them in ~/shared/DOMAINS, create ~/shared/.domains and end the turn>
 ```
 
 The last section can be replaced with `output_instructions` in the API config.
@@ -444,11 +447,12 @@ The files are still agent-written: treat what is in the zip as untrusted. Neithe
 | `--answers` | off | allow answering help requests from chat |
 | `--paste-delay SECONDS` | 0.5 | wait between pasting an answer and pressing Enter |
 | `--quiet-period SECONDS` | 600 | after this long without changes in `~/shared`, collect a `RESULT.md` the agent never signalled with `.done`; 0 waits for the session to end |
-| `--docker PATH` | `docker` | the docker CLI, used to stop a session's container |
+| `--docker PATH` | `docker` | the docker CLI, used to find and stop a session's container |
+| `--dejima-allow PATH` | `dejima-allow` | dejima's `dejima-allow`, used to grant a session the domains it requested |
 | `--stop-timeout SECONDS` | 60 | how long a stopped session may take to exit before dejima itself is ended |
 | `--help-interval SECONDS` | 300 | least time between a task's help requests, so a session can't flood the room |
 
-The API sends one of these commands, which arrive as `SSH_ORIGINAL_COMMAND`: none (launch the job on stdin), `status`, `fetch <id>`, `help <id>`, `answer <id>` or `stop <id>`. Anything else is refused.
+The API sends one of these commands, which arrive as `SSH_ORIGINAL_COMMAND`: none (launch the job on stdin), `status`, `fetch <id>`, `help <id>`, `answer <id>`, `stop <id>`, `domains <id>`, `allow <id> <n>` or `deny <id> <n>`. Anything else is refused.
 
 Grants use `dejima --domains FILE` and `--dependencies FILE`, and output collection uses `--shared-path-file FILE`. A task without grants passes neither grant flag.
 
@@ -469,7 +473,7 @@ Grants use `dejima --domains FILE` and `--dependencies FILE`, and output collect
 | `remote_access_url` | dejima's web remote access `base_url`, to link each session from chat; unset means no links |
 | `session_wait` | with `remote_access_url`, seconds a launch waits for dejima to register the session (default 20) |
 | `[tokens]` | one bearer token per client, by name |
-| `[policy]` | `deny_domains` (a denied domain's parents are denied too), `max_domains` |
+| `[policy]` | `deny_domains` (a denied domain's parents are denied too), `max_domains`, which also caps the domains a session gains through requests |
 | `[limits]` | `max_bytes`, `max_files`: should match the launcher's `--max-output` |
 
 ### API endpoints
@@ -495,10 +499,12 @@ Every `poll_interval` seconds the API asks the dejima host for the status of lau
 
 | endpoint | |
 |---|---|
-| `GET /v1/events` | unacknowledged events, oldest first: `{seq, id, type, summary, size, answerable, target, source}`, `type` is `output`, `help` or `ended` |
+| `GET /v1/events` | unacknowledged events, oldest first: `{seq, id, type, summary, size, answerable, target, source}`, `type` is `output`, `help`, `domains` or `ended`; `data` holds a domain request |
 | `GET /v1/tasks/<id>/outputs/<seq>.zip` | an `output` event's archive (`size` 0 means it was rejected, and `summary` says why) |
 | `POST /v1/events/<seq>/ack` | mark an event delivered |
 | `GET /v1/blurbs` | names of the available context blurbs |
+| `POST /v1/tasks/<id>/domains/<n>/allow` | `{requester}`: grant domain request `n` as it was shown, minus what policy refuses |
+| `POST /v1/tasks/<id>/domains/<n>/deny` | `{requester}`: refuse domain request `n` |
 | `POST /v1/tasks/<id>/stop` | end the task's session and close its tmux window; 409 if it isn't running |
 | `POST /v1/tasks/<id>/answer` | `{text, requester}`: answer the task's outstanding help request; 409 with the reason if the host refuses |
 

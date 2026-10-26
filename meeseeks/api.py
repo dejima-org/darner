@@ -14,7 +14,7 @@ from pathlib import Path
 from aiohttp import web
 
 from meeseeks import archive
-from meeseeks.job import OUTPUT_INSTRUCTIONS, JobError, compose_prompt, new_task_id, valid_name, validate_job
+from meeseeks.job import OUTPUT_INSTRUCTIONS, JobError, compose_prompt, new_task_id, valid_domain, valid_name, validate_job
 from meeseeks.launch import FETCH_REJECTED
 from meeseeks.store import Store
 
@@ -85,15 +85,21 @@ def load_blurbs(blurbs_dir: Path, names: list) -> list[tuple[str, str]]:
     return blurbs
 
 
+def denied_domain(policy: dict, domain: str) -> bool:
+    # A grant covers its subdomains, so a parent of a denied domain is denied too.
+    return any(
+        domain == denied or domain.endswith("." + denied) or denied.endswith("." + domain)
+        for denied in (d.lower() for d in policy.get("deny_domains", []))
+    )
+
+
 def check_policy(policy: dict, domains: list[str]) -> None:
     max_domains = policy.get("max_domains")
     if max_domains is not None and len(domains) > max_domains:
         raise RequestError(403, f"at most {max_domains} domains may be granted")
-    # A grant covers its subdomains, so a parent of a denied domain is denied too.
     for domain in domains:
-        for denied in (d.lower() for d in policy.get("deny_domains", [])):
-            if domain == denied or domain.endswith("." + denied) or denied.endswith("." + domain):
-                raise RequestError(403, f"domain not permitted: {domain}")
+        if denied_domain(policy, domain):
+            raise RequestError(403, f"domain not permitted: {domain}")
 
 
 def build_job(config: dict, body: object) -> tuple[dict, dict, str]:
@@ -215,6 +221,23 @@ async def collect_help(app: web.Application, task: dict) -> None:
     store.add_event(task["id"], "help", archive.clean_text(out), answerable=task.get("answerable", False))
 
 
+async def collect_domains(app: web.Application, task: dict) -> None:
+    config, store = app[CONFIG], app[STORE]
+    code, out, err = await run_remote(config, ["domains", task["id"]])
+    if code:
+        log.warning("domains %s failed: %s", task["id"], err or f"exit {code}")
+        return
+    request = json.loads(out)
+    policy = config.get("policy", {})
+    domains = [
+        {"domain": d["domain"], "internal": bool(d["internal"]), "denied": denied_domain(policy, d["domain"])}
+        for d in request["domains"]
+        if valid_domain(d.get("domain"))
+    ]
+    data = {"request": int(request["request"]), "domains": domains, "rejected": int(request.get("rejected", 0))}
+    store.add_event(task["id"], "domains", data=data)
+
+
 async def poll_once(app: web.Application) -> None:
     config, store = app[CONFIG], app[STORE]
     ours = set(store.launched())
@@ -238,6 +261,8 @@ async def poll_once(app: web.Application) -> None:
         try:
             if task.get("help"):
                 await collect_help(app, task)
+            if task.get("domains"):
+                await collect_domains(app, task)
             # An unsignalled RESULT.md is the agent's output all the same, collected
             # once the launcher judges it finished.
             if task["ready"] or task.get("unsignalled"):
@@ -327,7 +352,7 @@ async def list_events(request: web.Request) -> web.Response:
         [
             {
                 "seq": e.seq, "id": e.id, "type": e.type, "summary": e.summary, "size": e.size,
-                "answerable": e.answerable, "signalled": e.signalled,
+                "answerable": e.answerable, "signalled": e.signalled, "data": e.data,
                 "target": e.target, "link": session_link(config, e.run_id),
                 "source": e.source,
             }
@@ -399,6 +424,36 @@ async def stop_task(request: web.Request) -> web.Response:
     return web.Response(status=204)
 
 
+async def decide_domains(request: web.Request) -> web.Response:
+    """Allow or deny a task's domain request, as it was shown in its event."""
+    client = _client(request)
+    store, config = request.app[STORE], request.app[CONFIG]
+    task_id, number, verb = request.match_info["id"], int(request.match_info["n"]), request.match_info["verb"]
+    if store.task_status(client, task_id) is None:
+        raise web.HTTPNotFound()
+    shown = store.domain_request(client, task_id, number)
+    if shown is None:
+        raise web.HTTPNotFound()
+    try:
+        body = await request.json()
+        requester = _text(body, "requester")
+    except (ValueError, RequestError, AttributeError):
+        return web.json_response({"error": "body must have requester"}, status=400)
+    payload = {"requester": requester}
+    if verb == "allow":
+        # Checked again here, in case the policy changed since the request was shown.
+        policy = config.get("policy", {})
+        payload["domains"] = [d["domain"] for d in shown["domains"] if not denied_domain(policy, d["domain"])]
+        payload["max_domains"] = policy.get("max_domains")
+    try:
+        code, out, err = await run_remote(config, [verb, task_id, str(number)], json.dumps(payload).encode())
+    except RuntimeError as e:
+        return web.json_response({"error": f"{verb} failed: {e}"}, status=502)
+    if code:
+        return web.json_response({"error": err or f"launcher exited {code}"}, status=409)
+    return web.json_response(json.loads(out))
+
+
 async def ack_event(request: web.Request) -> web.Response:
     if not request.app[STORE].ack(_client(request), int(request.match_info["seq"])):
         raise web.HTTPNotFound()
@@ -420,6 +475,7 @@ def make_app(config: dict, poll: bool = True) -> web.Application:
     app.router.add_post(r"/v1/events/{seq:\d+}/ack", ack_event)
     app.router.add_post(r"/v1/tasks/{id:ms-[a-z2-7]{5}}/answer", answer_help)
     app.router.add_post(r"/v1/tasks/{id:ms-[a-z2-7]{5}}/stop", stop_task)
+    app.router.add_post(r"/v1/tasks/{id:ms-[a-z2-7]{5}}/domains/{n:\d{1,9}}/{verb:allow|deny}", decide_domains)
     if poll:
         app.cleanup_ctx.append(poller)
     return app

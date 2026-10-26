@@ -30,7 +30,10 @@ OUTPUT_INSTRUCTIONS = (
     "so the task is not done until it exists.\n"
     "If you are asked to do more afterwards, repeat these steps when that is finished.\n\n"
     "If you need something from the requester to continue, write what you need to ~/shared/HELP.md, "
-    "run `touch ~/shared/.help`, and end your turn. Their response will arrive as your next message."
+    "run `touch ~/shared/.help`, and end your turn. Their response will arrive as your next message.\n\n"
+    "If you need to reach domains the sandbox blocks, write them to ~/shared/DOMAINS, one per line, with "
+    "`internal ` in front of internal ones, then run `touch ~/shared/.domains` and end your turn. The requester "
+    "is shown the list to approve, and you will be told what was allowed."
 )
 
 

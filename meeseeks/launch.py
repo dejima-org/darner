@@ -3,7 +3,8 @@
 Meant to be the forced command of the API's key in authorized_keys, so the
 only command a client can send is SSH_ORIGINAL_COMMAND, and only three forms
 of it are accepted: none (launch the job on stdin), `status`, `fetch <id>`,
-`help <id>`, `answer <id>` and `stop <id>`.
+`help <id>`, `answer <id>`, `stop <id>`, `domains <id>`, and `allow <id> <n>` and
+`deny <id> <n>` for domain request n.
 
 The dejima argv is written to the task directory and the tmux window re-invokes
 this module with --exec to run it, since tmux limits the size of a command
@@ -11,6 +12,8 @@ sent to its server and the prompt is passed as a single argument.
 """
 
 import argparse
+import contextlib
+import fcntl
 import json
 import os
 import re
@@ -23,12 +26,17 @@ import time
 from pathlib import Path
 
 from meeseeks import archive
-from meeseeks.job import JobError, valid_name, valid_task_id, validate_job
+from meeseeks.job import JobError, valid_domain, valid_name, valid_task_id, validate_job
 
 FETCH_REJECTED = 3
 RUN_ID = re.compile(r"[0-9a-f]{16}")
 MAX_HELP = 16 * 1024
-SIGNALS = {"done": (".done", "consumed"), "help": (".help", "consumed-help")}
+SIGNALS = {
+    "done": (".done", "consumed"),
+    "help": (".help", "consumed-help"),
+    "domains": (".domains", "consumed-domains"),
+}
+MAX_DOMAIN_REQUEST = 20
 
 
 def _backend_default(value: str) -> tuple[str, str]:
@@ -64,6 +72,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help="seconds without changes after which an unsignalled RESULT.md is collected; 0 waits for the session to end",
     )
     p.add_argument("--docker", default="docker")
+    p.add_argument("--dejima-allow", default="dejima-allow")
     p.add_argument("--stop-timeout", default=60, type=int, help="seconds to wait for a stopped session to exit")
     p.add_argument("--exec", dest="exec_dir", type=Path, help=argparse.SUPPRESS)
     p.add_argument("command", nargs="*", help=argparse.SUPPRESS)
@@ -243,9 +252,9 @@ def _consume(fd: int, task_dir: Path, kind: str, signal_id: str) -> None:
         pass
 
 
-def _help_allowed(args: argparse.Namespace, task_dir: Path) -> bool:
-    """Rate-limit help requests, so a session can't flood the room with them."""
-    last = task_dir / SIGNALS["help"][1]
+def _request_allowed(args: argparse.Namespace, task_dir: Path, kind: str) -> bool:
+    """Rate-limit help and domain requests, so a session can't flood the room with them."""
+    last = task_dir / SIGNALS[kind][1]
     return not last.exists() or time.time() - last.stat().st_mtime >= args.help_interval
 
 
@@ -295,7 +304,7 @@ def _signals(args: argparse.Namespace, task_dir: Path) -> tuple[dict[str, bool],
 
     No shared-path yet just means the session is still starting.
     """
-    none = {"done": False, "help": False, "unsignalled": False}
+    none = {"done": False, "help": False, "domains": False, "unsignalled": False}
     try:
         fd = open_share(args, task_dir)
     except FileNotFoundError as e:
@@ -307,7 +316,8 @@ def _signals(args: argparse.Namespace, task_dir: Path) -> tuple[dict[str, bool],
         signals["unsignalled"] = not signals["done"] and _unsignalled(args, fd, task_dir) is not None
     finally:
         os.close(fd)
-    signals["help"] = signals["help"] and _help_allowed(args, task_dir)
+    signals["help"] = signals["help"] and _request_allowed(args, task_dir, "help")
+    signals["domains"] = signals["domains"] and _request_allowed(args, task_dir, "domains")
     return signals, None
 
 
@@ -334,6 +344,7 @@ def status(args: argparse.Namespace) -> list[dict]:
             "ready": signals["done"],
             "unsignalled": signals["unsignalled"],
             "help": signals["help"],
+            "domains": signals["domains"],
             "answerable": args.answers and state == "running",
             "run_id": session_run_id(task_dir) if state == "running" else None,
             "error": error,
@@ -393,7 +404,7 @@ def help_request(args: argparse.Namespace, task_id: str) -> None:
     fd = open_share(args, task_dir)
     try:
         signal_id = _signal(fd, task_dir, "help")
-        if signal_id is None or not _help_allowed(args, task_dir):
+        if signal_id is None or not _request_allowed(args, task_dir, "help"):
             raise RuntimeError(f"{task_id} has no help request")
         text = archive.read_file(fd, "HELP.md", MAX_HELP) or b""
         sys.stdout.buffer.write(text)
@@ -507,6 +518,154 @@ def _wait_for_exit(task_dir: Path, timeout: float) -> bool:
     return True
 
 
+def _session_containers(args: argparse.Namespace, task_dir: Path) -> list[str]:
+    """The task's sandbox container, found by the isolated work volume named after dejima's run id."""
+    run_id = session_run_id(task_dir) or _run_id_from_processes(task_dir)
+    if not run_id:
+        return []
+    found = subprocess.run(
+        [args.docker, "ps", "-q", "--filter", f"volume=dejima_isolated-work-{run_id}"],
+        capture_output=True, text=True,
+    )
+    return found.stdout.split()
+
+
+@contextlib.contextmanager
+def _domains_lock(task_dir: Path):
+    """Serialise writing and deciding domain requests, so a decision sees one request whole."""
+    with open(task_dir / "domains.lock", "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        yield
+
+
+def _write_atomic(path: Path, text: str) -> None:
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(text)
+    os.replace(tmp, path)
+
+
+def domain_request(args: argparse.Namespace, task_id: str) -> dict:
+    """Read a task's DOMAINS request, and keep the validated list host-side for approval.
+
+    Approval grants this saved list, never a fresh read of the agent's file,
+    so what the requester was shown is exactly what can be granted.
+    """
+    task_dir = args.tasks_dir / task_id
+    fd = open_share(args, task_dir)
+    try:
+        signal_id = _signal(fd, task_dir, "domains")
+        if signal_id is None or not _request_allowed(args, task_dir, "domains"):
+            raise RuntimeError(f"{task_id} has no domain request")
+        raw = archive.read_file(fd, "DOMAINS", 8 * 1024) or b""
+        domains, rejected = [], 0
+        for line in raw.decode(errors="replace").splitlines():
+            words = line.split("#", 1)[0].split()
+            if not words:
+                continue
+            internal = len(words) == 2 and words[0].lower() == "internal"
+            name = words[-1].lower()
+            entry = {"domain": name, "internal": internal}
+            if len(words) > (2 if internal else 1) or not valid_domain(name) or len(domains) >= MAX_DOMAIN_REQUEST:
+                rejected += 1
+            elif entry not in domains:
+                domains.append(entry)
+        with _domains_lock(task_dir):
+            counter = task_dir / "domains-requests"
+            number = int(counter.read_text()) + 1 if counter.exists() else 1
+            _write_atomic(counter, str(number))
+            request = {"request": number, "domains": domains, "rejected": rejected}
+            _write_atomic(task_dir / "domains-pending", json.dumps(request))
+        _consume(fd, task_dir, "domains", signal_id)
+        return request
+    finally:
+        os.close(fd)
+
+
+def _claim_domain_request(task_dir: Path, task_id: str, number: int) -> dict:
+    """Take a pending domain request, so it is decided once. Only the latest one counts."""
+    pending = task_dir / "domains-pending"
+    with _domains_lock(task_dir):
+        try:
+            request = json.loads(pending.read_text())
+        except FileNotFoundError:
+            raise RuntimeError(f"{task_id} has no domain request awaiting a decision")
+        if request["request"] != number:
+            raise RuntimeError(f"domain request {number} was replaced by a newer one")
+        pending.unlink()
+    return request
+
+
+def _tell_agent(args: argparse.Namespace, task_dir: Path, task_id: str, message: str) -> bool:
+    """Type a note into the session, if answering from chat is enabled. False if it isn't."""
+    if not args.answers:
+        return False
+    try:
+        _paste(args, task_dir, task_id, message)
+    except RuntimeError:
+        return False
+    return True
+
+
+def allow_domains(args: argparse.Namespace, task_id: str, number: int, data: object) -> dict:
+    """Grant a domain request to the running session, limited to what the API passes on.
+
+    The API leaves out what its policy refuses, and this grants only domains
+    that were in the saved request, so neither side alone can widen it.
+    """
+    task_dir = args.tasks_dir / task_id
+    if _state(task_dir) != "running":
+        raise RuntimeError(f"{task_id} is not running")
+    if not isinstance(data, dict) or not isinstance(data.get("requester"), str) or not isinstance(data.get("domains"), list):
+        raise ValueError("allow needs requester and domains")
+    limit = data.get("max_domains")
+    if limit is not None and type(limit) is not int:
+        raise ValueError("max_domains must be a whole number")
+    dejima_allow = shutil.which(args.dejima_allow)
+    if dejima_allow is None:
+        raise RuntimeError(f"{args.dejima_allow} not found on PATH; pass --dejima-allow with its full path")
+    containers = _session_containers(args, task_dir)
+    if len(containers) != 1:
+        raise RuntimeError(f"couldn't find {task_id}'s container")
+    request = _claim_domain_request(task_dir, task_id, number)
+    approved = {d for d in data["domains"] if isinstance(d, str)}
+    # The session's limit covers every domain it holds: those it launched with
+    # and every grant since, so repeated requests can't add up past it.
+    held_file = task_dir / "domains-granted"
+    held = json.loads(held_file.read_text()) if held_file.exists() else []
+    launched_with = sum(1 for line in (task_dir / "domains").read_text().splitlines() if line.strip())
+    granted, failed = [], []
+    for entry in request["domains"]:
+        if entry["domain"] not in approved:
+            continue
+        if limit is not None and launched_with + len(held) + len(granted) >= limit:
+            failed.append({"domain": entry["domain"], "error": f"over this session's limit of {limit} domains"})
+            continue
+        argv = [dejima_allow, "--container", containers[0], *(["--internal"] if entry["internal"] else []), entry["domain"]]
+        result = subprocess.run(argv, capture_output=True, text=True)
+        if result.returncode:
+            failed.append({"domain": entry["domain"], "error": archive.clean_text(result.stderr.encode(), 300)})
+        else:
+            granted.append(entry["domain"])
+    _write_atomic(held_file, json.dumps(held + granted))
+    requester = " ".join(archive.clean_text(data["requester"].encode(), 255).split())
+    note = f"Domain request from {requester}: allowed {', '.join(granted) or 'none'}"
+    if failed:
+        note += f"; couldn't allow {', '.join(f['domain'] for f in failed)}"
+    told = _tell_agent(args, task_dir, task_id, note + ". Carry on with your task.")
+    return {"granted": granted, "failed": failed, "told": told}
+
+
+def deny_domains(args: argparse.Namespace, task_id: str, number: int, data: object) -> dict:
+    task_dir = args.tasks_dir / task_id
+    request = _claim_domain_request(task_dir, task_id, number)
+    requester = " ".join(archive.clean_text(str((data or {}).get("requester", "")).encode(), 255).split()) or "the requester"
+    names = ", ".join(e["domain"] for e in request["domains"]) or "none"
+    told = _state(task_dir) == "running" and _tell_agent(
+        args, task_dir, task_id, f"Domain request from {requester}: not allowed ({names}). Carry on without them."
+    )
+    return {"told": told}
+
+
 def stop(args: argparse.Namespace, task_id: str) -> None:
     """End a session, then close the tmux window that held it.
 
@@ -517,14 +676,7 @@ def stop(args: argparse.Namespace, task_id: str) -> None:
     task_dir = args.tasks_dir / task_id
     if _state(task_dir) != "running":
         raise RuntimeError(f"{task_id} is not running")
-    run_id = session_run_id(task_dir) or _run_id_from_processes(task_dir)
-    containers = []
-    if run_id:
-        found = subprocess.run(
-            [args.docker, "ps", "-q", "--filter", f"volume=dejima_isolated-work-{run_id}"],
-            capture_output=True, text=True,
-        )
-        containers = found.stdout.split()
+    containers = _session_containers(args, task_dir)
     if containers:
         subprocess.run([args.docker, "stop", *containers], capture_output=True)
     elif pid := _dejima_pid(task_dir):
@@ -542,7 +694,10 @@ def command(args: argparse.Namespace) -> list[str]:
     original = os.environ.get("SSH_ORIGINAL_COMMAND")
     words = original.split() if original is not None else args.command
     if words in ([], ["status"]) or (
-        len(words) == 2 and words[0] in ("fetch", "help", "answer", "stop") and valid_task_id(words[1])
+        len(words) == 2 and words[0] in ("fetch", "help", "answer", "stop", "domains") and valid_task_id(words[1])
+    ) or (
+        len(words) == 3 and words[0] in ("allow", "deny") and valid_task_id(words[1])
+        and words[2].isascii() and words[2].isdigit() and len(words[2]) <= 9
     ):
         return words
     raise ValueError("unknown command")
@@ -566,6 +721,11 @@ def main(argv: list[str] | None = None) -> int:
             help_request(args, words[1])
         elif words and words[0] == "stop":
             stop(args, words[1])
+        elif words and words[0] == "domains":
+            print(json.dumps(domain_request(args, words[1])))
+        elif words and words[0] in ("allow", "deny"):
+            decide = allow_domains if words[0] == "allow" else deny_domains
+            print(json.dumps(decide(args, words[1], int(words[2]), json.load(sys.stdin))))
         elif words:
             answer(args, words[1], json.load(sys.stdin))
         else:
