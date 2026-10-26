@@ -263,7 +263,7 @@ async def test_starts_task(maubot_plugin, maubot_test_bot, api):
             **{"m.relates_to": {"rel_type": "m.replace", "event_id": "$old"}},
         ),
         message("@meeseeks:example.org go", sender="@mallory:example.org"),
-        message("@meeseeks:example.org go", reply_to=None),
+        message("go", reply_to=None, mention=False),
         message("go", mention=False),
     ],
     ids=["own", "edit", "not-allowlisted", "not-reply", "no-mention"],
@@ -633,6 +633,40 @@ async def test_help_needs_a_mention(maubot_plugin, maubot_test_bot, api):
     assert maubot_test_bot.responded == []
 
 
-async def test_non_reply_other_than_help_is_ignored(maubot_plugin, maubot_test_bot, api):
+async def test_mention_that_is_not_a_reply_gets_a_hint(maubot_plugin, maubot_test_bot, api):
     await send(maubot_test_bot, message("@meeseeks:example.org do a thing", reply_to=None))
-    assert maubot_test_bot.responded == []
+    assert replies(maubot_test_bot) == ["To start a task, reply to a note and mention me. Send `help` with a mention for usage."]
+    assert api.requests == []
+
+
+def pill(text, href=BOT):
+    return f'<a href="https://matrix.to/#/{href}">{text}</a>'
+
+
+@pytest.mark.parametrize(
+    "text,href",
+    [("Meeseeks Bot", BOT), ("meeseeks", "%40meeseeks%3Aexample.org"), ("Task &amp; Co", BOT), ("@meeseeks:example.org", BOT)],
+)
+async def test_help_with_a_pill_of_any_text(maubot_plugin, maubot_test_bot, api, text, href):
+    import html
+
+    shown = html.unescape(text)
+    evt = message(f"{shown}: help", reply_to=None, format="org.matrix.custom.html", formatted_body=f"{pill(text, href)}: help")
+    await send(maubot_test_bot, evt)
+    assert replies(maubot_test_bot)[0].startswith("**Meeseeks**")
+
+
+async def test_pill_to_someone_else_is_not_stripped(maubot_plugin, maubot_test_bot, api):
+    evt = message(
+        "Alice: help", reply_to=None, format="org.matrix.custom.html", formatted_body=f"{pill('Alice', ALICE)}: help"
+    )
+    await send(maubot_test_bot, evt)
+    assert replies(maubot_test_bot) == ["To start a task, reply to a note and mention me. Send `help` with a mention for usage."]
+
+
+async def test_pill_text_stays_out_of_task_context(maubot_plugin, maubot_test_bot, api):
+    evt = message(
+        "Meeseeks Bot: use xdist", format="org.matrix.custom.html", formatted_body=f"{pill('Meeseeks Bot')}: use xdist"
+    )
+    await send(maubot_test_bot, evt)
+    assert api.requests[0][1]["context"] == "use xdist"
