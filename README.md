@@ -375,6 +375,7 @@ To manage open sessions, mention the bot with one of these. Replying to any of t
 | `sessions` | lists the open sessions: what each is waiting on, its age, who started it, and where to reach it |
 | `status ms-xxxxx` | what a session is waiting on, quoting its help request or listing its requested domains |
 | `tell ms-xxxxx <message>` | types a message into the session, which also answers an outstanding help request; needs `--answers` on the launcher |
+| `upload ms-xxxxx` | in reply to a file: puts it in the session's `~/shared/uploads`; a file sent as a reply to one of the bot's messages about a session goes there too |
 | `stop ms-xxxxx` | ends the session |
 
 Replying to one of the bot's messages about a session with anything else, with a mention, sends it to the session like `tell`.
@@ -429,7 +430,9 @@ The session is presumed hostile, and so is everything it writes to `~/shared`. C
 - **Re-check:** the API verifies the archive again and rebuilds it with its own writer before storing it, so what it serves is exactly what it checked.
 - **Delivery:** the bot renders the summary's markdown with raw HTML escaped, and shows every link and image with its destination in plain sight, so the agent can't hide where a link goes. Messages carry no mentions, so the text can't ping the room.
 
-`HELP.md` is read the same way, as a regular file only, at most 16 KiB. Its text is sent as plain text, like the summary.
+`HELP.md` is read the same way, as a regular file only, at most 16 KiB.
+
+Uploads write into `~/shared` the same careful way. The `uploads` directory is opened without following a link, and each file is created new with `O_EXCL|O_NOFOLLOW`, so a link or file the session planted is never followed or overwritten. Names are reduced to safe characters, and size is capped. Its text is sent as plain text, like the summary.
 
 ## Answering from chat
 
@@ -459,12 +462,13 @@ The files are still agent-written: treat what is in the zip as untrusted. Neithe
 | `--paste-delay SECONDS` | 0.5 | wait between pasting an answer and pressing Enter |
 | `--quiet-period SECONDS` | 600 | after this long without changes in `~/shared`, collect a `RESULT.md` the agent never signalled with `.done`; 0 waits for the session to end |
 | `--keep-records` | off | pass `--keep-records` to every dejima session |
+| `--max-upload BYTES` | 50 MiB | largest file a requester can upload into a session |
 | `--docker PATH` | `docker` | the docker CLI, used to find and stop a session's container |
 | `--dejima-allow PATH` | `dejima-allow` | dejima's `dejima-allow`, used to grant a session the domains it requested |
 | `--stop-timeout SECONDS` | 60 | how long a stopped session may take to exit before dejima itself is ended |
 | `--help-interval SECONDS` | 300 | least time between a task's help requests, and between domain requests while one awaits a decision, so a session can't flood the room |
 
-The API sends one of these commands, which arrive as `SSH_ORIGINAL_COMMAND`: none (launch the job on stdin), `status`, `fetch <id>`, `help <id>`, `answer <id>`, `message <id>`, `stop <id>`, `domains <id>`, `allow <id> <n>` or `deny <id> <n>`. Anything else is refused.
+The API sends one of these commands, which arrive as `SSH_ORIGINAL_COMMAND`: none (launch the job on stdin), `status`, `fetch <id>`, `help <id>`, `answer <id>`, `message <id>`, `upload <id>`, `stop <id>`, `domains <id>`, `allow <id> <n>` or `deny <id> <n>`. Anything else is refused.
 
 Grants use `dejima --domains FILE` and `--dependencies FILE`, and output collection uses `--shared-path-file FILE`. A task without grants passes neither grant flag.
 
@@ -477,6 +481,7 @@ Grants use `dejima --domains FILE` and `--dependencies FILE`, and output collect
 | `listen` | `host:port` to listen on |
 | `db_path` | SQLite database of tasks and events |
 | `blurbs_dir` | context blurbs, as `<name>.md`; read per request, so an edit needs no restart |
+| `max_upload` | largest upload in bytes, default 50 MiB; keep it at or under the launcher's `--max-upload` |
 | `default_blurbs` | blurb names added to every task's prompt, before any it names with `ctx:`; each must exist |
 | `results_dir` | collected output archives |
 | `poll_interval` | seconds between checks on the dejima host |
@@ -521,6 +526,7 @@ Every `poll_interval` seconds the API asks the dejima host for the status of lau
 | `GET /v1/tasks` | the client's open sessions, with what each is waiting on: `{id, target, link, requester, started, state, answerable, waiting: {answer, domains}}` |
 | `GET /v1/tasks/<id>` | one open session, in the same form |
 | `POST /v1/tasks/<id>/message` | `{text, requester}`: type a message into the session; 409 with the reason if the host refuses |
+| `POST /v1/tasks/<id>/files?name=&requester=` | the request body is a file for the session's `~/shared/uploads`; 413 over `max_upload` |
 | `POST /v1/tasks/<id>/stop` | end the task's session and close its tmux window; 409 if it isn't running |
 | `POST /v1/tasks/<id>/answer` | `{text, requester}`: answer the task's outstanding help request; 409 with the reason if the host refuses |
 

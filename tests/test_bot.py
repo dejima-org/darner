@@ -1054,3 +1054,69 @@ async def test_mention_alone_in_reply_to_a_session_message(maubot_plugin, maubot
     await send(maubot_test_bot, message("@meeseeks:example.org", reply_to="$started"))
     assert replies(maubot_test_bot) == ["Say what to tell ms-7f3k2 after the mention."]
     assert sessions.messages == [] and sessions.requests == []
+
+
+def file_message(sender=ALICE, event_id="$file", reply_to=None, **content):
+    body = {"msgtype": "m.file", "body": "access.log", **({} if "file" in content else {"url": "mxc://example.org/upload"}), **content}
+    if reply_to:
+        body["m.relates_to"] = {"m.in_reply_to": {"event_id": reply_to}}
+    return MessageEvent.deserialize(
+        {"type": "m.room.message", "room_id": ROOM, "event_id": event_id, "sender": sender, "origin_server_ts": 1, "content": body}
+    )
+
+
+@pytest.fixture
+def uploads(api, maubot_test_bot):
+    api.files = []
+
+    async def receive(request):
+        api.files.append((request.match_info["id"], dict(request.query), await request.read()))
+        return web.json_response({"path": f"~/shared/uploads/{request.query['name']}", "size": 3, "told": False})
+
+    api.server.app.router._frozen = False
+    api.server.app.router.add_post("/v1/tasks/{id}/files", receive)
+    downloads = {"mxc://example.org/upload": b"log", "mxc://example.org/secret": b"ciphertext"}
+
+    async def download_media(url):
+        return downloads[url]
+
+    maubot_test_bot.client.download_media = download_media
+    maubot_test_bot.events["$started"] = bot_message(**{"io.meeseeks.task": "ms-7f3k2"})
+    return api
+
+
+async def test_file_sent_as_a_reply_to_a_session_message_is_uploaded(maubot_plugin, maubot_test_bot, uploads):
+    await send(maubot_test_bot, file_message(reply_to="$started", filename="access.log"))
+    assert uploads.files == [("ms-7f3k2", {"name": "access.log", "requester": ALICE}, b"log")]
+    assert replies(maubot_test_bot) == [
+        "Uploaded access.log to ms-7f3k2 as ~/shared/uploads/access.log.\nTell the agent in its session where to find it."
+    ]
+
+
+async def test_upload_command_in_reply_to_a_file(maubot_plugin, maubot_test_bot, uploads):
+    maubot_test_bot.events["$file"] = file_message()
+    await send(maubot_test_bot, message("@meeseeks:example.org upload ms-7f3k2", reply_to="$file"))
+    assert uploads.files == [("ms-7f3k2", {"name": "access.log", "requester": ALICE}, b"log")]
+
+
+async def test_encrypted_file_is_decrypted_before_upload(maubot_plugin, maubot_test_bot, uploads, monkeypatch):
+    def decrypt_attachment(data, key, sha256, iv):
+        assert (data, key, sha256, iv) == (b"ciphertext", "k", "h", "iv")
+        return b"plaintext"
+
+    monkeypatch.setitem(sys.modules, "mautrix.crypto.attachments", SimpleNamespace(decrypt_attachment=decrypt_attachment))
+    secret = {"url": "mxc://example.org/secret", "key": {"k": "k", "kty": "oct", "alg": "A256CTR", "ext": True, "key_ops": ["encrypt", "decrypt"]}, "iv": "iv", "hashes": {"sha256": "h"}, "v": "v2"}
+    await send(maubot_test_bot, file_message(reply_to="$started", file=secret))
+    assert uploads.files[0][2] == b"plaintext"
+
+
+async def test_upload_command_needs_a_file(maubot_plugin, maubot_test_bot, uploads):
+    await send(maubot_test_bot, message("@meeseeks:example.org upload ms-7f3k2", reply_to="$started"))
+    assert uploads.files == []
+    assert replies(maubot_test_bot) == ["To upload a file to ms-7f3k2, reply `upload ms-7f3k2` with a mention to the file."]
+
+
+async def test_files_from_others_or_not_for_a_session_are_ignored(maubot_plugin, maubot_test_bot, uploads):
+    await send(maubot_test_bot, file_message(sender="@mallory:example.org", reply_to="$started"))
+    await send(maubot_test_bot, file_message(event_id="$other"))
+    assert uploads.files == [] and maubot_test_bot.responded == []

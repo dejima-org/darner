@@ -1007,3 +1007,83 @@ def test_keep_records_is_passed_to_every_session(env):
 def test_records_are_not_kept_by_default(env):
     launch(args(env), {"id": "ms-abc23", "prompt": "p"})
     assert "--keep-records" not in written_argv(env, "ms-abc23")
+
+
+def upload_run(a, name, data, *extra, requester="@alice:example.org"):
+    import unittest.mock
+
+    stdin = type("Stdin", (), {"buffer": io.BytesIO(json.dumps({"name": name, "requester": requester}).encode() + b"\n" + data)})()
+    with unittest.mock.patch("sys.stdin", stdin):
+        return run(a, *extra, "upload", "ms-abc23")
+
+
+def test_upload_lands_in_shared_uploads(env, share):
+    a, shared = share
+    code, out, err = upload_run(a, "access.log", b"line one\n")
+    assert code == 0, err
+    assert json.loads(out) == {"path": "~/shared/uploads/access.log", "size": 9, "told": False}
+    assert (shared / "uploads" / "access.log").read_bytes() == b"line one\n"
+
+
+@pytest.mark.parametrize(
+    "name, saved",
+    [("../../etc/passwd", "passwd"), (".bashrc", "bashrc"), ("con.txt", "upload"), ("my report (1).pdf", "my-report-1.pdf"), ("ünïcode.txt", "ncode.txt"), ("", "upload")],
+)
+def test_upload_names_are_made_safe(share, name, saved):
+    a, shared = share
+    assert json.loads(upload_run(a, name, b"x")[1])["path"] == f"~/shared/uploads/{saved}"
+
+
+def test_upload_never_overwrites(share):
+    a, shared = share
+    upload_run(a, "notes.tar.gz", b"first")
+    assert json.loads(upload_run(a, "notes.tar.gz", b"second")[1])["path"] == "~/shared/uploads/notes-2.tar.gz"
+    assert (shared / "uploads" / "notes.tar.gz").read_bytes() == b"first"
+
+
+def test_upload_wont_follow_a_planted_file_link(env, share):
+    a, shared = share
+    (shared / "uploads").mkdir()
+    victim = env / "authorized_keys"
+    victim.write_text("keep me")
+    (shared / "uploads" / "key.pub").symlink_to(victim)
+    assert json.loads(upload_run(a, "key.pub", b"attacker")[1])["path"] == "~/shared/uploads/key-2.pub"
+    assert victim.read_text() == "keep me"
+
+
+def test_upload_wont_follow_a_planted_directory_link(env, share):
+    a, shared = share
+    outside = env / "outside"
+    outside.mkdir()
+    (shared / "uploads").symlink_to(outside)
+    code, _, err = upload_run(a, "x.txt", b"x")
+    assert code == 1 and "isn't a directory" in err
+    assert list(outside.iterdir()) == []
+
+
+def test_upload_size_limit(share):
+    a, shared = share
+    code, _, err = upload_run(a, "big.bin", b"x" * 11, "--max-upload", "10")
+    assert code == 1 and "over the 10-byte upload limit" in err
+    assert not (shared / "uploads").exists()
+
+
+def test_upload_tells_the_agent(env, share):
+    a, shared = share
+    (env / "tmux.log").write_text("")
+    upload_run(a, "access.log", b"abc", "--answers", "--paste-delay", "0")
+    assert (env / "tmux.log.buffer").read_text() == "Upload from @alice:example.org: ~/shared/uploads/access.log (3 bytes)."
+
+
+def test_upload_needs_a_running_session(env, share):
+    a, _ = share
+    (env / "tasks" / "ms-abc23" / "exit").write_text("0\n")
+    code, _, err = upload_run(a, "x.txt", b"x")
+    assert code == 1 and "not running" in err
+
+
+def test_upload_error_names_no_host_path(env, share):
+    a, _ = share
+    (env / "tasks" / "ms-abc23" / "shared-path").write_text("/somewhere/else\n")
+    code, _, err = upload_run(a, "x.txt", b"x")
+    assert code == 1 and "couldn't open the session's ~/shared" in err and "/somewhere" not in err
