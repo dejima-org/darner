@@ -5,6 +5,8 @@ ctx: myapp
 harness: cline
 backend: self-hosted
 model: qwen3-14b
+# A little under what the model's server allows.
+context_window: 30000
 internal: recipes.example.com:8443
 # Gives each session configs_dir/files/recipes-token in ~/shared/uploads.
 file: recipes-token

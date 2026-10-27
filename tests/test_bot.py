@@ -1126,9 +1126,9 @@ async def test_files_from_others_or_not_for_a_session_are_ignored(maubot_plugin,
 
 
 async def test_model_and_effort_are_sent(maubot_plugin, maubot_test_bot, api):
-    await send(maubot_test_bot, message("@meeseeks:example.org go\nmodel: opus\neffort: high"))
+    await send(maubot_test_bot, message("@meeseeks:example.org go\nmodel: opus\neffort: high\ncontext_window: 32768"))
     payload = api.requests[0][1]
-    assert payload["model"] == "opus" and payload["effort"] == "high"
+    assert payload["model"] == "opus" and payload["effort"] == "high" and payload["context_window"] == "32768"
 
 
 async def test_domain_port_is_shown(maubot_plugin, maubot_test_bot, api):

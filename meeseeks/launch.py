@@ -30,7 +30,9 @@ import time
 from pathlib import Path
 
 from meeseeks import archive
-from meeseeks.job import JobError, valid_domain, valid_effort, valid_model, valid_name, valid_task_id, validate_job
+from meeseeks.job import (
+    JobError, valid_context_window, valid_domain, valid_effort, valid_model, valid_name, valid_task_id, validate_job,
+)
 
 FETCH_REJECTED = 3
 RUN_ID = re.compile(r"[0-9a-f]{16}")
@@ -58,6 +60,10 @@ def _per_harness(what: str, check):
 _backend_default = _per_harness("backend", valid_name)
 
 
+def _context_window(s: str) -> bool:
+    return s.isascii() and s.isdecimal() and valid_context_window(int(s))
+
+
 def _name(value: str) -> str:
     if not valid_name(value):
         raise argparse.ArgumentTypeError(f"not a valid name: {value!r}")
@@ -75,6 +81,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--backend", type=_backend_default, action="append", default=[])
     p.add_argument("--model", type=_per_harness("model", valid_model), action="append", default=[])
     p.add_argument("--effort", type=_per_harness("effort", valid_effort), action="append", default=[])
+    p.add_argument("--context-window", type=_per_harness("context_window", _context_window), action="append", default=[])
     p.add_argument("--share-root", default=Path.home() / ".local/share/dejima/shared/isolated", type=Path)
     p.add_argument("--max-output", default=archive.Limits.max_bytes, type=int)
     p.add_argument("--fetch-timeout", default=60, type=int)
@@ -102,12 +109,13 @@ def dejima_argv(args: argparse.Namespace, job, task_dir: Path, dejima: str) -> l
     backend = job.backend or dict(args.backend).get(harness)
     model = job.model or dict(args.model).get(harness)
     effort = job.effort or dict(args.effort).get(harness)
+    context_window = job.context_window or dict(args.context_window).get(harness)
     argv = [dejima, "--isolated", "--no-pause", "--shared-path-file", str(task_dir / "shared-path")]
     if args.keep_records:
         argv.append("--keep-records")
     for flag, value in (
         ("--identity", args.identity), ("--harness", harness), ("--backend", backend),
-        ("--model", model), ("--effort", effort),
+        ("--model", model), ("--effort", effort), ("--context-window", context_window and str(context_window)),
     ):
         if value:
             argv += [flag, value]
