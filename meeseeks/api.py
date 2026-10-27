@@ -158,10 +158,16 @@ async def run_remote(config: dict, args: list[str], stdin: bytes = b"") -> tuple
         stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
     )
 
-    async def communicate():
+    async def feed():
         proc.stdin.write(stdin)
+        try:
+            await proc.stdin.drain()
+        except (ConnectionResetError, BrokenPipeError):
+            pass
         proc.stdin.close()
-        out, err = await asyncio.gather(_read_capped(proc.stdout, cap), _read_capped(proc.stderr, 64 * 1024))
+
+    async def communicate():
+        _, out, err = await asyncio.gather(feed(), _read_capped(proc.stdout, cap), _read_capped(proc.stderr, 64 * 1024))
         await proc.wait()
         return out, err
 
@@ -461,6 +467,34 @@ async def get_session(request: web.Request) -> web.Response:
     return web.json_response(found[0])
 
 
+async def upload_file(request: web.Request) -> web.Response:
+    """Pass a requester's file to the session's ~/shared/uploads."""
+    client, store, config = _client(request), request.app[STORE], request.app[CONFIG]
+    task_id = request.match_info["id"]
+    status = store.task_status(client, task_id)
+    if status is None:
+        raise web.HTTPNotFound()
+    if status != "launched":
+        return web.json_response({"error": f"{task_id} is not running"}, status=409)
+    name, requester = request.query.get("name", ""), request.query.get("requester", "")
+    if not requester or len(name) > 255 or len(requester) > 255:
+        return web.json_response({"error": "name and requester are required"}, status=400)
+    limit = config.get("max_upload", 50 * 1024 * 1024)
+    data = bytearray()
+    while chunk := await request.content.read(64 * 1024):
+        data += chunk
+        if len(data) > limit:
+            return web.json_response({"error": f"the file is over the {limit}-byte upload limit"}, status=413)
+    header = json.dumps({"name": name, "requester": requester}).encode() + b"\n"
+    try:
+        code, out, err = await run_remote(config, ["upload", task_id], header + bytes(data))
+    except RuntimeError as e:
+        return web.json_response({"error": f"upload failed: {e}"}, status=502)
+    if code:
+        return web.json_response({"error": err or f"launcher exited {code}"}, status=409)
+    return web.json_response(json.loads(out))
+
+
 async def stop_task(request: web.Request) -> web.Response:
     client = _client(request)
     task_id = request.match_info["id"]
@@ -534,6 +568,7 @@ def make_app(config: dict, poll: bool = True) -> web.Application:
     app.router.add_post(r"/v1/tasks/{id:ms-[a-z2-7]{5}}/answer", answer_help)
     app.router.add_post(r"/v1/tasks/{id:ms-[a-z2-7]{5}}/stop", stop_task)
     app.router.add_post(r"/v1/tasks/{id:ms-[a-z2-7]{5}}/message", message_task)
+    app.router.add_post(r"/v1/tasks/{id:ms-[a-z2-7]{5}}/files", upload_file)
     app.router.add_get("/v1/tasks", list_sessions)
     app.router.add_get(r"/v1/tasks/{id:ms-[a-z2-7]{5}}", get_session)
     app.router.add_post(r"/v1/tasks/{id:ms-[a-z2-7]{5}}/domains/{n:\d{1,9}}/{verb:allow|deny}", decide_domains)

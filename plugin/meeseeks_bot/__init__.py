@@ -33,6 +33,7 @@ STOP = re.compile(r"stop(?:\s+(ms-[a-z2-7]{5}))?", re.IGNORECASE)
 STOP_HOW = "To stop a session, reply `stop` with a mention to one of my messages about it, or send `stop ms-xxxxx` with a mention."
 STATUS = re.compile(r"status(?:\s+(ms-[a-z2-7]{5}))?", re.IGNORECASE)
 TELL = re.compile(r"tell(?:\s+(ms-[a-z2-7]{5}))?\s+(\S.*)", re.IGNORECASE | re.DOTALL)
+UPLOAD = re.compile(r"upload\s+(ms-[a-z2-7]{5})", re.IGNORECASE)
 STATUS_HOW = "Send `status ms-xxxxx` with a mention, or reply `status` with a mention to one of my messages about the session."
 DECIDE_HOW = "To allow or deny domains, reply `allow` or `deny` with a mention to my message listing them."
 NO_TASK = "Tell me the task after the mention, or reply to a note to make it the task. Send `help` with a mention for usage."
@@ -62,7 +63,7 @@ allow: pypi.org, files.pythonhosted.org
 
 **Domains:** when the agent asks to reach domains, I list every one. Reply `allow` or `deny` with a mention to that message.
 
-**Sessions:** with a mention, `sessions` lists the open ones, `status ms-xxxxx` says what one is waiting on, `tell ms-xxxxx <message>` types a message into it, and `stop ms-xxxxx` ends it. Replying to any of my messages about a session works without the id.
+**Sessions:** with a mention, `sessions` lists the open ones, `status ms-xxxxx` says what one is waiting on, `tell ms-xxxxx <message>` types a message into it, `upload ms-xxxxx` in reply to a file puts the file in its `~/shared/uploads`, and `stop ms-xxxxx` ends it. Replying to any of my messages about a session works without the id.
 
 Only allowlisted users can start tasks, and the note must be from one of them too. Anything the agent writes is untrusted.
 """
@@ -194,12 +195,14 @@ class MeeseeksBot(Plugin):
     @event.on(EventType.ROOM_MESSAGE)
     async def handle(self, evt: MessageEvent) -> None:
         content = evt.content
-        if (
-            evt.sender == self.client.mxid
-            or not isinstance(content, TextMessageEventContent)
-            or content.get_edit()
-            or evt.sender not in self.config["allowlist"]
-        ):
+        if evt.sender == self.client.mxid or content.get_edit() or evt.sender not in self.config["allowlist"]:
+            return
+        if _is_file(content):
+            # A file sent as a reply to the bot about a session is for that session.
+            if task := await self._replied_task(evt):
+                await self._respond(evt, self._upload_to(evt, task, evt))
+            return
+        if not isinstance(content, TextMessageEventContent):
             return
         content.trim_reply_fallback()
         names = self._names(evt)
@@ -219,6 +222,9 @@ class MeeseeksBot(Plugin):
             return
         if mentioned and (status := STATUS.fullmatch(command)):
             await self._respond(evt, self._status(evt, status[1] and status[1].lower()))
+            return
+        if mentioned and (upload := UPLOAD.fullmatch(command)):
+            await self._respond(evt, self._upload_replied_file(evt, upload[1].lower()))
             return
         if mentioned and (tell := TELL.fullmatch(command)):
             # Only a command when it names a session; otherwise "tell me ..." is a task.
@@ -337,6 +343,36 @@ class MeeseeksBot(Plugin):
             resp.raise_for_status()
             session = await resp.json()
         return _status_notice(session), True
+
+    async def _upload_replied_file(self, evt: MessageEvent, task: str) -> tuple[str, bool]:
+        file_event = None
+        if evt.content.get_reply_to():
+            file_event = await self.client.get_event(evt.room_id, evt.content.get_reply_to())
+        if not isinstance(file_event, RawMessageEvent) or not _is_file(file_event.content):
+            return f"To upload a file to {task}, reply `upload {task}` with a mention to the file.", False
+        return await self._upload_to(evt, task, file_event)
+
+    async def _upload_to(self, evt: MessageEvent, task: str, file_event: RawMessageEvent) -> tuple[str, bool]:
+        content = file_event.content
+        if content.file:
+            # Imported here because mautrix.crypto needs python-olm
+            from mautrix.crypto.attachments import decrypt_attachment
+
+            data = await self.client.download_media(content.file.url)
+            data = decrypt_attachment(data, content.file.key.key, content.file.hashes["sha256"], content.file.iv)
+        else:
+            data = await self.client.download_media(content.url)
+        name = content.get("filename") or content.body or "upload"
+        params = {"name": name, "requester": evt.sender}
+        async with self._api("POST", f"/v1/tasks/{task}/files", params=params, data=data) as resp:
+            result = await resp.json(content_type=None)
+        if not resp.ok:
+            error = result.get("error") if isinstance(result, dict) else None
+            return f"Failed: {error or f'HTTP {resp.status}'}", False
+        text = f"Uploaded {name} to {task} as {result['path']}."
+        if not result.get("told"):
+            text += "\nTell the agent in its session where to find it."
+        return text, True
 
     async def _tell(self, evt: MessageEvent, task: str, text: str) -> tuple[str | None, bool]:
         payload = {"text": text, "requester": evt.sender}
@@ -470,6 +506,12 @@ class MeeseeksBot(Plugin):
         # The text is agent-written, so it mustn't ping anyone
         content["m.mentions"] = {}
         await self.client.send_message(room, content)
+
+
+def _is_file(content) -> bool:
+    return isinstance(content, MediaMessageEventContent) and content.msgtype in (
+        MessageType.FILE, MessageType.IMAGE, MessageType.VIDEO, MessageType.AUDIO
+    )
 
 
 def _age(started: float) -> str:

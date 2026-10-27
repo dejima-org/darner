@@ -24,7 +24,8 @@ _ID = re.compile(r"ms-[a-z2-7]{5}")
 
 OUTPUT_INSTRUCTIONS = (
     "When you finish:\n"
-    "1. Put anything the requester should receive in ~/shared.\n"
+    "1. Put anything the requester should receive in ~/shared, but not in ~/shared/uploads, which holds "
+    "files they sent you and isn't sent back.\n"
     "2. Write a short summary of what you did and found to ~/shared/RESULT.md.\n"
     "3. Last, run `touch ~/shared/.done`. That file is how the requester learns you have finished, "
     "so the task is not done until it exists.\n"

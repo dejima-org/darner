@@ -22,6 +22,11 @@ elif command[:1] == ["domains"]:
 elif command[:1] in (["allow"], ["deny"]):
     open(os.environ["STUB_LOG"], "a").write(json.dumps([*command, json.load(sys.stdin)]) + "\\n")
     print(json.dumps({"granted": ["pypi.org"], "failed": [], "told": True}))
+elif command[:1] == ["upload"]:
+    header = json.loads(sys.stdin.buffer.readline())
+    data = sys.stdin.buffer.read()
+    open(os.environ["STUB_LOG"], "a").write(json.dumps([*command, header, len(data)]) + "\\n")
+    print(json.dumps({"path": "~/shared/uploads/" + header["name"], "size": len(data), "told": False}))
 elif command[:1] == ["stop"]:
     open(os.environ["STUB_LOG"], "a").write(json.dumps(command) + "\\n")
     if os.environ.get("STUB_STOP_ERROR"):
@@ -766,3 +771,33 @@ def test_missing_default_blurb_is_a_config_error(config):
     config["default_blurbs"] = ["nope"]
     with pytest.raises(ValueError, match="default blurb 'nope' has no nope.md"):
         make_app(config, poll=False)
+
+
+async def test_upload_reaches_launcher(started, tmp_path):
+    app, client, task_id, *_ = started
+    resp = await client.post(
+        f"/v1/tasks/{task_id}/files", params={"name": "access.log", "requester": "@alice:example.org"},
+        data=b"x" * 1000, headers=AUTH,
+    )
+    assert resp.status == 200
+    assert (await resp.json())["path"] == "~/shared/uploads/access.log"
+    assert fetches(tmp_path)[-1] == ["upload", task_id, {"name": "access.log", "requester": "@alice:example.org"}, 1000]
+
+
+async def test_upload_limit_and_scoping(started, config, tmp_path):
+    app, client, task_id, *_ = started
+    config["max_upload"] = 10
+    params = {"name": "big.bin", "requester": "@a:example.org"}
+    assert (await client.post(f"/v1/tasks/{task_id}/files", params=params, data=b"x" * 11, headers=AUTH)).status == 413
+    config["tokens"]["other"] = "0ther"
+    other = {"Authorization": "Bearer 0ther"}
+    assert (await client.post(f"/v1/tasks/{task_id}/files", params=params, data=b"x", headers=other)).status == 404
+    assert (await client.post(f"/v1/tasks/{task_id}/files", params={"name": "x"}, data=b"x", headers=AUTH)).status == 400
+    assert not any(f[0] == "upload" for f in fetches(tmp_path))
+
+
+async def test_upload_bigger_than_the_default_request_size(started, tmp_path):
+    app, client, task_id, *_ = started
+    params = {"name": "big.bin", "requester": "@a:example.org"}
+    resp = await client.post(f"/v1/tasks/{task_id}/files", params=params, data=b"x" * (1024 * 1024), headers=AUTH)
+    assert resp.status == 200

@@ -3,7 +3,7 @@
 Meant to be the forced command of the API's key in authorized_keys, so the
 only command a client can send is SSH_ORIGINAL_COMMAND, and only three forms
 of it are accepted: none (launch the job on stdin), `status`, `fetch <id>`,
-`help <id>`, `answer <id>`, `message <id>`, `stop <id>`, `domains <id>`, and `allow <id> <n>` and
+`help <id>`, `answer <id>`, `message <id>`, `upload <id>`, `stop <id>`, `domains <id>`, and `allow <id> <n>` and
 `deny <id> <n>` for domain request n.
 
 The dejima argv is written to the task directory and the tmux window re-invokes
@@ -73,6 +73,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help="seconds without changes after which an unsignalled RESULT.md is collected; 0 waits for the session to end",
     )
     p.add_argument("--keep-records", action="store_true", help="pass --keep-records to every dejima session")
+    p.add_argument("--max-upload", default=50 * 1024 * 1024, type=int, help="largest file a requester can upload, in bytes")
     p.add_argument("--docker", default="docker")
     p.add_argument("--dejima-allow", default="dejima-allow")
     p.add_argument("--stop-timeout", default=60, type=int, help="seconds to wait for a stopped session to exit")
@@ -657,6 +658,67 @@ def _claim_domain_request(task_dir: Path, task_id: str, number: int) -> dict:
     return request
 
 
+def _upload_name(name: str) -> str:
+    """A safe file name for an upload, from the name the requester's client gave it."""
+    name = name.rsplit("/", 1)[-1].replace(" ", "-")
+    name = "".join(c for c in name if c.isascii() and (c.isalnum() or c in "._+-")).lstrip("._+-")[:200]
+    return name if archive.safe_component(name) else "upload"
+
+
+def upload(args: argparse.Namespace, task_id: str, stream) -> dict:
+    """Write a requester's file into the session's ~/shared/uploads.
+
+    ~/shared is the session's to change, so nothing in it is followed: the
+    uploads directory is opened without following a link, and the file is
+    created new, never opened if something already has its name.
+    """
+    task_dir = args.tasks_dir / task_id
+    if _state(task_dir) != "running":
+        raise RuntimeError(f"{task_id} is not running")
+    header = json.loads(stream.readline(4096))
+    if not isinstance(header, dict) or not isinstance(header.get("name"), str) or not isinstance(header.get("requester"), str):
+        raise ValueError("upload needs a header with name and requester")
+    data = stream.read(args.max_upload + 1)
+    if len(data) > args.max_upload:
+        raise ValueError(f"the file is over the {args.max_upload}-byte upload limit")
+    try:
+        fd = open_share(args, task_dir)
+    except (OSError, ValueError):
+        # The reason names host paths, and this error is relayed to the chat.
+        raise RuntimeError("couldn't open the session's ~/shared")
+    try:
+        try:
+            os.mkdir(archive.UPLOADS, 0o755, dir_fd=fd)
+        except FileExistsError:
+            pass
+        try:
+            uploads = os.open(archive.UPLOADS, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=fd)
+        except OSError:
+            raise RuntimeError("~/shared/uploads in the session isn't a directory")
+    finally:
+        os.close(fd)
+    try:
+        base = _upload_name(header["name"])
+        stem, dot, ext = base.partition(".")
+        for n in range(1, 101):
+            name = base if n == 1 else f"{stem}-{n}{dot}{ext}"
+            try:
+                out = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o644, dir_fd=uploads)
+                break
+            except FileExistsError:
+                continue
+        else:
+            raise RuntimeError("too many uploads with that name")
+        with os.fdopen(out, "wb") as f:
+            f.write(data)
+    finally:
+        os.close(uploads)
+    path = f"~/shared/uploads/{name}"
+    requester = " ".join(archive.clean_text(header["requester"].encode(), 255).split())
+    told = _tell_agent(args, task_dir, task_id, f"Upload from {requester}: {path} ({len(data)} bytes).")
+    return {"path": path, "size": len(data), "told": told}
+
+
 def _tell_agent(args: argparse.Namespace, task_dir: Path, task_id: str, message: str) -> bool:
     """Type a note into the session, if answering from chat is enabled. False if it isn't."""
     if not args.answers:
@@ -766,7 +828,9 @@ def command(args: argparse.Namespace) -> list[str]:
     original = os.environ.get("SSH_ORIGINAL_COMMAND")
     words = original.split() if original is not None else args.command
     if words in ([], ["status"]) or (
-        len(words) == 2 and words[0] in ("fetch", "help", "answer", "message", "stop", "domains") and valid_task_id(words[1])
+        len(words) == 2
+        and words[0] in ("fetch", "help", "answer", "message", "upload", "stop", "domains")
+        and valid_task_id(words[1])
     ) or (
         len(words) == 3 and words[0] in ("allow", "deny") and valid_task_id(words[1])
         and words[2].isascii() and words[2].isdigit() and len(words[2]) <= 9
@@ -791,6 +855,8 @@ def main(argv: list[str] | None = None) -> int:
             return fetch(args, words[1])
         elif words and words[0] == "help":
             help_request(args, words[1])
+        elif words and words[0] == "upload":
+            print(json.dumps(upload(args, words[1], sys.stdin.buffer)))
         elif words and words[0] == "message":
             answer(args, words[1], json.load(sys.stdin), message=True)
         elif words and words[0] == "stop":
