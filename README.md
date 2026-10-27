@@ -576,3 +576,7 @@ Pull requests target `development`, which merges to `main` when it's ready to re
 - **A push to `main`** whose version has no `v<version>` tag yet creates the stable release, and with it the tag at that commit. A push that doesn't change the version releases nothing. Pushing a `v<version>` tag by hand releases that tag the same way.
 
 The workflow fails if the two versions disagree, or if a pushed tag doesn't match them. It uses the job's automatic `GITEA_TOKEN`, so Actions must be enabled for the repository, and the token must be allowed to create releases.
+
+## License
+
+GPL-3.0-or-later. See [LICENSE](LICENSE).

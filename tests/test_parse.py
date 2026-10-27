@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Brad Anderson
 import pytest
 
 from meeseeks_bot.parse import ParseError, Request, parse_reply, strip_mention

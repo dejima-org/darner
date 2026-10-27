@@ -76,7 +76,7 @@ jobs:
           # A development build carries its own version, in this checkout only.
           sed -i "s/^version: .*/version: $VERSION/" maubot.yaml
           echo "MBP=$id-$TAG.mbp" >> "$GITHUB_ENV"
-          python3 -m zipfile -c "../$id-$TAG.mbp" maubot.yaml meeseeks_bot base-config.yaml
+          python3 -m zipfile -c "../$id-$TAG.mbp" maubot.yaml meeseeks_bot base-config.yaml ../LICENSE
           python3 -m zipfile -l "../$id-$TAG.mbp"
 
       - name: Attach it to the release

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Brad Anderson
 """Config sets: named groups of task keywords, so a recurring task needs only what changes.
 
 A config set is a file of the keyword lines a chat request takes, one per

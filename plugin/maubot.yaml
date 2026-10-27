@@ -1,6 +1,7 @@
 maubot: 0.5.0
 id: io.example.meeseeks
 version: 0.1.18
+license: GPL-3.0-or-later
 modules:
 - meeseeks_bot
 main_class: MeeseeksBot
