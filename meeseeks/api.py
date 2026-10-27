@@ -28,7 +28,7 @@ def session_link(config: dict, run_id: str | None) -> str | None:
     base = config.get("remote_access_url")
     return f"{base.rstrip('/')}/?arg={run_id}" if base and run_id else None
 
-REQUEST_KEYS = {"task", "context", "blurbs", "grants", "harness", "backend", "requester", "source"}
+REQUEST_KEYS = {"task", "context", "blurbs", "grants", "harness", "backend", "model", "effort", "requester", "source"}
 MAX_TEXT = 32 * 1024
 
 CONFIG = web.AppKey("config", dict)
@@ -127,7 +127,7 @@ def build_job(config: dict, body: object) -> tuple[dict, dict, str]:
         "domains": [d.lower() if isinstance(d, str) else d for d in _list(grants, "domains")],
         "dependencies": _list(grants, "dependencies"),
     }
-    for key in ("harness", "backend"):
+    for key in ("harness", "backend", "model", "effort"):
         if body.get(key) is not None:
             job[key] = body[key]
     if config.get("remote_access_url"):
@@ -238,7 +238,12 @@ async def collect_domains(app: web.Application, task: dict) -> None:
     request = json.loads(out)
     policy = config.get("policy", {})
     domains = [
-        {"domain": d["domain"], "internal": bool(d["internal"]), "denied": denied_domain(policy, d["domain"])}
+        {
+            "domain": d["domain"],
+            "internal": bool(d["internal"]),
+            "port": d["port"] if type(d.get("port")) is int and 0 < d["port"] < 65536 else None,
+            "denied": denied_domain(policy, d["domain"]),
+        }
         for d in request["domains"]
         if valid_domain(d.get("domain"))
     ]

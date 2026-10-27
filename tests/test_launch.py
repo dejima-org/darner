@@ -793,7 +793,7 @@ def test_domain_request_is_validated_and_saved(env, allow_env):
     ))
     assert request == {
         "request": 1,
-        "domains": [{"domain": "pypi.org", "internal": False}, {"domain": "mirror.internal.example", "internal": True}],
+        "domains": [{"domain": "pypi.org", "internal": False, "port": None}, {"domain": "mirror.internal.example", "internal": True, "port": None}],
         "rejected": 3,
     }
     assert json.loads((env / "tasks" / "ms-abc23" / "domains-pending").read_text()) == request
@@ -950,7 +950,7 @@ def test_changed_domains_file_is_a_request_once_settled(env, allow_env):
     age(shared / "DOMAINS", 60)
     assert status(a)[0]["domains"] is True
     code, out, _ = run(a, "domains", "ms-abc23")
-    assert code == 0 and json.loads(out)["domains"] == [{"domain": "pypi.org", "internal": False}]
+    assert code == 0 and json.loads(out)["domains"] == [{"domain": "pypi.org", "internal": False, "port": None}]
     assert status(a)[0]["domains"] is False
 
 
@@ -963,7 +963,7 @@ def test_rerequest_after_a_decision_goes_straight_through(env, allow_env):
     age(shared / "DOMAINS", 60)
     assert status(a)[0]["domains"] is True
     request = json.loads(run(a, "domains", "ms-abc23")[1])
-    assert request["request"] == 2 and request["domains"] == [{"domain": "recipes.example.com", "internal": True}]
+    assert request["request"] == 2 and request["domains"] == [{"domain": "recipes.example.com", "internal": True, "port": None}]
 
 
 def test_new_request_waits_while_one_is_undecided(env, allow_env):
@@ -1087,3 +1087,38 @@ def test_upload_error_names_no_host_path(env, share):
     (env / "tasks" / "ms-abc23" / "shared-path").write_text("/somewhere/else\n")
     code, _, err = upload_run(a, "x.txt", b"x")
     assert code == 1 and "couldn't open the session's ~/shared" in err and "/somewhere" not in err
+
+
+@pytest.mark.parametrize(
+    "job, expected",
+    [
+        ({}, ["--model", "sonnet", "--effort", "medium"]),
+        ({"model": "opus", "effort": "high"}, ["--model", "opus", "--effort", "high"]),
+        ({"harness": "cline"}, ["--model", "z-ai/glm-5.3"]),
+        ({"harness": "other"}, []),
+    ],
+)
+def test_model_and_effort_resolution(env, job, expected):
+    a = args(
+        env, "--harness", "claude-code", "--model", "claude-code=sonnet", "--effort", "claude-code=medium",
+        "--model", "cline=z-ai/glm-5.3",
+    )
+    launch(a, {"id": "ms-abc23", "prompt": "p", **job})
+    argv = written_argv(env, "ms-abc23")
+    flags = argv[argv.index("--harness") + 2 : argv.index("--")]
+    assert flags == expected
+
+
+@pytest.mark.parametrize("option", ["--model", "--effort"])
+def test_bad_model_and_effort_defaults_are_refused(env, option):
+    with pytest.raises(SystemExit):
+        args(env, option, "claude-code=bad value" if option == "--model" else "claude-code=max")
+
+
+def test_domain_ports_are_checked_on_that_port(env, allow_env):
+    a, shared = allow_env
+    request = request_domains(a, shared, "internal recipes.example.com:8443\npypi.org:99999\nfiles.example.com:\n")
+    assert request["domains"] == [{"domain": "recipes.example.com", "internal": True, "port": 8443}]
+    assert request["rejected"] == 2
+    decide(a, "allow", 1, {"requester": "@a:example.org", "domains": ["recipes.example.com"]})
+    assert allow_calls(env) == [["--container", "c0ffee", "--internal", "--port", "8443", "recipes.example.com"]]

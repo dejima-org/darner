@@ -20,6 +20,9 @@ _DEP = re.compile(
 )
 _TARBALL = re.compile(r"tarball:([A-Za-z0-9][A-Za-z0-9._-]*)@[a-f0-9]{64}:(https://[A-Za-z0-9._~/?=+%-]{1,504})")
 _NAME = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}")
+# dejima's modelid rule: vendor/name, a :variant and a [context] bracket are all real.
+_MODEL = re.compile(r"[A-Za-z0-9][][A-Za-z0-9._:/-]{0,199}")
+EFFORTS = ("low", "medium", "high", "xhigh")
 _ID = re.compile(r"ms-[a-z2-7]{5}")
 
 OUTPUT_INSTRUCTIONS = (
@@ -33,7 +36,8 @@ OUTPUT_INSTRUCTIONS = (
     "If you need something from the requester to continue, write what you need to ~/shared/HELP.md, "
     "run `touch ~/shared/.help`, and end your turn. Their response will arrive as your next message.\n\n"
     "If you need to reach domains the sandbox blocks, write them to ~/shared/DOMAINS, one per line, with "
-    "`internal ` in front of internal ones, then run `touch ~/shared/.domains` and end your turn. A domain is "
+    "`internal ` in front of internal ones and `:port` after any you need on a particular port, "
+    "then run `touch ~/shared/.domains` and end your turn. A domain is "
     "internal if it's only reachable inside the requester's network, such as a name under a private domain; if one "
     "you were allowed still can't be reached, request it again as internal. The requester is shown the list to "
     "approve, and you will be told what was allowed."
@@ -52,6 +56,8 @@ class Job:
     dependencies: list[str] = field(default_factory=list)
     harness: str | None = None
     backend: str | None = None
+    model: str | None = None
+    effort: str | None = None
     session_wait: int = 0
 
 
@@ -70,6 +76,14 @@ def valid_dependency(s: str) -> bool:
         return True
     m = _TARBALL.fullmatch(s)
     return m is not None and m[1] not in (".", "..")
+
+
+def valid_model(s: str) -> bool:
+    return isinstance(s, str) and _MODEL.fullmatch(s) is not None
+
+
+def valid_effort(s: str) -> bool:
+    return s in EFFORTS
 
 
 def valid_name(s: str) -> bool:
@@ -96,7 +110,9 @@ def _optional_name(d: dict, key: str) -> str | None:
 def validate_job(d: object) -> Job:
     if not isinstance(d, dict):
         raise JobError("job must be an object")
-    unknown = set(d) - {"id", "prompt", "domains", "dependencies", "harness", "backend", "session_wait"}
+    unknown = set(d) - {
+        "id", "prompt", "domains", "dependencies", "harness", "backend", "model", "effort", "session_wait"
+    }
     if unknown:
         raise JobError(f"unknown job keys: {', '.join(sorted(unknown))}")
     if not valid_task_id(d.get("id")):
@@ -106,6 +122,9 @@ def validate_job(d: object) -> Job:
         raise JobError(f"prompt must be non-empty text of at most {MAX_PROMPT} characters")
     if "\0" in prompt:
         raise JobError("prompt contains a NUL byte")
+    for key, check, what in (("model", valid_model, "model"), ("effort", valid_effort, f"effort ({', '.join(EFFORTS)})")):
+        if d.get(key) is not None and not check(d[key]):
+            raise JobError(f"not a valid {what}: {d[key]!r}")
     session_wait = d.get("session_wait", 0)
     if type(session_wait) is not int or not 0 <= session_wait <= MAX_SESSION_WAIT:
         raise JobError(f"session_wait must be whole seconds from 0 to {MAX_SESSION_WAIT}")
@@ -116,6 +135,8 @@ def validate_job(d: object) -> Job:
         dependencies=_str_list(d, "dependencies", valid_dependency, "dependency spec"),
         harness=_optional_name(d, "harness"),
         backend=_optional_name(d, "backend"),
+        model=d.get("model"),
+        effort=d.get("effort"),
         session_wait=session_wait,
     )
 

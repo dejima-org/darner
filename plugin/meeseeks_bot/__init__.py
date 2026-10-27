@@ -49,6 +49,8 @@ allow: <domains>   let the session reach these domains
 deps: <specs>      install dependencies (apt:, pip:, cargo:, npm:, tarball:)
 harness: <name>    use this harness instead of the default
 backend: <name>    use this backend instead of the harness's default
+model: <name>      use this model instead of the harness's default
+effort: <level>    Claude Code's effort level: low, medium, high or xhigh
 ```
 
 Values are separated by commas or spaces, and keywords can repeat. For example:
@@ -176,10 +178,9 @@ class MeeseeksBot(Plugin):
             "requester": evt.sender,
             "source": {"kind": "matrix", "ref": evt.event_id, "channel": evt.room_id},
         }
-        if req.harness:
-            payload["harness"] = req.harness
-        if req.backend:
-            payload["backend"] = req.backend
+        for key in ("harness", "backend", "model", "effort"):
+            if value := getattr(req, key):
+                payload[key] = value
         async with self._api("POST", "/v1/tasks", json=payload) as resp:
             data = await resp.json(content_type=None)
         if resp.status in (200, 201):
@@ -562,6 +563,7 @@ def _domains_notice(task: str, request: dict) -> TextMessageEventContent:
     lines = []
     for d in request["domains"]:
         note = " (internal)" if d["internal"] else ""
+        note += f" (checked on port {d['port']})" if d.get("port") else ""
         note += " (refused by policy, won't be allowed)" if d["denied"] else ""
         lines.append((d["domain"], note))
     if lines:
