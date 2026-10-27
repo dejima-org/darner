@@ -1120,3 +1120,17 @@ async def test_files_from_others_or_not_for_a_session_are_ignored(maubot_plugin,
     await send(maubot_test_bot, file_message(sender="@mallory:example.org", reply_to="$started"))
     await send(maubot_test_bot, file_message(event_id="$other"))
     assert uploads.files == [] and maubot_test_bot.responded == []
+
+
+async def test_model_and_effort_are_sent(maubot_plugin, maubot_test_bot, api):
+    await send(maubot_test_bot, message("@meeseeks:example.org go\nmodel: opus\neffort: high"))
+    payload = api.requests[0][1]
+    assert payload["model"] == "opus" and payload["effort"] == "high"
+
+
+async def test_domain_port_is_shown(maubot_plugin, maubot_test_bot, api):
+    request = {"request": 1, "domains": [{"domain": "recipes.example.com", "internal": True, "port": 8443, "denied": False}], "rejected": 0}
+    api.add(4, type="domains", summary="", data=None)
+    api.events[-1]["data"] = request
+    await maubot_plugin.poll_once()
+    assert "- recipes.example.com (internal) (checked on port 8443)" in sent(maubot_test_bot)[0]["body"]

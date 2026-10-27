@@ -366,7 +366,7 @@ Or send the task directly, in a message that mentions the bot and isn't a reply.
 
 `@meeseeks help` replies with this usage, including the available context blurbs.
 
-When the agent needs to reach domains the sandbox blocks, it lists them in `~/shared/DOMAINS` and the bot posts every one for you to check. Reply `@meeseeks allow` to that message to let the running session reach them, or `@meeseeks deny`. Internal domains are marked as such, and any the API's `deny_domains` policy refuses are marked and never allowed. An agent that edits `DOMAINS` without signalling again is still asking: the changed list becomes a request once it has been left alone for 30 seconds. After you decide a request, a follow-up, such as asking again for a domain as internal, comes straight through. What gets allowed is the list as shown: the launcher keeps its own copy, so the agent can't change it afterwards. If answering from chat is on, the agent is told the outcome. Otherwise, tell it in the session.
+When the agent needs to reach domains the sandbox blocks, it lists them in `~/shared/DOMAINS` and the bot posts every one for you to check. A line can name a port, as in `internal recipes.example.com:8443`. The grant covers the domain on every port, and the port is the one dejima-allow checks it answers on. Reply `@meeseeks allow` to that message to let the running session reach them, or `@meeseeks deny`. Internal domains are marked as such, and any the API's `deny_domains` policy refuses are marked and never allowed. An agent that edits `DOMAINS` without signalling again is still asking: the changed list becomes a request once it has been left alone for 30 seconds. After you decide a request, a follow-up, such as asking again for a domain as internal, comes straight through. What gets allowed is the list as shown: the launcher keeps its own copy, so the agent can't change it afterwards. If answering from chat is on, the agent is told the outcome. Otherwise, tell it in the session.
 
 To manage open sessions, mention the bot with one of these. Replying to any of the bot's messages about a session works without the id.
 
@@ -391,6 +391,8 @@ The note is the task. The rest of the reply, minus the mention and the keyword l
 | `deps:` | dependencies to install, in `dejima-dep` syntax: `apt:`, `pip:`, `cargo:`, `npm:` or `tarball:` |
 | `harness:` | harness for this task, overriding the default |
 | `backend:` | backend for this task, overriding the harness's default |
+| `model:` | model for this task, overriding the harness's default |
+| `effort:` | Claude Code's effort level for this task: `low`, `medium`, `high` or `xhigh` |
 
 The bot replies with the task id and its tmux target, plus a link to the session if the API has `remote_access_url` set, or with why it was refused. It only acts when both the reply and the note are from users in its `allowlist`, since the note becomes the agent's instructions.
 
@@ -453,6 +455,8 @@ The files are still agent-written: treat what is in the zip as untrusted. Neithe
 | `--identity NAME` | dejima's | `[identity.<name>]` every session acts as; a task cannot choose it |
 | `--harness NAME` | dejima's | default harness |
 | `--backend HARNESS=NAME` | dejima's | default backend for a harness; repeatable |
+| `--model HARNESS=MODEL` | dejima's | default model for a harness; repeatable |
+| `--effort HARNESS=LEVEL` | dejima's | default effort level for a harness that has one (claude-code); repeatable |
 | `--session NAME` | `meeseeks` | tmux session the windows go in |
 | `--tasks-dir DIR` | `~/meeseeks/tasks` | per-task grant files, argv and exit status |
 | `--share-root DIR` | `~/.local/share/dejima/shared/isolated` | where dejima puts isolated sessions' `~/shared`; output is only read from directly under it |

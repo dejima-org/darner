@@ -26,7 +26,7 @@ import time
 from pathlib import Path
 
 from meeseeks import archive
-from meeseeks.job import JobError, valid_domain, valid_name, valid_task_id, validate_job
+from meeseeks.job import JobError, valid_domain, valid_effort, valid_model, valid_name, valid_task_id, validate_job
 
 FETCH_REJECTED = 3
 RUN_ID = re.compile(r"[0-9a-f]{16}")
@@ -40,11 +40,17 @@ MAX_DOMAIN_REQUEST = 20
 DOMAINS_QUIET = 30
 
 
-def _backend_default(value: str) -> tuple[str, str]:
-    harness, sep, backend = value.partition("=")
-    if not sep or not valid_name(harness) or not valid_name(backend):
-        raise argparse.ArgumentTypeError(f"expected HARNESS=BACKEND, got {value!r}")
-    return harness, backend
+def _per_harness(what: str, check):
+    def parse(value: str) -> tuple[str, str]:
+        harness, sep, setting = value.partition("=")
+        if not sep or not valid_name(harness) or not check(setting):
+            raise argparse.ArgumentTypeError(f"expected HARNESS={what.upper()}, got {value!r}")
+        return harness, setting
+
+    return parse
+
+
+_backend_default = _per_harness("backend", valid_name)
 
 
 def _name(value: str) -> str:
@@ -62,6 +68,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--identity", type=_name)
     p.add_argument("--harness", type=_name)
     p.add_argument("--backend", type=_backend_default, action="append", default=[])
+    p.add_argument("--model", type=_per_harness("model", valid_model), action="append", default=[])
+    p.add_argument("--effort", type=_per_harness("effort", valid_effort), action="append", default=[])
     p.add_argument("--share-root", default=Path.home() / ".local/share/dejima/shared/isolated", type=Path)
     p.add_argument("--max-output", default=archive.Limits.max_bytes, type=int)
     p.add_argument("--fetch-timeout", default=60, type=int)
@@ -84,11 +92,18 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 
 def dejima_argv(args: argparse.Namespace, job, task_dir: Path, dejima: str) -> list[str]:
     harness = job.harness or args.harness
+    # Each default is the one for the harness actually used, so overriding
+    # the harness never pairs it with another harness's setting.
     backend = job.backend or dict(args.backend).get(harness)
+    model = job.model or dict(args.model).get(harness)
+    effort = job.effort or dict(args.effort).get(harness)
     argv = [dejima, "--isolated", "--no-pause", "--shared-path-file", str(task_dir / "shared-path")]
     if args.keep_records:
         argv.append("--keep-records")
-    for flag, value in (("--identity", args.identity), ("--harness", harness), ("--backend", backend)):
+    for flag, value in (
+        ("--identity", args.identity), ("--harness", harness), ("--backend", backend),
+        ("--model", model), ("--effort", effort),
+    ):
         if value:
             argv += [flag, value]
     if job.domains:
@@ -623,9 +638,12 @@ def domain_request(args: argparse.Namespace, task_id: str) -> dict:
             if not words:
                 continue
             internal = len(words) == 2 and words[0].lower() == "internal"
-            name = words[-1].lower()
-            entry = {"domain": name, "internal": internal}
-            if len(words) > (2 if internal else 1) or not valid_domain(name) or len(domains) >= MAX_DOMAIN_REQUEST:
+            name, port = _domain_and_port(words[-1].lower())
+            entry = {"domain": name, "internal": internal, "port": port}
+            if (
+                len(words) > (2 if internal else 1) or name is None or not valid_domain(name)
+                or len(domains) >= MAX_DOMAIN_REQUEST
+            ):
                 rejected += 1
             elif entry not in domains:
                 domains.append(entry)
@@ -642,6 +660,16 @@ def domain_request(args: argparse.Namespace, task_id: str) -> dict:
         return request
     finally:
         os.close(fd)
+
+
+def _domain_and_port(word: str) -> tuple[str | None, int | None]:
+    """Split `domain[:port]`. The port is the one dejima-allow checks the domain answers on."""
+    host, sep, port = word.rpartition(":")
+    if not sep:
+        return word, None
+    if port.isascii() and port.isdigit() and 0 < int(port) < 65536:
+        return host, int(port)
+    return None, None
 
 
 def _claim_domain_request(task_dir: Path, task_id: str, number: int) -> dict:
@@ -764,7 +792,12 @@ def allow_domains(args: argparse.Namespace, task_id: str, number: int, data: obj
         if limit is not None and launched_with + len(held) + len(granted) >= limit:
             failed.append({"domain": entry["domain"], "error": f"over this session's limit of {limit} domains"})
             continue
-        argv = [dejima_allow, "--container", containers[0], *(["--internal"] if entry["internal"] else []), entry["domain"]]
+        argv = [
+            dejima_allow, "--container", containers[0],
+            *(["--internal"] if entry["internal"] else []),
+            *(["--port", str(entry["port"])] if entry.get("port") else []),
+            entry["domain"],
+        ]
         result = subprocess.run(argv, capture_output=True, text=True)
         message = archive.clean_text(result.stderr.encode(), 2000)
         # dejima-allow exits 2 when the permit landed but its check that the

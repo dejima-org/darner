@@ -115,3 +115,17 @@ def test_compose_prompt():
 
 def test_compose_prompt_default_output_instructions():
     assert compose_prompt("Task", [], "").endswith(f"## Delivering your output\n{OUTPUT_INSTRUCTIONS}\n")
+
+
+@pytest.mark.parametrize("model", ["opus", "claude-opus-5[1m]", "z-ai/glm-5.3", "deepseek/deepseek-r1:free", "llama3:8b"])
+def test_valid_models(model):
+    assert validate_job({"id": "ms-abc23", "prompt": "p", "model": model}).model == model
+
+
+@pytest.mark.parametrize("job", [
+    {"model": "-opus"}, {"model": "op us"}, {"model": "opus\n"}, {"model": "a" * 201},
+    {"effort": "max"}, {"effort": "HIGH"}, {"effort": 3},
+])
+def test_invalid_model_and_effort(job):
+    with pytest.raises(JobError):
+        validate_job({"id": "ms-abc23", "prompt": "p", **job})

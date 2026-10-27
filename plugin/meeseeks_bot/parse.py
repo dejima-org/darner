@@ -1,7 +1,8 @@
 import re
 from dataclasses import dataclass, field
 
-KEYWORD = re.compile(r"^\s*(ctx|allow|deps|harness|backend)\s*:(.*)$", re.IGNORECASE)
+KEYWORD = re.compile(r"^\s*(ctx|allow|deps|harness|backend|model|effort)\s*:(.*)$", re.IGNORECASE)
+SINGLE = ("harness", "backend", "model", "effort")
 FIELDS = {"ctx": "blurbs", "allow": "domains", "deps": "dependencies"}
 
 
@@ -17,6 +18,8 @@ class Request:
     dependencies: list[str] = field(default_factory=list)
     harness: str | None = None
     backend: str | None = None
+    model: str | None = None
+    effort: str | None = None
 
 
 def _mention(names: list[str]) -> str:
@@ -35,7 +38,7 @@ def parse_reply(body: str, bot_names: list[str]) -> Request:
     while lines and lines[0].startswith(">"):
         lines.pop(0)
     mention = _mention(bot_names) if any(bot_names) else None
-    values = {"ctx": [], "allow": [], "deps": [], "harness": [], "backend": []}
+    values = {key: [] for key in (*FIELDS, *SINGLE)}
     context = []
     for line in lines:
         line = strip_mention(line, bot_names)
@@ -44,12 +47,11 @@ def parse_reply(body: str, bot_names: list[str]) -> Request:
             seen += [v for v in dict.fromkeys(re.split(r"[,\s]+", m[2])) if v and v not in seen]
         else:
             context.append(re.sub(mention, "", line, flags=re.IGNORECASE) if mention else line)
-    for key in ("harness", "backend"):
+    for key in SINGLE:
         if len(values[key]) > 1:
             raise ParseError(f"{key} takes one value")
     return Request(
         context="\n".join(context).strip(),
-        harness=next(iter(values["harness"]), None),
-        backend=next(iter(values["backend"]), None),
+        **{key: next(iter(values[key]), None) for key in SINGLE},
         **{FIELDS[k]: values[k] for k in FIELDS},
     )

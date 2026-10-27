@@ -107,3 +107,14 @@ def test_reply_fallback_stripped():
 
 def test_no_names():
     assert parse_reply("meeseeks: go", []).context == "meeseeks: go"
+
+
+def test_model_and_effort_keywords():
+    req = parse_reply("@meeseeks:example.org do it\nmodel: claude-opus-5[1m]\neffort: high", ["@meeseeks:example.org"])
+    assert req.model == "claude-opus-5[1m]" and req.effort == "high" and req.context == "do it"
+
+
+@pytest.mark.parametrize("key", ["model", "effort"])
+def test_model_and_effort_take_one_value(key):
+    with pytest.raises(ParseError, match=f"{key} takes one value"):
+        parse_reply(f"go\n{key}: a b", ["@meeseeks:example.org"])

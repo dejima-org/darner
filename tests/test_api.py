@@ -661,9 +661,9 @@ async def test_domain_request_becomes_event_with_policy_marked(requested):
     assert event["data"] == {
         "request": 3,
         "domains": [
-            {"domain": "pypi.org", "internal": False, "denied": False},
-            {"domain": "mirror.internal.example", "internal": True, "denied": False},
-            {"domain": "api.example.net", "internal": False, "denied": True},
+            {"domain": "pypi.org", "internal": False, "port": None, "denied": False},
+            {"domain": "mirror.internal.example", "internal": True, "port": None, "denied": False},
+            {"domain": "api.example.net", "internal": False, "port": None, "denied": True},
         ],
         "rejected": 1,
     }
@@ -801,3 +801,15 @@ async def test_upload_bigger_than_the_default_request_size(started, tmp_path):
     params = {"name": "big.bin", "requester": "@a:example.org"}
     resp = await client.post(f"/v1/tasks/{task_id}/files", params=params, data=b"x" * (1024 * 1024), headers=AUTH)
     assert resp.status == 200
+
+
+async def test_model_and_effort_reach_the_job(client, tmp_path):
+    resp = await client.post("/v1/tasks", json=request(model="opus", effort="xhigh"), headers=AUTH)
+    assert resp.status == 201
+    job = launched(tmp_path)[0]
+    assert job["model"] == "opus" and job["effort"] == "xhigh"
+
+
+async def test_bad_effort_is_refused(client):
+    resp = await client.post("/v1/tasks", json=request(effort="max"), headers=AUTH)
+    assert resp.status == 400 and "effort" in (await resp.json())["error"]
