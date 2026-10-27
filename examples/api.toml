@@ -1,6 +1,8 @@
 listen = "127.0.0.1:8080"
 db_path = "/var/lib/meeseeks/tasks.db"
 blurbs_dir = "/etc/meeseeks/blurbs"
+# Blurbs added to every task, such as how the network reaches internal services.
+# default_blurbs = ["network"]
 results_dir = "/var/lib/meeseeks/results"
 poll_interval = 30
 launch_command = ["ssh", "-T", "-o", "BatchMode=yes", "operator@dejima.example.com"]

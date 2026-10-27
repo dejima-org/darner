@@ -996,3 +996,14 @@ def test_dejima_allow_message_reaches_the_requester_whole(env, allow_env):
     request_domains(a, shared, "wordy.example\n")
     result = json.loads(decide(a, "allow", 1, {"requester": "@a:example.org", "domains": ["wordy.example"]})[1])
     assert result["unverified"][0]["warning"].endswith("the end")
+
+
+def test_keep_records_is_passed_to_every_session(env):
+    launch(args(env, "--keep-records"), {"id": "ms-abc23", "prompt": "p"})
+    assert written_argv(env, "ms-abc23")[1:5] == ["--isolated", "--no-pause", "--shared-path-file", str(env / "tasks" / "ms-abc23" / "shared-path")]
+    assert "--keep-records" in written_argv(env, "ms-abc23")[:-2]
+
+
+def test_records_are_not_kept_by_default(env):
+    launch(args(env), {"id": "ms-abc23", "prompt": "p"})
+    assert "--keep-records" not in written_argv(env, "ms-abc23")

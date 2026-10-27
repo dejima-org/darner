@@ -113,7 +113,9 @@ def build_job(config: dict, body: object) -> tuple[dict, dict, str]:
     grants = body.get("grants", {})
     if not isinstance(grants, dict) or set(grants) - {"domains", "dependencies"}:
         raise RequestError(400, "grants must be an object with domains and dependencies")
-    blurbs = load_blurbs(Path(config["blurbs_dir"]), _list(body, "blurbs"))
+    defaults = config.get("default_blurbs", [])
+    names = defaults + [name for name in _list(body, "blurbs") if name not in defaults]
+    blurbs = load_blurbs(Path(config["blurbs_dir"]), names)
     job = {
         "id": new_task_id(),
         "prompt": compose_prompt(
@@ -518,6 +520,10 @@ def make_app(config: dict, poll: bool = True) -> web.Application:
     app = web.Application(client_max_size=256 * 1024)
     app[CONFIG] = config
     app[STORE] = Store(config["db_path"])
+    available = available_blurbs(Path(config["blurbs_dir"]))
+    for name in config.get("default_blurbs", []):
+        if name not in available:
+            raise ValueError(f"default blurb {name!r} has no {name}.md in {config['blurbs_dir']}")
     app[STORE].fail_pending()
     app[SHARE_ERRORS] = {}
     app.router.add_post("/v1/tasks", create_task)

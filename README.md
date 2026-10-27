@@ -377,6 +377,8 @@ To manage open sessions, mention the bot with one of these. Replying to any of t
 | `tell ms-xxxxx <message>` | types a message into the session, which also answers an outstanding help request; needs `--answers` on the launcher |
 | `stop ms-xxxxx` | ends the session |
 
+Replying to one of the bot's messages about a session with anything else, with a mention, sends it to the session like `tell`.
+
 To end a session, reply `@meeseeks stop` to any of the bot's messages about it, or send `@meeseeks stop ms-xxxxx`. The launcher stops the session's sandbox container, so dejima exits and cleans up as usual, then closes its tmux window.
 
 The note is the task. The rest of the reply, minus the mention and the keyword lines, is extra context. Keyword lines take comma or space separated values and can repeat:
@@ -456,6 +458,7 @@ The files are still agent-written: treat what is in the zip as untrusted. Neithe
 | `--answers` | off | allow answering help requests from chat |
 | `--paste-delay SECONDS` | 0.5 | wait between pasting an answer and pressing Enter |
 | `--quiet-period SECONDS` | 600 | after this long without changes in `~/shared`, collect a `RESULT.md` the agent never signalled with `.done`; 0 waits for the session to end |
+| `--keep-records` | off | pass `--keep-records` to every dejima session |
 | `--docker PATH` | `docker` | the docker CLI, used to find and stop a session's container |
 | `--dejima-allow PATH` | `dejima-allow` | dejima's `dejima-allow`, used to grant a session the domains it requested |
 | `--stop-timeout SECONDS` | 60 | how long a stopped session may take to exit before dejima itself is ended |
@@ -474,6 +477,7 @@ Grants use `dejima --domains FILE` and `--dependencies FILE`, and output collect
 | `listen` | `host:port` to listen on |
 | `db_path` | SQLite database of tasks and events |
 | `blurbs_dir` | context blurbs, as `<name>.md`; read per request, so an edit needs no restart |
+| `default_blurbs` | blurb names added to every task's prompt, before any it names with `ctx:`; each must exist |
 | `results_dir` | collected output archives |
 | `poll_interval` | seconds between checks on the dejima host |
 | `launch_command` | how to reach the launcher; the command is appended, and over ssh arrives as `SSH_ORIGINAL_COMMAND` |
