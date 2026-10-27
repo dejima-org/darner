@@ -1,6 +1,6 @@
 import pytest
 
-from meeseeks_bot.parse import ParseError, Request, parse_reply
+from meeseeks_bot.parse import ParseError, Request, parse_reply, strip_mention
 
 NAMES = ["@meeseeks:example.org", "Meeseeks"]
 
@@ -118,3 +118,26 @@ def test_model_and_effort_keywords():
 def test_model_and_effort_take_one_value(key):
     with pytest.raises(ParseError, match=f"{key} takes one value"):
         parse_reply(f"go\n{key}: a b", ["@meeseeks:example.org"])
+
+
+BOT_ID = "@meeseeks:example.org"
+
+
+@pytest.mark.parametrize(
+    "link",
+    [
+        "[@meeseeks:example.org](https://matrix.to/#/@meeseeks:example.org)",
+        "[Meeseeks](https://matrix.to/#/%40meeseeks%3Aexample.org)",
+        "[@meeseeks:example.org](https://matrix.to/#/@meeseeks:example.org?via=example.org)",
+        "[Meeseeks](https://chat.example.org/#/user/@meeseeks:example.org)",
+    ],
+)
+def test_markdown_pill_is_stripped(link):
+    assert strip_mention(f"{link} help", [BOT_ID, "Meeseeks"]).strip() == "help"
+    req = parse_reply(f"{link} fix it\nallow: pypi.org", [BOT_ID, "Meeseeks"])
+    assert req.context == "fix it" and req.domains == ["pypi.org"]
+
+
+def test_links_to_others_are_kept():
+    body = "[@meeseeks:example.org](https://matrix.to/#/@meeseeks:example.org) ask [Alice](https://matrix.to/#/@alice:example.org) and see [docs](https://example.org/x)"
+    assert parse_reply(body, [BOT_ID]).context == "ask [Alice](https://matrix.to/#/@alice:example.org) and see [docs](https://example.org/x)"

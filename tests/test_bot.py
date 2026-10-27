@@ -1134,3 +1134,11 @@ async def test_domain_port_is_shown(maubot_plugin, maubot_test_bot, api):
     api.events[-1]["data"] = request
     await maubot_plugin.poll_once()
     assert "- recipes.example.com (internal) (checked on port 8443)" in sent(maubot_test_bot)[0]["body"]
+
+
+async def test_help_with_a_markdown_pill_body(maubot_plugin, maubot_test_bot, api):
+    body = "[@meeseeks:example.org](https://matrix.to/#/@meeseeks:example.org) help"
+    html = '<a href="https://matrix.to/#/@meeseeks:example.org">@meeseeks:example.org</a> help'
+    await send(maubot_test_bot, message(body, reply_to=None, format="org.matrix.custom.html", formatted_body=html))
+    assert replies(maubot_test_bot)[0].startswith("**Meeseeks**")
+    assert api.requests == []

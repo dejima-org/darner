@@ -1,6 +1,8 @@
 import re
 from dataclasses import dataclass, field
+from urllib.parse import unquote
 
+MARKDOWN_LINK = re.compile(r"\[([^\]\n]*)\]\(([^)\s]+)\)")
 KEYWORD = re.compile(r"^\s*(ctx|allow|deps|harness|backend|model|effort)\s*:(.*)$", re.IGNORECASE)
 SINGLE = ("harness", "backend", "model", "effort")
 FIELDS = {"ctx": "blurbs", "allow": "domains", "deps": "dependencies"}
@@ -27,14 +29,32 @@ def _mention(names: list[str]) -> str:
     return rf"(?<!\w)@?(?:{alts})(?!\w):?[ \t]*"
 
 
+def _unlink_bot(text: str, bot_names: list[str]) -> str:
+    """Replace markdown links to the bot with their text.
+
+    Clients write a pill's plain-text body as a markdown link, such as
+    `[@bot:example.org](https://matrix.to/#/@bot:example.org)`, so the
+    mention is only the link text once the link is gone. Any permalink host
+    counts: only the user ID it ends in matters.
+    """
+    ids = {n for n in bot_names if n.startswith("@")}
+
+    def replace(m: re.Match) -> str:
+        target = re.search(r"(@[^/?#\s]+)(?:\?.*)?$", unquote(m[2]))
+        return m[1] if target and target[1] in ids else m[0]
+
+    return MARKDOWN_LINK.sub(replace, text) if ids else text
+
+
 def strip_mention(text: str, bot_names: list[str]) -> str:
     if not any(bot_names):
         return text
+    text = _unlink_bot(text, bot_names)
     return re.sub(rf"^\s*(?:{_mention(bot_names)})+", "", text, flags=re.IGNORECASE)
 
 
 def parse_reply(body: str, bot_names: list[str]) -> Request:
-    lines = body.splitlines()
+    lines = _unlink_bot(body, bot_names).splitlines()
     while lines and lines[0].startswith(">"):
         lines.pop(0)
     mention = _mention(bot_names) if any(bot_names) else None
