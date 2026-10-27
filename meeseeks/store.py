@@ -15,6 +15,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     status TEXT NOT NULL,
     target TEXT,
     run_id TEXT,
+    typed REAL,
     error TEXT,
     created REAL NOT NULL,
     UNIQUE (client, source_kind, source_ref)
@@ -67,6 +68,7 @@ class Store:
             ("tasks", "run_id", "TEXT"),
             ("events", "signalled", "INTEGER NOT NULL DEFAULT 1"),
             ("events", "data", "TEXT"),
+            ("tasks", "typed", "REAL"),
         ):
             if column not in {row[1] for row in self.db.execute(f"PRAGMA table_info({table})")}:
                 self.db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
@@ -99,6 +101,13 @@ class Store:
 
     def set_run_id(self, task_id: str, run_id: str) -> None:
         self.db.execute("UPDATE tasks SET run_id = ? WHERE id = ?", (run_id, task_id))
+
+    def set_typed(self, task_id: str) -> None:
+        self.db.execute("UPDATE tasks SET typed = ? WHERE id = ?", (time.time(), task_id))
+
+    def typed(self, task_id: str) -> float | None:
+        row = self.db.execute("SELECT typed FROM tasks WHERE id = ?", (task_id,)).fetchone()
+        return row[0] if row else None
 
     def mark(self, task_id: str, status: str, target: str | None = None, error: str | None = None) -> None:
         self.db.execute(

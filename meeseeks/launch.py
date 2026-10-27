@@ -40,6 +40,7 @@ SIGNALS = {
 }
 MAX_DOMAIN_REQUEST = 20
 DOMAINS_QUIET = 30
+LINE_HARNESSES = {"cline"}
 
 
 def _per_harness(what: str, check):
@@ -117,6 +118,18 @@ def dejima_argv(args: argparse.Namespace, job, task_dir: Path, dejima: str) -> l
     return argv + ["--", job.prompt]
 
 
+def _default_harness(dejima: str) -> str:
+    """The harness dejima uses when none is named, or empty if it can't say."""
+    try:
+        result = subprocess.run([dejima, "--print-config"], capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    for line in result.stdout.splitlines():
+        if line.startswith("core.harness="):
+            return line.partition("=")[2].strip()
+    return ""
+
+
 def launch(args: argparse.Namespace, data: object) -> dict:
     job = validate_job(data)
     # Resolved here, where a failure reaches the requester. Under an ssh forced
@@ -131,6 +144,7 @@ def launch(args: argparse.Namespace, data: object) -> dict:
     (task_dir / "domains").write_text("".join(f"{d}\n" for d in job.domains))
     (task_dir / "dependencies").write_text("".join(f"{d}\n" for d in job.dependencies))
     (task_dir / "argv.json").write_text(json.dumps(dejima_argv(args, job, task_dir, dejima)))
+    (task_dir / "harness").write_text(job.harness or args.harness or _default_harness(dejima))
     try:
         _hold_files(job, task_dir)
         return _start_window(args, job, task_dir)
@@ -592,7 +606,6 @@ def answer(args: argparse.Namespace, task_id: str, data: object, message: bool =
     # Stripping control characters, ESC above all, keeps the text from ending
     # the bracketed paste early and having the rest read as keystrokes.
     text = archive.clean_text(data["text"].encode(), MAX_HELP)
-    requester = " ".join(archive.clean_text(data["requester"].encode(), 255).split())
     if not text:
         raise ValueError("the answer is empty")
 
@@ -605,11 +618,8 @@ def answer(args: argparse.Namespace, task_id: str, data: object, message: bool =
         if not message:
             raise RuntimeError(f"{task_id} has no help request awaiting an answer")
         claimed = False
-    # The prefix also means the message never starts with a character the
-    # harness treats as a command, such as Claude Code's ! (shell) or / (slash).
-    heading = "Message" if message else "Reply"
     try:
-        _paste(args, task_dir, task_id, f"{heading} from {requester}:\n\n{text}")
+        _paste(args, task_dir, task_id, text)
     except BaseException:
         if claimed:
             os.rename(answering, pending)
@@ -619,6 +629,12 @@ def answer(args: argparse.Namespace, task_id: str, data: object, message: bool =
 
 
 def _paste(args: argparse.Namespace, task_dir: Path, task_id: str, message: str) -> None:
+    # dejima starts cline with its prompt as an argument, which runs it in
+    # plain mode: input is read a line at a time, without bracketed paste, so
+    # a line break would submit everything before it on its own.
+    harness = task_dir / "harness"
+    if harness.exists() and harness.read_text() in LINE_HARNESSES:
+        message = " ".join(message.split())
     env = _tmux_env()
     window = task_dir / "window"
     target = window.read_text() if window.exists() else f"={args.session}:={task_id}"

@@ -326,14 +326,18 @@ def check_waiting(config: dict, store: Store, task: dict) -> None:
     """Record a waiting event for a running session whose screen has gone quiet.
 
     Not for one waiting on its requester through a help or domain request,
-    one that has a result to deliver, or one that has delivered output,
-    asked or been reported since its screen last changed: those are done or
-    already said so. Each quiet spell is reported once.
+    one that has a result to deliver, one that has delivered output and been
+    sent nothing since, or one that has asked or been reported since its
+    screen last changed: those are done or already said so. Each quiet spell
+    is reported once.
     """
     quiet = task.get("quiet")
     if task.get("state") != "running" or not isinstance(quiet, (int, float)) or quiet < config["waiting_after"]:
         return
     if any(task.get(key) for key in ("awaiting_answer", "domain_request", "ready", "help", "domains", "unsignalled", "result_pending")):
+        return
+    output = store.latest_event_time(task["id"], ("output",))
+    if output is not None and output >= (store.typed(task["id"]) or 0):
         return
     latest = store.latest_event_time(task["id"], ("output", "help", "domains", "waiting"))
     if latest is not None and latest >= time.time() - quiet:
@@ -509,6 +513,8 @@ async def _type_into(request: web.Request, command: str) -> web.Response:
     except RequestError as e:
         return web.json_response({"error": str(e)}, status=e.status)
     payload = json.dumps({"text": text, "requester": requester}).encode()
+    # Before typing, since a failure can still have reached the session.
+    request.app[STORE].set_typed(task_id)
     try:
         code, _, err = await run_remote(request.app[CONFIG], [command, task_id], payload)
     except RuntimeError as e:
