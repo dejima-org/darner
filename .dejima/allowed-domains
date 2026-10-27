@@ -1,0 +1,10 @@
+# What CI jobs here reach, read from main by the CI runner's egress allowlist.
+
+# The confined job installs Python from Debian, then the test dependencies from
+# PyPI: maubot and mautrix, which the bot tests need, aren't packaged in Debian.
+deb.debian.org
+pypi.org
+files.pythonhosted.org
+
+# The privileged job installs the static Docker CLI to build the API's image.
+download.docker.com
