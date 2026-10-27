@@ -1167,3 +1167,20 @@ async def test_config_keyword_is_sent(maubot_plugin, maubot_test_bot, api):
     await send(maubot_test_bot, message("@meeseeks:example.org add this recipe\nconfig: mealie\nallow: example.com"))
     payload = api.requests[0][1]
     assert payload["configs"] == ["mealie"] and payload["grants"]["domains"] == ["example.com"]
+
+
+@pytest.mark.parametrize("summary", ["Do you want to continue? (y/n)\n> ", ""])
+async def test_waiting_notice(maubot_plugin, maubot_test_bot, api, summary):
+    api.add(5, type="waiting", summary=summary, data=None, link=LINK)
+    api.events[-1]["data"] = {"quiet": 360}
+    await maubot_plugin.poll_once()
+    [msg] = sent(maubot_test_bot)
+    assert msg["body"].startswith("ms-7f3k2 seems to be waiting: its screen hasn't changed for 6m.")
+    assert msg["body"].endswith(f"Reply with a mention to tell it something, or open the session: {LINK}")
+    assert msg["io.meeseeks.task"] == "ms-7f3k2" and msg["m.mentions"] == {}
+    if summary:
+        assert "    Do you want to continue? (y/n)" in msg["body"]
+        assert "<pre><code>Do you want to continue? (y/n)\n&gt; </code></pre>" in msg["formatted_body"]
+    else:
+        assert "<pre>" not in msg["formatted_body"]
+    assert api.acked == [5]

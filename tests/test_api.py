@@ -895,3 +895,86 @@ async def test_missing_config_set_file_is_refused(aiohttp_client, config, tmp_pa
     client = await aiohttp_client(make_app(config, poll=False))
     resp = await client.post("/v1/tasks", json=request(configs=["mealie"]), headers=AUTH)
     assert resp.status == 400 and "mealie-token" in (await resp.json())["error"]
+
+
+@pytest.fixture
+def waiting_store(tmp_path):
+    from meeseeks.api import DEFAULTS
+
+    store = Store(str(tmp_path / "w.db"))
+    store.claim("ms-aaaaa", "maubot", {"kind": "matrix", "ref": "$e"}, "@u:example.org", "{}")
+    store.mark("ms-aaaaa", "launched")
+    return store, dict(DEFAULTS)
+
+
+def waiting_events(store):
+    return [e for e in store.events("maubot") if e.type == "waiting"]
+
+
+def quiet_task(**overrides):
+    return {"id": "ms-aaaaa", "state": "running", "quiet": 400, "screen": "Do you want to continue? (y/n)", **overrides}
+
+
+def test_quiet_session_is_reported_once_with_its_screen(waiting_store):
+    from meeseeks.api import check_waiting
+
+    store, config = waiting_store
+    check_waiting(config, store, quiet_task())
+    check_waiting(config, store, quiet_task(quiet=460))
+    [event] = waiting_events(store)
+    assert event.summary == "Do you want to continue? (y/n)" and event.data == {"quiet": 400}
+
+
+def test_screen_can_be_left_out(waiting_store):
+    from meeseeks.api import check_waiting
+
+    store, config = waiting_store
+    config["waiting_screen"] = False
+    check_waiting(config, store, quiet_task())
+    assert waiting_events(store)[0].summary == ""
+
+
+@pytest.mark.parametrize("overrides", [
+    {"quiet": 100}, {"state": "exited"}, {"quiet": None},
+    {"awaiting_answer": True}, {"domain_request": 2}, {"ready": True}, {"unsignalled": True}, {"result_pending": True},
+])
+def test_not_reported_while_waiting_on_the_requester_or_done(waiting_store, overrides):
+    from meeseeks.api import check_waiting
+
+    store, config = waiting_store
+    check_waiting(config, store, quiet_task(**overrides))
+    assert waiting_events(store) == []
+
+
+def test_not_reported_after_output_since_the_screen_last_changed(waiting_store):
+    from meeseeks.api import check_waiting
+
+    store, config = waiting_store
+    store.add_event("ms-aaaaa", "output", "done")
+    check_waiting(config, store, quiet_task())
+    assert waiting_events(store) == []
+
+
+def test_a_new_quiet_spell_is_reported_again(waiting_store):
+    import time
+
+    from meeseeks.api import check_waiting
+
+    store, config = waiting_store
+    check_waiting(config, store, quiet_task())
+    store.db.execute("UPDATE events SET created = ?", (time.time() - 1000,))
+    check_waiting(config, store, quiet_task(quiet=320))
+    assert len(waiting_events(store)) == 2
+
+
+def test_settings_defaults_log_and_unknown_keys(config):
+    from meeseeks.api import with_defaults
+
+    config["configz_dir"] = "/typo"
+    full, lines, unknown = with_defaults(config)
+    assert full["configs_dir"] == str(Path(config["blurbs_dir"]).parent / "configs")
+    assert full["waiting_after"] == 300 and full["waiting_screen"] is True
+    assert unknown == ["configz_dir"]
+    assert "waiting_after = 300 (default)" in lines and "tokens = 'for maubot'" in lines
+    assert not any("s3cret" in line for line in lines)
+    assert any(line.startswith("blurbs_dir = ") and not line.endswith("(default)") for line in lines)

@@ -317,7 +317,7 @@ git -C "$LAUNCHER_SRC" pull
 
 Sessions already running are unaffected.
 
-**API host.** Back up the database while the service is stopped.
+**API host.** Settings added by an update have defaults, so an `api.toml` written for an earlier version keeps working. At startup the API logs every setting it uses, marking the defaults, and warns about any key it doesn't recognise, such as a misspelling. Check that log after updating, and compare `api.toml` with [`examples/api.toml`](examples/api.toml) for new settings worth setting. Back up the database while the service is stopped.
 
 With systemd:
 
@@ -367,6 +367,8 @@ Or send the task directly, in a message that mentions the bot and isn't a reply.
 `@meeseeks help` replies with this usage, including the available context blurbs.
 
 When the agent needs to reach domains the sandbox blocks, it lists them in `~/shared/DOMAINS` and the bot posts every one for you to check. A line can name a port, as in `internal recipes.example.com:8443`. The grant covers the domain on every port, and the port is the one dejima-allow checks it answers on. Reply `@meeseeks allow` to that message to let the running session reach them, or `@meeseeks deny`. Internal domains are marked as such, and any the API's `deny_domains` policy refuses are marked and never allowed. An agent that edits `DOMAINS` without signalling again is still asking: the changed list becomes a request once it has been left alone for 30 seconds. After you decide a request, a follow-up, such as asking again for a domain as internal, comes straight through. What gets allowed is the list as shown: the launcher keeps its own copy, so the agent can't change it afterwards. If answering from chat is on, the agent is told the outcome. Otherwise, tell it in the session.
+
+If a session's screen stops changing for `waiting_after` seconds (5 minutes by default), the bot posts that it seems to be waiting, with the end of its screen as a code block marked as agent-written. That catches an agent that asked a question at its prompt, or left its answer there without signalling, whatever the harness. It isn't posted for a session waiting on a help or domain request, one that has a result to deliver, or one that has delivered output or asked since its screen last changed. Each quiet spell is reported once. Reply to the notice with a mention to tell the session something. `waiting_screen = false` leaves out the screen.
 
 To manage open sessions, mention the bot with one of these. Replying to any of the bot's messages about a session works without the id.
 
@@ -490,7 +492,9 @@ Grants use `dejima --domains FILE` and `--dependencies FILE`, and output collect
 | `db_path` | SQLite database of tasks and events |
 | `blurbs_dir` | context blurbs, as `<name>.md`; read per request, so an edit needs no restart |
 | `max_upload` | largest upload in bytes, default 50 MiB; keep it at or under the launcher's `--max-upload` |
-| `configs_dir` | config sets, one file per set named as it's used, holding keyword lines (see [`examples/configs`](examples/configs)); read per request. A set's `file: <name>` lines give each of its sessions `configs_dir/files/<name>` (up to 1 MiB) in `~/shared/uploads` |
+| `waiting_after` | seconds a running session's screen can stay unchanged before the bot says it seems to be waiting (default 300) |
+| `waiting_screen` | whether that notice includes the end of the session's screen (default true) |
+| `configs_dir` | config sets, by default `configs` beside `blurbs_dir`; one file per set named as it's used, holding keyword lines (see [`examples/configs`](examples/configs)); read per request. A set's `file: <name>` lines give each of its sessions `configs_dir/files/<name>` (up to 1 MiB) in `~/shared/uploads` |
 | `default_blurbs` | blurb names added to every task's prompt, before any it names with `ctx:`; each must exist |
 | `results_dir` | collected output archives |
 | `poll_interval` | seconds between checks on the dejima host |

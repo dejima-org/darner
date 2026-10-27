@@ -201,8 +201,8 @@ def test_status_states(env, share):
     code, out, _ = run(a, "status")
     assert code == 0
     assert json.loads(out) == [
-        {"id": "ms-abc23", "state": "exited", "ready": True, "unsignalled": False, "help": False, "domains": False, "answerable": False, "run_id": None, "error": None, "awaiting_answer": False, "domain_request": None},
-        {"id": "ms-starx", "state": "starting", "ready": False, "unsignalled": False, "help": False, "domains": False, "answerable": False, "run_id": None, "error": None, "awaiting_answer": False, "domain_request": None},
+        {"id": "ms-abc23", "state": "exited", "ready": True, "unsignalled": False, "help": False, "domains": False, "answerable": False, "run_id": None, "error": None, "awaiting_answer": False, "result_pending": False, "quiet": None, "screen": "", "domain_request": None},
+        {"id": "ms-starx", "state": "starting", "ready": False, "unsignalled": False, "help": False, "domains": False, "answerable": False, "run_id": None, "error": None, "awaiting_answer": False, "result_pending": False, "quiet": None, "screen": "", "domain_request": None},
     ]
 
 
@@ -1301,3 +1301,27 @@ def test_status_sweeps_held_files_of_an_ended_session(env, share):
     (task / "exit").write_text("0\n")
     status(a)
     assert not (task / "files").exists()
+
+
+def test_screen_quiet_time_and_tail(env, share):
+    a, _ = share
+    screen = env / "tmux.log.screen"
+    screen.write_text("\n".join(f"line {i}" for i in range(30)) + "\n\x1b[31m> \n")
+    entry = status(a)[0]
+    assert entry["quiet"] < 5
+    assert entry["screen"].splitlines()[-1] == "[31m>" and entry["screen"].splitlines()[0] == "line 11"
+    record = env / "tasks" / "ms-abc23" / "screen"
+    state = json.loads(record.read_text())
+    record.write_text(json.dumps({**state, "since": state["since"] - 600}))
+    assert status(a)[0]["quiet"] >= 600
+    screen.write_text("something new\n")
+    assert status(a)[0]["quiet"] < 5
+
+
+def test_result_pending_until_delivered(env, share):
+    a, shared = share
+    (shared / "RESULT.md").write_text("done")
+    assert status(a)[0]["result_pending"] is True
+    quiet(shared)
+    run(a, "fetch", "ms-abc23")
+    assert status(a)[0]["result_pending"] is False

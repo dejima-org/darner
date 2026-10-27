@@ -129,6 +129,13 @@ class Store:
         row = self.db.execute("SELECT status FROM tasks WHERE client = ? AND id = ?", (client, task_id)).fetchone()
         return row[0] if row else None
 
+    def latest_event_time(self, task_id: str, types: tuple[str, ...]) -> float | None:
+        marks = ", ".join("?" * len(types))
+        row = self.db.execute(
+            f"SELECT max(created) FROM events WHERE task_id = ? AND type IN ({marks})", (task_id, *types)
+        ).fetchone()
+        return row[0]
+
     def remove_event(self, seq: int) -> None:
         self.db.execute("DELETE FROM events WHERE seq = ?", (seq,))
 
