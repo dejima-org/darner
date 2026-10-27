@@ -568,12 +568,12 @@ To build the plugin locally, run `mbc build` in `plugin/`.
 
 ### Releasing
 
-Pull requests target `development`, which merges to `main` when it's ready to release. `development` carries the next version: the first change after a release bumps both `plugin/maubot.yaml` and `pyproject.toml`.
+Pull requests target `development`, which merges to `main` when it's ready to release. `development` carries the next version: the first change after a release bumps both `plugin/maubot.yaml` and `pyproject.toml`, and opens its entry in [`CHANGELOG.md`](CHANGELOG.md). Each release names the dejima release it was released against, so it trails that dejima release. [docs/release.md](docs/release.md) is the release process.
 
 [`.gitea/workflows/release.yml`](.gitea/workflows/release.yml) publishes the plugin on a `dejima-confined` runner:
 
 - **A push to `development`** creates a pre-release of `<version>.dev<run>`, such as `0.1.18.dev42`, with the plugin attached. Pre-releases aren't the forge's latest release, and maubot orders them before `<version>`, so a stable release supersedes one. To try a development build, download its `.mbp` from the releases page and upload it in maubot's web UI under **Plugins**.
-- **A push to `main`** whose version has no `v<version>` tag yet creates the stable release, and with it the tag at that commit. A push that doesn't change the version releases nothing. Pushing a `v<version>` tag by hand releases that tag the same way.
+- **A push to `main`** whose version has no `v<version>` tag yet creates the stable release, and with it the tag at that commit. Its notes are the version's `CHANGELOG.md` entry, which must name a dejima release. A push that doesn't change the version releases nothing. Pushing a `v<version>` tag by hand releases that tag the same way.
 
 The workflow fails if the two versions disagree, or if a pushed tag doesn't match them. It uses the job's automatic `GITEA_TOKEN`, so Actions must be enabled for the repository, and the token must be allowed to create releases.
 
