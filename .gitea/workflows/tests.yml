@@ -1,0 +1,66 @@
+# Runs the test suite on every pull request, and builds the API's image.
+#
+# pull_request, not pull_request_target: the workflow is read from the head
+# branch, so a branch could point these jobs at another runner. That was the
+# case pull_request_target was meant to close, but dejima/dejima#384 showed it
+# reads the workflow from a base branch the pull request's author chooses,
+# so it bounds that less than it appears to, and pull_request is the simpler of
+# the two.
+#
+# Split by what each job needs: the tests run anywhere Python does, so on the
+# confined tier; building the image needs a Docker daemon, so the privileged
+# one.
+name: tests
+
+on:
+  pull_request:
+
+jobs:
+  confined:
+    runs-on: dejima-confined
+    name: confined (pytest)
+    container:
+      image: node:20-bookworm
+    steps:
+      - name: Install Python
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends python3 python3-venv ca-certificates
+
+      - uses: actions/checkout@v4
+
+      # As an unprivileged user, since root ignores file permissions and the
+      # tests that check unreadable files would skip.
+      - name: Run the tests
+        run: |
+          chown -R node:node .
+          su node -c "python3 -m venv .venv && .venv/bin/pip install --quiet -e '.[test]' && .venv/bin/python -m pytest -q"
+
+  privileged:
+    runs-on: dejima-privileged
+    name: privileged (API image)
+    container:
+      image: node:20-bookworm
+    env:
+      DOCKER_CLI_VERSION: 27.5.1
+      IMAGE: meeseeks-api-ci-${{ github.run_id }}
+    steps:
+      - name: Install the Docker CLI
+        run: |
+          curl -fsSL "https://download.docker.com/linux/static/stable/$(uname -m)/docker-${DOCKER_CLI_VERSION}.tgz" \
+            | tar -xzC /usr/local/bin --strip-components=1 docker/docker
+          docker info >/dev/null
+
+      - uses: actions/checkout@v4
+
+      - name: Build the image
+        run: docker build -t "$IMAGE" .
+
+      - name: Check the image runs as uid and gid 10001 and starts the API
+        run: |
+          [ "$(docker run --rm --entrypoint id "$IMAGE")" = "uid=10001(meeseeks) gid=10001(meeseeks) groups=10001(meeseeks)" ]
+          docker run --rm "$IMAGE" --help
+
+      - name: Remove the image
+        if: always()
+        run: docker rmi -f "$IMAGE" || true
