@@ -16,6 +16,9 @@ python3 -c 'import json, sys; print(json.dumps(sys.argv[1:]))' "$@" >> "$FAKE_TM
 case "$1" in
     has-session) exit "${FAKE_TMUX_HAS:-1}" ;;
     load-buffer) cat > "$FAKE_TMUX_LOG.buffer" ;;
+    capture-pane) cat "$FAKE_TMUX_LOG.screen" 2>/dev/null ;;
+    paste-buffer) cut -c "$(( ${FAKE_TMUX_DROP:-0} + 1 ))-" "$FAKE_TMUX_LOG.buffer" | head -c 4000 >> "$FAKE_TMUX_LOG.screen" ;;
+    send-keys) if [ "$4" = Enter ] && [ -z "$FAKE_TMUX_EAT_ENTER" ]; then echo "[submitted]" >> "$FAKE_TMUX_LOG.screen"; fi ;;
     new-window)
         # Every window gets its own ids, as tmux gives them: @7 %7 for the first.
         n=$(( $(cat "$FAKE_TMUX_LOG.n" 2>/dev/null || echo 6) + 1 )); echo "$n" > "$FAKE_TMUX_LOG.n"
@@ -378,9 +381,12 @@ def test_answer_is_pasted_into_the_session(env, asked):
     code, _, err = answer_run(asked, {"requester": "@alice:example.org", "text": "Use main.\nThanks"}, "--answers", "--paste-delay", "0")
     assert code == 0, err
     assert tmux_calls(env) == [
+        ["capture-pane", "-p", "-J", "-t", "@7"],
         ["load-buffer", "-b", f"meeseeks-ms-abc23-{os.getpid()}", "-"],
         ["paste-buffer", "-p", "-d", "-b", f"meeseeks-ms-abc23-{os.getpid()}", "-t", "@7"],
+        ["capture-pane", "-p", "-J", "-t", "@7"],
         ["send-keys", "-t", "@7", "Enter"],
+        ["capture-pane", "-p", "-J", "-t", "@7"],
     ]
     assert (env / "tmux.log.buffer").read_text() == "Reply from @alice:example.org:\n\nUse main.\nThanks"
     assert not (env / "tasks" / "ms-abc23" / "help-pending").exists()
@@ -1122,3 +1128,32 @@ def test_domain_ports_are_checked_on_that_port(env, allow_env):
     assert request["rejected"] == 2
     decide(a, "allow", 1, {"requester": "@a:example.org", "domains": ["recipes.example.com"]})
     assert allow_calls(env) == [["--container", "c0ffee", "--internal", "--port", "8443", "recipes.example.com"]]
+
+
+def test_typing_is_logged_for_diagnosis(env, asked):
+    answer_run(asked, {"requester": "@a:example.org", "text": "use main"}, "--answers", "--paste-delay", "0")
+    log = (env / "tasks" / "ms-abc23" / "typing.log").read_text()
+    assert "===== before\n" in log and "===== after paste\nReply from @a:example.org:" in log
+    assert "===== after enter\n" in log and "[submitted]" in log
+
+
+def test_lost_first_keystrokes_are_reported(env, asked, monkeypatch):
+    monkeypatch.setenv("FAKE_TMUX_DROP", "3")
+    code, _, err = answer_run(asked, {"requester": "@a:example.org", "text": "use main"}, "--answers", "--paste-delay", "0")
+    assert code == 1 and "couldn't confirm it arrived and was sent" in err
+    assert (env / "tasks" / "ms-abc23" / "help-pending").exists()
+
+
+def test_an_eaten_enter_is_retried_then_reported(env, asked, monkeypatch):
+    monkeypatch.setenv("FAKE_TMUX_EAT_ENTER", "1")
+    code, _, err = answer_run(asked, {"requester": "@a:example.org", "text": "use main"}, "--answers", "--paste-delay", "0")
+    assert code == 1 and "check the session" in err
+    assert [c[-1] for c in tmux_calls(env) if c[0] == "send-keys"] == ["Enter", "Enter"]
+    assert "===== after second enter" in (env / "tasks" / "ms-abc23" / "typing.log").read_text()
+
+
+def test_a_collapsed_paste_counts_as_arrived(env, asked, monkeypatch):
+    monkeypatch.setenv("FAKE_TMUX_DROP", "999")
+    (env / "tmux.log.screen").write_text("  > [Pasted text #1 +3 lines]\n")
+    code, _, err = answer_run(asked, {"requester": "@a:example.org", "text": "use main"}, "--answers", "--paste-delay", "0")
+    assert code == 0, err
