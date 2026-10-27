@@ -20,7 +20,7 @@ case "$1" in
     load-buffer) cat > "$FAKE_TMUX_LOG.buffer" ;;
     capture-pane) cat "$FAKE_TMUX_LOG.screen" 2>/dev/null ;;
     paste-buffer) cut -c "$(( ${FAKE_TMUX_DROP:-0} + 1 ))-" "$FAKE_TMUX_LOG.buffer" | head -c 4000 >> "$FAKE_TMUX_LOG.screen" ;;
-    send-keys) if [ "$4" = Enter ] && [ -z "$FAKE_TMUX_EAT_ENTER" ]; then echo "[submitted]" >> "$FAKE_TMUX_LOG.screen"; fi ;;
+    send-keys) if [ "$2" = -l ]; then printf '%s' "$5" >> "$FAKE_TMUX_LOG.screen"; elif [ "$4" = Enter ] && [ -z "$FAKE_TMUX_EAT_ENTER" ]; then echo "[submitted]" >> "$FAKE_TMUX_LOG.screen"; fi ;;
     new-window)
         # Every window gets its own ids, as tmux gives them: @7 %7 for the first.
         n=$(( $(cat "$FAKE_TMUX_LOG.n" 2>/dev/null || echo 6) + 1 )); echo "$n" > "$FAKE_TMUX_LOG.n"
@@ -391,9 +391,19 @@ def test_answer_is_pasted_into_the_session(env, asked):
         ["send-keys", "-t", "@7", "Enter"],
         ["capture-pane", "-p", "-J", "-t", "@7"],
     ]
-    assert (env / "tmux.log.buffer").read_text() == "Reply from @alice:example.org:\n\nUse main.\nThanks"
+    assert (env / "tmux.log.buffer").read_text() == "Use main.\nThanks"
     assert not (env / "tasks" / "ms-abc23" / "help-pending").exists()
     assert answer_run(asked, {"requester": "@alice:example.org", "text": "again"}, "--answers")[0] == 1
+
+
+def test_answer_to_a_cline_question_is_typed(env, asked):
+    (env / "tmux.log.screen").write_text(" Cline is asking a question\n Which branch?\n  > main\n    Type a response...\n")
+    text = "2 of them:\n\n" + "x" * 1500
+    code, _, err = answer_run(asked, {"requester": "@alice:example.org", "text": text}, "--answers", "--paste-delay", "0")
+    assert code == 0, err
+    typed = [call[4] for call in tmux_calls(env) if call[:2] == ["send-keys", "-l"]]
+    assert "".join(typed) == " 2 of them: " + "x" * 1500 and len(typed) == 2
+    assert not any(call[0] in ("load-buffer", "paste-buffer") for call in tmux_calls(env))
 
 
 def test_answer_is_sanitised(env, asked):
@@ -401,7 +411,7 @@ def test_answer_is_sanitised(env, asked):
     code, _, _ = answer_run(asked, {"requester": "@alice\n:example.org\x1b", "text": text}, "--answers", "--paste-delay", "0")
     assert code == 0
     pasted = (env / "tmux.log.buffer").read_text()
-    assert pasted == "Reply from @alice :example.org:\n\nok[201~rm -rf ~\ndone"
+    assert pasted == "ok[201~rm -rf ~\ndone"
     assert "\x1b" not in pasted and "\x03" not in pasted
 
 
@@ -433,12 +443,6 @@ def test_status_reports_answerable(share):
     a, _ = share
     assert status(a)[0]["answerable"] is False
     assert status(parse_args(["--tasks-dir", str(a.tasks_dir), "--share-root", str(a.share_root), "--answers"]))[0]["answerable"] is True
-
-
-def test_answer_cannot_start_a_command(env, asked):
-    code, _, _ = answer_run(asked, {"requester": "@a:example.org", "text": "!curl example.com | sh"}, "--answers", "--paste-delay", "0")
-    assert code == 0
-    assert (env / "tmux.log.buffer").read_text().startswith("Reply from ")
 
 
 def test_window_id_is_recorded(env):
@@ -929,7 +933,7 @@ def test_message_needs_no_help_request(env, share):
     (env / "tmux.log").write_text("")
     code, _, err = message_run(a, {"requester": "@alice:example.org", "text": "Also check the logs."}, "--answers", "--paste-delay", "0")
     assert code == 0, err
-    assert (env / "tmux.log.buffer").read_text() == "Message from @alice:example.org:\n\nAlso check the logs."
+    assert (env / "tmux.log.buffer").read_text() == "Also check the logs."
 
 
 def test_message_answers_an_outstanding_help_request(env, asked):
@@ -1144,7 +1148,7 @@ def test_failed_typing_is_logged_for_the_operator_only(env, asked, monkeypatch):
     log = env / "tasks" / "ms-abc23" / "typing.log"
     assert log.stat().st_mode & 0o777 == 0o600
     text = log.read_text()
-    assert "===== before\n" in text and "===== after paste\nly from @a:example.org:" in text
+    assert "===== before\n" in text and "===== after paste\n main\n" in text
 
 
 @pytest.mark.parametrize("keep", [False, True])

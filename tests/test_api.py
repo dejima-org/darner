@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from meeseeks.api import make_app, poll_once
+from meeseeks.api import STORE, make_app, poll_once
 from meeseeks.archive import MANIFEST_SLACK
 from meeseeks.store import Store
 from tests.test_launch import FAKE_TMUX
@@ -625,7 +625,6 @@ async def test_stop_is_scoped_and_needs_a_running_task(started, config, tmp_path
 
 
 async def test_stop_refuses_an_ended_task(started, tmp_path):
-    from meeseeks.api import STORE
 
     app, client, task_id, *_ = started
     app[STORE].mark(task_id, "ended")
@@ -733,7 +732,6 @@ async def test_session_waiting_on_domains(requested, tmp_path, monkeypatch):
 
 
 async def test_sessions_are_scoped_and_open_only(started, config, tmp_path, monkeypatch):
-    from meeseeks.api import STORE
 
     app, client, task_id, *_ = started
     config["tokens"]["other"] = "0ther"
@@ -756,6 +754,7 @@ async def test_message_reaches_launcher(started, tmp_path):
     body = {"text": "Also check the logs.", "requester": "@alice:example.org"}
     assert (await client.post(f"/v1/tasks/{task_id}/message", json=body, headers=AUTH)).status == 204
     assert fetches(tmp_path)[-1] == ["message", task_id, body]
+    assert app[STORE].typed(task_id) is not None
 
 
 async def test_default_blurbs_come_first_in_every_prompt(aiohttp_client, config, tmp_path):
@@ -955,6 +954,31 @@ def test_not_reported_after_output_since_the_screen_last_changed(waiting_store):
     store.add_event("ms-aaaaa", "output", "done")
     check_waiting(config, store, quiet_task())
     assert waiting_events(store) == []
+
+
+def test_finished_session_is_not_reported_however_long_ago(waiting_store):
+    import time
+
+    from meeseeks.api import check_waiting
+
+    store, config = waiting_store
+    store.add_event("ms-aaaaa", "output", "done")
+    store.db.execute("UPDATE events SET created = ?", (time.time() - 1000,))
+    check_waiting(config, store, quiet_task())
+    assert waiting_events(store) == []
+
+
+def test_reported_again_after_being_told_something_since_output(waiting_store):
+    import time
+
+    from meeseeks.api import check_waiting
+
+    store, config = waiting_store
+    store.add_event("ms-aaaaa", "output", "done")
+    store.db.execute("UPDATE events SET created = ?", (time.time() - 1000,))
+    store.set_typed("ms-aaaaa")
+    check_waiting(config, store, quiet_task())
+    assert len(waiting_events(store)) == 1
 
 
 def test_a_new_quiet_spell_is_reported_again(waiting_store):
