@@ -44,6 +44,7 @@ USAGE = """\
 **Start a task:** reply to a note with a message that mentions me. The note is the task, and the rest of your reply is extra context. Or mention me in a message that isn't a reply, and that message is the task. Keyword lines configure the session:
 
 ```
+config: <names>    use saved sets of these keywords{configs}; anything else you give overrides them
 ctx: <names>       add context blurbs{blurbs}
 allow: <domains>   let the session reach these domains
 internal: <domains>  let it reach these domains inside your network
@@ -175,6 +176,7 @@ class MeeseeksBot(Plugin):
             "task": task,
             "context": context,
             "blurbs": req.blurbs,
+            "configs": req.configs,
             "grants": {"domains": req.domains, "internal": req.internal_domains, "dependencies": req.dependencies},
             "requester": evt.sender,
             "source": {"kind": "matrix", "ref": evt.event_id, "channel": evt.room_id},
@@ -277,7 +279,14 @@ class MeeseeksBot(Plugin):
             harnesses += f"; default {catalog['default_harness']})" if catalog.get("default_harness") else ")"
         if catalog.get("backends"):
             backends = f" ({', '.join(catalog['backends'])})"
-        return USAGE.format(blurbs=listed, harnesses=harnesses, backends=backends)
+        try:
+            async with self._api("GET", "/v1/configs", raise_for_status=True) as resp:
+                configs = await resp.json()
+        except Exception:
+            self.log.warning("Couldn't list config sets", exc_info=True)
+            configs = None
+        configs = f" (available: {', '.join(configs) or 'none'})" if isinstance(configs, list) else ""
+        return USAGE.format(blurbs=listed, harnesses=harnesses, backends=backends, configs=configs)
 
     def _help_task(self, replied: Event | None) -> str | None:
         # Only the bot's own tag counts, so a user can't steer an answer into another task
