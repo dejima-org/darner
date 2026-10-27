@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Brad Anderson
 """Start dejima sessions and collect their output.
 
 Meant to be the forced command of the API's key in authorized_keys, so the

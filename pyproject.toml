@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=61"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -7,6 +7,8 @@ name = "meeseeks"
 version = "0.1.18"
 description = "Start dejima sessions from task requests"
 requires-python = ">=3.11"
+license = "GPL-3.0-or-later"
+license-files = ["LICENSE"]
 
 [project.optional-dependencies]
 api = ["aiohttp>=3.9"]

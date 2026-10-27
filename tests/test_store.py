@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Brad Anderson
 from meeseeks.store import Store
 
 E1 = {"kind": "matrix", "ref": "$e1", "channel": "!room:example.org"}

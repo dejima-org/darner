@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Brad Anderson
 """Markdown for agent-written text, rendered so it can't mislead.
 
 Raw HTML stays escaped, and a link or image shows its destination in plain

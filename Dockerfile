@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Brad Anderson
+#
 # The meeseeks API. Config is mounted at /etc/meeseeks and state, including
 # the ssh key and known_hosts, at /var/lib/meeseeks; see examples/compose.yaml.
 FROM python:3.12-slim
@@ -12,7 +15,7 @@ RUN apt-get update \
 RUN groupadd --system --gid 10001 meeseeks \
     && useradd --system --uid 10001 --gid 10001 --home-dir /var/lib/meeseeks --shell /usr/sbin/nologin meeseeks
 
-COPY pyproject.toml /src/
+COPY pyproject.toml LICENSE /src/
 COPY meeseeks /src/meeseeks
 RUN pip install --no-cache-dir '/src[api]'
 

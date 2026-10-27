@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Brad Anderson
 """Job schema shared by the API and the launcher.
 
 Domain and dependency rules mirror dejima's own validators

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Brad Anderson
 """Zip a session's ~/shared without trusting anything in it.
 
 The session may be hostile and may change the tree while it is read, so the
