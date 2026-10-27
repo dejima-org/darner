@@ -18,7 +18,7 @@ case "$1" in
     load-buffer) cat > "$FAKE_TMUX_LOG.buffer" ;;
     capture-pane) cat "$FAKE_TMUX_LOG.screen" 2>/dev/null ;;
     paste-buffer) cut -c "$(( ${FAKE_TMUX_DROP:-0} + 1 ))-" "$FAKE_TMUX_LOG.buffer" | head -c 4000 >> "$FAKE_TMUX_LOG.screen" ;;
-    send-keys) if [ "$4" = Enter ] && [ -z "$FAKE_TMUX_EAT_ENTER" ]; then echo "[submitted]" >> "$FAKE_TMUX_LOG.screen"; fi ;;
+    send-keys) if [ "$2" = -l ]; then printf '%s' "$5" >> "$FAKE_TMUX_LOG.screen"; elif [ "$4" = Enter ] && [ -z "$FAKE_TMUX_EAT_ENTER" ]; then echo "[submitted]" >> "$FAKE_TMUX_LOG.screen"; fi ;;
     new-window)
         # Every window gets its own ids, as tmux gives them: @7 %7 for the first.
         n=$(( $(cat "$FAKE_TMUX_LOG.n" 2>/dev/null || echo 6) + 1 )); echo "$n" > "$FAKE_TMUX_LOG.n"
@@ -392,6 +392,16 @@ def test_answer_is_pasted_into_the_session(env, asked):
     assert (env / "tmux.log.buffer").read_text() == "Use main.\nThanks"
     assert not (env / "tasks" / "ms-abc23" / "help-pending").exists()
     assert answer_run(asked, {"requester": "@alice:example.org", "text": "again"}, "--answers")[0] == 1
+
+
+def test_answer_to_a_cline_question_is_typed(env, asked):
+    (env / "tmux.log.screen").write_text(" Cline is asking a question\n Which branch?\n  > main\n    Type a response...\n")
+    text = "2 of them:\n\n" + "x" * 1500
+    code, _, err = answer_run(asked, {"requester": "@alice:example.org", "text": text}, "--answers", "--paste-delay", "0")
+    assert code == 0, err
+    typed = [call[4] for call in tmux_calls(env) if call[:2] == ["send-keys", "-l"]]
+    assert "".join(typed) == " 2 of them: " + "x" * 1500 and len(typed) == 2
+    assert not any(call[0] in ("load-buffer", "paste-buffer") for call in tmux_calls(env))
 
 
 def test_answer_is_sanitised(env, asked):

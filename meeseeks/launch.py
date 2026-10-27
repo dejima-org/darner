@@ -40,6 +40,7 @@ SIGNALS = {
 }
 MAX_DOMAIN_REQUEST = 20
 DOMAINS_QUIET = 30
+CLINE_QUESTION = "Cline is asking a question"
 
 
 def _per_harness(what: str, check):
@@ -628,10 +629,20 @@ def _paste(args: argparse.Namespace, task_dir: Path, task_id: str, message: str)
             raise RuntimeError("couldn't type into the session")
 
     shots = {"before": screen()}
-    for argv, stdin in (
-        ([args.tmux, "load-buffer", "-b", buffer, "-"], message),
-        ([args.tmux, "paste-buffer", "-p", "-d", "-b", buffer, "-t", target], None),
-    ):
+    if any(line.strip(" │") == CLINE_QUESTION for line in shots["before"].splitlines()):
+        # cline's question drops pastes but takes typed keys. A first printable
+        # key switches it to a typed answer, except a digit, which picks that
+        # option; the answer is trimmed, so a leading space is safe. Enter
+        # would submit, so the answer is one line.
+        message = " ".join(message.split())
+        keys = " " + message
+        steps = [([args.tmux, "send-keys", "-l", "-t", target, keys[i:i + 1024]], None) for i in range(0, len(keys), 1024)]
+    else:
+        steps = [
+            ([args.tmux, "load-buffer", "-b", buffer, "-"], message),
+            ([args.tmux, "paste-buffer", "-p", "-d", "-b", buffer, "-t", target], None),
+        ]
+    for argv, stdin in steps:
         # tmux's own error names sockets and paths, which shouldn't reach the chat.
         if subprocess.run(argv, input=stdin, env=env, capture_output=True, text=True).returncode:
             raise RuntimeError("couldn't type into the session")

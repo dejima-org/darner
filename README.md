@@ -446,7 +446,7 @@ Uploads write into `~/shared` the same careful way. The `uploads` directory is o
 
 Off by default. Turn it on with `--answers` on the launcher, so the dejima host decides whether chat can type into its sessions. An answer is accepted only for an outstanding help request on a running session, and only once: concurrent answers race for it and only one wins. Answers go to the window by its tmux id, so renaming the window inside the session doesn't redirect them. If typing into the session fails, the chat sees only "couldn't type into the session", with no tmux detail.
 
-Before pasting, the launcher strips control characters, ESC above all, so the text can't end the paste early and have the rest read as keystrokes. It then pastes the text as written, so one starting with `/` or `!` reaches Claude Code as a slash or shell command, run inside the session's container. The paste is bracketed, so newlines don't submit it early, and Enter follows after `--paste-delay`.
+Before pasting, the launcher strips control characters, ESC above all, so the text can't end the paste early and have the rest read as keystrokes. It then pastes the text as written, so one starting with `/` or `!` reaches Claude Code as a slash or shell command, run inside the session's container. The paste is bracketed, so newlines don't submit it early, and Enter follows after `--paste-delay`. cline's question prompt drops pastes, so when the screen shows one, the text is typed as keys instead, as one line, which answers in your words rather than picking an option.
 
 The bot only treats a reply as an answer when the replied-to message is its own help request, so a forged tag on someone else's message is ignored.
 
