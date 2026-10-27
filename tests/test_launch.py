@@ -1107,14 +1107,15 @@ def test_upload_error_names_no_host_path(env, share):
     [
         ({}, ["--model", "sonnet", "--effort", "medium"]),
         ({"model": "opus", "effort": "high"}, ["--model", "opus", "--effort", "high"]),
-        ({"harness": "cline"}, ["--model", "z-ai/glm-5.3"]),
+        ({"harness": "cline"}, ["--model", "z-ai/glm-5.3", "--context-window", "30000"]),
+        ({"harness": "cline", "context_window": 60000}, ["--model", "z-ai/glm-5.3", "--context-window", "60000"]),
         ({"harness": "other"}, []),
     ],
 )
 def test_model_and_effort_resolution(env, job, expected):
     a = args(
         env, "--harness", "claude-code", "--model", "claude-code=sonnet", "--effort", "claude-code=medium",
-        "--model", "cline=z-ai/glm-5.3",
+        "--model", "cline=z-ai/glm-5.3", "--context-window", "cline=30000",
     )
     launch(a, {"id": "ms-abc23", "prompt": "p", **job})
     argv = written_argv(env, "ms-abc23")
@@ -1122,10 +1123,13 @@ def test_model_and_effort_resolution(env, job, expected):
     assert flags == expected
 
 
-@pytest.mark.parametrize("option", ["--model", "--effort"])
-def test_bad_model_and_effort_defaults_are_refused(env, option):
+@pytest.mark.parametrize("option, value", [
+    ("--model", "claude-code=bad value"), ("--effort", "claude-code=max"),
+    ("--context-window", "cline=511"), ("--context-window", "cline=３２７６８"), ("--context-window", "cline=lots"),
+])
+def test_bad_per_harness_defaults_are_refused(env, option, value):
     with pytest.raises(SystemExit):
-        args(env, option, "claude-code=bad value" if option == "--model" else "claude-code=max")
+        args(env, option, value)
 
 
 def test_domain_ports_are_checked_on_that_port(env, allow_env):

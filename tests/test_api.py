@@ -811,6 +811,19 @@ async def test_model_and_effort_reach_the_job(client, tmp_path):
     assert job["model"] == "opus" and job["effort"] == "xhigh"
 
 
+@pytest.mark.parametrize("value", [32768, "32768"])
+async def test_context_window_reaches_the_job(client, tmp_path, value):
+    resp = await client.post("/v1/tasks", json=request(context_window=value), headers=AUTH)
+    assert resp.status == 201
+    assert launched(tmp_path)[0]["context_window"] == 32768
+
+
+@pytest.mark.parametrize("value", ["lots", "１２３４", 100])
+async def test_bad_context_window_is_refused(client, value):
+    resp = await client.post("/v1/tasks", json=request(context_window=value), headers=AUTH)
+    assert resp.status == 400 and "context window" in (await resp.json())["error"]
+
+
 async def test_bad_effort_is_refused(client):
     resp = await client.post("/v1/tasks", json=request(effort="max"), headers=AUTH)
     assert resp.status == 400 and "effort" in (await resp.json())["error"]

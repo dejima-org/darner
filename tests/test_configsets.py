@@ -9,6 +9,7 @@ ctx: mealie
 harness: cline
 backend: self-hosted
 model: qwen3-14b
+context_window: 30000
 internal: recipes.example.com:8443
 """
 
@@ -17,6 +18,7 @@ def test_parse():
     found = parse("mealie", MEALIE)
     assert found["blurbs"] == ["mealie"] and found["internal"] == ["recipes.example.com:8443"]
     assert (found["harness"], found["backend"], found["model"], found["effort"]) == ("cline", "self-hosted", "qwen3-14b", None)
+    assert found["context_window"] == "30000"
 
 
 @pytest.mark.parametrize("text, message", [

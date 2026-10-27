@@ -13,8 +13,8 @@ from pathlib import Path
 from meeseeks.job import valid_name
 
 LISTS = {"ctx": "blurbs", "allow": "domains", "internal": "internal", "deps": "dependencies", "file": "files"}
-SINGLES = ("harness", "backend", "model", "effort")
-_LINE = re.compile(r"\s*([A-Za-z]+)\s*:(.*)")
+SINGLES = ("harness", "backend", "model", "effort", "context_window")
+_LINE = re.compile(r"\s*([A-Za-z_]+)\s*:(.*)")
 
 
 class ConfigSetError(ValueError):

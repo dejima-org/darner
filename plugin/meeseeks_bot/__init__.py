@@ -55,6 +55,7 @@ harness: <name>    use this harness instead of the default{harnesses}
 backend: <name>    use this backend instead of the harness's default{backends}
 model: <name>      use this model instead of the harness's default
 effort: <level>    Claude Code's effort level: low, medium, high or xhigh
+context_window: <tokens>  cline's context window, for a self-hosted model
 ```
 
 Values are separated by commas or spaces, and keywords can repeat. For example:
@@ -183,7 +184,7 @@ class MeeseeksBot(Plugin):
             "requester": evt.sender,
             "source": {"kind": "matrix", "ref": evt.event_id, "channel": evt.room_id},
         }
-        for key in ("harness", "backend", "model", "effort"):
+        for key in ("harness", "backend", "model", "effort", "context_window"):
             if value := getattr(req, key):
                 payload[key] = value
         async with self._api("POST", "/v1/tasks", json=payload) as resp:
