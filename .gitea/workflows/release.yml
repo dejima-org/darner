@@ -61,7 +61,25 @@ jobs:
                 exit 0
               fi ;;
           esac
+          # A stable release names the dejima release it trails (docs/release.md),
+          # and its changelog entry is the release's notes.
+          notes="$RUNNER_TEMP/notes.md"
+          : > "$notes"
+          if [ "$prerelease" = false ]; then
+            python3 - "$version" CHANGELOG.md > "$notes" <<'EOF'
+          import re, sys
+          version, path = sys.argv[1], sys.argv[2]
+          entry = re.search(rf"^## {re.escape(version)}\n(.*?)(?=^## |\Z)", open(path).read(), re.M | re.S)
+          if not entry:
+              sys.exit(f"{path} has no entry for {version}")
+          dejima = re.search(r"^Released against dejima: *(\S+) *$", entry[1], re.M)
+          if not dejima or dejima[1] == "N/A":
+              sys.exit(f"{path}'s entry for {version} must name the dejima release it was released against")
+          print(entry[1].strip())
+          EOF
+          fi
           {
+            echo "NOTES=$notes"
             echo "VERSION=$version"
             echo "TAG=v$version"
             echo "PRERELEASE=$prerelease"
@@ -89,8 +107,8 @@ jobs:
           # A rerun finds the release the first run created. Creating one with a
           # target creates its tag there too, when the tag doesn't exist yet.
           if ! release="$(curl -fsS -H "$auth" "$api/releases/tags/$TAG")"; then
-            release="$(curl -fsS -X POST -H "$auth" -H "Content-Type: application/json" \
-              -d "{\"tag_name\": \"$TAG\", \"name\": \"$TAG\", \"target_commitish\": \"$GITHUB_SHA\", \"prerelease\": $PRERELEASE}" "$api/releases")"
+            body="$(python3 -c 'import json, os; e = os.environ; print(json.dumps({"tag_name": e["TAG"], "name": e["TAG"], "target_commitish": e["GITHUB_SHA"], "prerelease": e["PRERELEASE"] == "true", "body": open(e["NOTES"]).read()}))')"
+            release="$(curl -fsS -X POST -H "$auth" -H "Content-Type: application/json" -d "$body" "$api/releases")"
           fi
           if printf '%s' "$release" | python3 -c 'import json, os, sys; sys.exit(not any(a["name"] == os.environ["MBP"] for a in json.load(sys.stdin)["assets"]))'; then
             echo "$MBP is already attached"
