@@ -102,6 +102,14 @@ def check_policy(policy: dict, domains: list[str]) -> None:
             raise RequestError(403, f"domain not permitted: {domain}")
 
 
+def _without_port(domain: object) -> object:
+    """Lowercase a granted domain and drop any :port, since a launch grant covers every port."""
+    if not isinstance(domain, str):
+        return domain
+    host, sep, port = domain.lower().rpartition(":")
+    return host if sep and port.isascii() and port.isdigit() and 0 < int(port) < 65536 else domain.lower()
+
+
 def build_job(config: dict, body: object) -> tuple[dict, dict, str]:
     if not isinstance(body, dict):
         raise RequestError(400, "body must be a JSON object")
@@ -111,8 +119,11 @@ def build_job(config: dict, body: object) -> tuple[dict, dict, str]:
     source = _source(body)
     requester = _text(body, "requester")
     grants = body.get("grants", {})
-    if not isinstance(grants, dict) or set(grants) - {"domains", "dependencies"}:
-        raise RequestError(400, "grants must be an object with domains and dependencies")
+    if not isinstance(grants, dict) or set(grants) - {"domains", "internal", "dependencies"}:
+        raise RequestError(400, "grants must be an object with domains, internal and dependencies")
+    internal = [_without_port(d) for d in _list(grants, "internal")]
+    domains = [_without_port(d) for d in _list(grants, "domains")]
+    domains += [d for d in internal if d not in domains]
     defaults = config.get("default_blurbs", [])
     names = defaults + [name for name in _list(body, "blurbs") if name not in defaults]
     blurbs = load_blurbs(Path(config["blurbs_dir"]), names)
@@ -124,7 +135,8 @@ def build_job(config: dict, body: object) -> tuple[dict, dict, str]:
             _text(body, "context", required=False),
             config.get("output_instructions", OUTPUT_INSTRUCTIONS),
         ),
-        "domains": [d.lower() if isinstance(d, str) else d for d in _list(grants, "domains")],
+        "domains": domains,
+        "internal_domains": internal,
         "dependencies": _list(grants, "dependencies"),
     }
     for key in ("harness", "backend", "model", "effort"):
@@ -547,6 +559,18 @@ async def decide_domains(request: web.Request) -> web.Response:
     return web.json_response(json.loads(out))
 
 
+async def get_catalog(request: web.Request) -> web.Response:
+    """The harnesses and backends the dejima host offers, for clients to show."""
+    _client(request)
+    try:
+        code, out, err = await run_remote(request.app[CONFIG], ["catalog"])
+    except RuntimeError as e:
+        return web.json_response({"error": f"catalog failed: {e}"}, status=502)
+    if code:
+        return web.json_response({"error": err or f"launcher exited {code}"}, status=502)
+    return web.json_response(json.loads(out))
+
+
 async def ack_event(request: web.Request) -> web.Response:
     if not request.app[STORE].ack(_client(request), int(request.match_info["seq"])):
         raise web.HTTPNotFound()
@@ -568,6 +592,7 @@ def make_app(config: dict, poll: bool = True) -> web.Application:
     app.router.add_post("/v1/tasks", create_task)
     app.router.add_get("/v1/events", list_events)
     app.router.add_get("/v1/blurbs", list_blurbs)
+    app.router.add_get("/v1/catalog", get_catalog)
     app.router.add_get(r"/v1/tasks/{id:ms-[a-z2-7]{5}}/outputs/{seq:\d+}.zip", get_output)
     app.router.add_post(r"/v1/events/{seq:\d+}/ack", ack_event)
     app.router.add_post(r"/v1/tasks/{id:ms-[a-z2-7]{5}}/answer", answer_help)

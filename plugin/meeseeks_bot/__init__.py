@@ -46,9 +46,10 @@ USAGE = """\
 ```
 ctx: <names>       add context blurbs{blurbs}
 allow: <domains>   let the session reach these domains
+internal: <domains>  let it reach these domains inside your network
 deps: <specs>      install dependencies (apt:, pip:, cargo:, npm:, tarball:)
-harness: <name>    use this harness instead of the default
-backend: <name>    use this backend instead of the harness's default
+harness: <name>    use this harness instead of the default{harnesses}
+backend: <name>    use this backend instead of the harness's default{backends}
 model: <name>      use this model instead of the harness's default
 effort: <level>    Claude Code's effort level: low, medium, high or xhigh
 ```
@@ -174,7 +175,7 @@ class MeeseeksBot(Plugin):
             "task": task,
             "context": context,
             "blurbs": req.blurbs,
-            "grants": {"domains": req.domains, "dependencies": req.dependencies},
+            "grants": {"domains": req.domains, "internal": req.internal_domains, "dependencies": req.dependencies},
             "requester": evt.sender,
             "source": {"kind": "matrix", "ref": evt.event_id, "channel": evt.room_id},
         }
@@ -264,7 +265,19 @@ class MeeseeksBot(Plugin):
             self.log.warning("Couldn't list context blurbs", exc_info=True)
             blurbs = None
         listed = f" (available: {', '.join(blurbs) or 'none'})" if isinstance(blurbs, list) else ""
-        return USAGE.format(blurbs=listed)
+        try:
+            async with self._api("GET", "/v1/catalog", raise_for_status=True) as resp:
+                catalog = await resp.json()
+        except Exception:
+            self.log.warning("Couldn't list harnesses and backends", exc_info=True)
+            catalog = {}
+        harnesses = backends = ""
+        if catalog.get("harnesses"):
+            harnesses = f" ({', '.join(catalog['harnesses'])}"
+            harnesses += f"; default {catalog['default_harness']})" if catalog.get("default_harness") else ")"
+        if catalog.get("backends"):
+            backends = f" ({', '.join(catalog['backends'])})"
+        return USAGE.format(blurbs=listed, harnesses=harnesses, backends=backends)
 
     def _help_task(self, replied: Event | None) -> str | None:
         # Only the bot's own tag counts, so a user can't steer an answer into another task

@@ -3,7 +3,7 @@
 Meant to be the forced command of the API's key in authorized_keys, so the
 only command a client can send is SSH_ORIGINAL_COMMAND, and only three forms
 of it are accepted: none (launch the job on stdin), `status`, `fetch <id>`,
-`help <id>`, `answer <id>`, `message <id>`, `upload <id>`, `stop <id>`, `domains <id>`, and `allow <id> <n>` and
+`catalog`, `help <id>`, `answer <id>`, `message <id>`, `upload <id>`, `stop <id>`, `domains <id>`, and `allow <id> <n>` and
 `deny <id> <n>` for domain request n.
 
 The dejima argv is written to the task directory and the tmux window re-invokes
@@ -108,6 +108,8 @@ def dejima_argv(args: argparse.Namespace, job, task_dir: Path, dejima: str) -> l
             argv += [flag, value]
     if job.domains:
         argv += ["--domains", str(task_dir / "domains")]
+    for name in job.internal_domains:
+        argv += ["--internal-domain", name]
     if job.dependencies:
         argv += ["--dependencies", str(task_dir / "dependencies")]
     return argv + ["--", job.prompt]
@@ -900,10 +902,30 @@ def stop(args: argparse.Namespace, task_id: str) -> None:
     subprocess.run([args.tmux, "kill-window", "-t", target], env=_tmux_env(), capture_output=True)
 
 
+def catalog(args: argparse.Namespace) -> dict:
+    """The harnesses and backends the configured dejima has, and this launcher's defaults.
+
+    dejima keeps each as a directory beside its executable, holding a
+    harness.conf or backend.conf.
+    """
+    dejima = shutil.which(args.dejima)
+    if dejima is None:
+        raise RuntimeError(f"{args.dejima} not found on PATH; pass --dejima with its full path")
+    root = Path(dejima).resolve().parent.parent
+
+    def names(kind: str) -> list[str]:
+        directory = root / f"{kind}s"
+        if not directory.is_dir():
+            return []
+        return sorted(p.name for p in directory.iterdir() if valid_name(p.name) and (p / f"{kind}.conf").is_file())
+
+    return {"harnesses": names("harness"), "backends": names("backend"), "default_harness": args.harness}
+
+
 def command(args: argparse.Namespace) -> list[str]:
     original = os.environ.get("SSH_ORIGINAL_COMMAND")
     words = original.split() if original is not None else args.command
-    if words in ([], ["status"]) or (
+    if words in ([], ["status"], ["catalog"]) or (
         len(words) == 2
         and words[0] in ("fetch", "help", "answer", "message", "upload", "stop", "domains")
         and valid_task_id(words[1])
@@ -927,6 +949,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if words == ["status"]:
             print(json.dumps(status(args)))
+        elif words == ["catalog"]:
+            print(json.dumps(catalog(args)))
         elif words and words[0] == "fetch":
             return fetch(args, words[1])
         elif words and words[0] == "help":

@@ -3,9 +3,9 @@ from dataclasses import dataclass, field
 from urllib.parse import unquote
 
 MARKDOWN_LINK = re.compile(r"\[([^\]\n]*)\]\(([^)\s]+)\)")
-KEYWORD = re.compile(r"^\s*(ctx|allow|deps|harness|backend|model|effort)\s*:(.*)$", re.IGNORECASE)
+KEYWORD = re.compile(r"^\s*(ctx|allow|internal|deps|harness|backend|model|effort)\s*:(.*)$", re.IGNORECASE)
 SINGLE = ("harness", "backend", "model", "effort")
-FIELDS = {"ctx": "blurbs", "allow": "domains", "deps": "dependencies"}
+FIELDS = {"ctx": "blurbs", "allow": "domains", "internal": "internal_domains", "deps": "dependencies"}
 
 
 class ParseError(ValueError):
@@ -17,6 +17,7 @@ class Request:
     context: str = ""
     blurbs: list[str] = field(default_factory=list)
     domains: list[str] = field(default_factory=list)
+    internal_domains: list[str] = field(default_factory=list)
     dependencies: list[str] = field(default_factory=list)
     harness: str | None = None
     backend: str | None = None

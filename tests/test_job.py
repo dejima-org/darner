@@ -129,3 +129,8 @@ def test_valid_models(model):
 def test_invalid_model_and_effort(job):
     with pytest.raises(JobError):
         validate_job({"id": "ms-abc23", "prompt": "p", **job})
+
+
+def test_internal_domains_must_be_permitted():
+    with pytest.raises(JobError, match="internal domains must also be permitted: recipes.example.com"):
+        validate_job({"id": "ms-abc23", "prompt": "p", "domains": ["pypi.org"], "internal_domains": ["recipes.example.com"]})

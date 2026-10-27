@@ -813,3 +813,23 @@ async def test_model_and_effort_reach_the_job(client, tmp_path):
 async def test_bad_effort_is_refused(client):
     resp = await client.post("/v1/tasks", json=request(effort="max"), headers=AUTH)
     assert resp.status == 400 and "effort" in (await resp.json())["error"]
+
+
+async def test_internal_grants_and_ports(client, tmp_path):
+    grants = {"domains": ["PyPI.org:443"], "internal": ["recipes.example.com:8443"], "dependencies": []}
+    resp = await client.post("/v1/tasks", json=request(grants=grants), headers=AUTH)
+    assert resp.status == 201, await resp.text()
+    job = launched(tmp_path)[0]
+    assert job["domains"] == ["pypi.org", "recipes.example.com"]
+    assert job["internal_domains"] == ["recipes.example.com"]
+
+
+async def test_policy_covers_internal_grants(client):
+    grants = {"internal": ["db.example.net"]}
+    resp = await client.post("/v1/tasks", json=request(grants=grants), headers=AUTH)
+    assert resp.status == 403
+
+
+async def test_bad_port_is_not_stripped(client):
+    resp = await client.post("/v1/tasks", json=request(grants={"domains": ["pypi.org:99999"]}), headers=AUTH)
+    assert resp.status == 400 and "not a valid domain" in (await resp.json())["error"]

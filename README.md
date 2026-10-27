@@ -382,12 +382,13 @@ Replying to one of the bot's messages about a session with anything else, with a
 
 To end a session, reply `@meeseeks stop` to any of the bot's messages about it, or send `@meeseeks stop ms-xxxxx`. The launcher stops the session's sandbox container, so dejima exits and cleans up as usual, then closes its tmux window.
 
-The note is the task. The rest of the reply, minus the mention and the keyword lines, is extra context. Keyword lines take comma or space separated values and can repeat:
+The note is the task. The rest of the reply, minus the mention and the keyword lines, is extra context. Keyword lines take comma or space separated values and can repeat. A domain can carry a `:port`, which is ignored, since a launch grant covers every port:
 
 | keyword | meaning |
 |---|---|
 | `ctx:` | context blurbs to add, by name |
 | `allow:` | domains the session may reach |
+| `internal:` | domains inside your network the session may reach, passed to dejima as `--internal-domain` as well as allowed |
 | `deps:` | dependencies to install, in `dejima-dep` syntax: `apt:`, `pip:`, `cargo:`, `npm:` or `tarball:` |
 | `harness:` | harness for this task, overriding the default |
 | `backend:` | backend for this task, overriding the harness's default |
@@ -472,7 +473,7 @@ The files are still agent-written: treat what is in the zip as untrusted. Neithe
 | `--stop-timeout SECONDS` | 60 | how long a stopped session may take to exit before dejima itself is ended |
 | `--help-interval SECONDS` | 300 | least time between a task's help requests, and between domain requests while one awaits a decision, so a session can't flood the room |
 
-The API sends one of these commands, which arrive as `SSH_ORIGINAL_COMMAND`: none (launch the job on stdin), `status`, `fetch <id>`, `help <id>`, `answer <id>`, `message <id>`, `upload <id>`, `stop <id>`, `domains <id>`, `allow <id> <n>` or `deny <id> <n>`. Anything else is refused.
+The API sends one of these commands, which arrive as `SSH_ORIGINAL_COMMAND`: none (launch the job on stdin), `status`, `fetch <id>`, `catalog`, `help <id>`, `answer <id>`, `message <id>`, `upload <id>`, `stop <id>`, `domains <id>`, `allow <id> <n>` or `deny <id> <n>`. Anything else is refused.
 
 Grants use `dejima --domains FILE` and `--dependencies FILE`, and output collection uses `--shared-path-file FILE`. A task without grants passes neither grant flag.
 
@@ -525,6 +526,7 @@ Every `poll_interval` seconds the API asks the dejima host for the status of lau
 | `GET /v1/tasks/<id>/outputs/<seq>.zip` | an `output` event's archive (`size` 0 means it was rejected, and `summary` says why) |
 | `POST /v1/events/<seq>/ack` | mark an event delivered |
 | `GET /v1/blurbs` | names of the available context blurbs |
+| `GET /v1/catalog` | the dejima host's harnesses and backends, and the launcher's default harness |
 | `POST /v1/tasks/<id>/domains/<n>/allow` | `{requester}`: grant domain request `n` as it was shown, minus what policy refuses |
 | `POST /v1/tasks/<id>/domains/<n>/deny` | `{requester}`: refuse domain request `n` |
 | `GET /v1/tasks` | the client's open sessions, with what each is waiting on: `{id, target, link, requester, started, state, answerable, waiting: {answer, domains}}` |

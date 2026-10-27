@@ -141,3 +141,8 @@ def test_markdown_pill_is_stripped(link):
 def test_links_to_others_are_kept():
     body = "[@meeseeks:example.org](https://matrix.to/#/@meeseeks:example.org) ask [Alice](https://matrix.to/#/@alice:example.org) and see [docs](https://example.org/x)"
     assert parse_reply(body, [BOT_ID]).context == "ask [Alice](https://matrix.to/#/@alice:example.org) and see [docs](https://example.org/x)"
+
+
+def test_internal_keyword():
+    req = parse_reply("go\ninternal: recipes.example.com:8443, wiki.example.com", ["@meeseeks:example.org"])
+    assert req.internal_domains == ["recipes.example.com:8443", "wiki.example.com"] and req.domains == []
