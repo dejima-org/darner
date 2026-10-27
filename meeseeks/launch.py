@@ -214,6 +214,11 @@ def run_session(task_dir: Path) -> int:
     tmp = task_dir / "exit.tmp"
     tmp.write_text(f"{code}\n")
     os.replace(tmp, task_dir / "exit")
+    # An isolated session keeps no records unless asked to, and the typing
+    # log holds screens from it.
+    keep_records = "--" in dejima and "--keep-records" in dejima[: dejima.index("--")]
+    if not keep_records:
+        (task_dir / "typing.log").unlink(missing_ok=True)
     if code:
         # The window closes when this process exits, taking the error with it.
         print(f"\nmeeseeks: dejima exited with status {code}. Press Enter to close this window.")
@@ -501,6 +506,15 @@ def _paste(args: argparse.Namespace, task_dir: Path, task_id: str, message: str)
     window = task_dir / "window"
     target = window.read_text() if window.exists() else f"={args.session}:={task_id}"
     buffer = f"meeseeks-{task_id}-{os.getpid()}"
+    def screen() -> str:
+        result = subprocess.run([args.tmux, "capture-pane", "-p", "-J", "-t", target], env=env, capture_output=True, text=True)
+        return result.stdout if result.returncode == 0 else ""
+
+    def enter() -> None:
+        if subprocess.run([args.tmux, "send-keys", "-t", target, "Enter"], env=env, capture_output=True).returncode:
+            raise RuntimeError("couldn't type into the session")
+
+    shots = {"before": screen()}
     for argv, stdin in (
         ([args.tmux, "load-buffer", "-b", buffer, "-"], message),
         ([args.tmux, "paste-buffer", "-p", "-d", "-b", buffer, "-t", target], None),
@@ -510,8 +524,37 @@ def _paste(args: argparse.Namespace, task_dir: Path, task_id: str, message: str)
             raise RuntimeError("couldn't type into the session")
     # The TUI needs a moment to take the paste before Enter submits it.
     time.sleep(args.paste_delay)
-    if subprocess.run([args.tmux, "send-keys", "-t", target, "Enter"], env=env, capture_output=True).returncode:
-        raise RuntimeError("couldn't type into the session")
+    shots["after paste"] = screen()
+    enter()
+    time.sleep(args.paste_delay)
+    shots["after enter"] = screen()
+    # Submitting redraws the screen. An Enter that changed nothing was eaten
+    # by something else, and one more on an empty input box does no harm.
+    if shots["after enter"] == shots["after paste"]:
+        enter()
+        time.sleep(args.paste_delay)
+        shots["after second enter"] = screen()
+    # Long pastes are shown collapsed, so either the message's start or that
+    # marker shows it arrived. A start that's missing is a paste that lost its
+    # first keystrokes to whatever had focus.
+    arrived = message[:16] in shots["after paste"] or "[Pasted text" in shots["after paste"]
+    sent = shots.get("after second enter", shots["after enter"]) != shots["after paste"]
+    if not (arrived and sent):
+        _write_typing_log(task_dir, shots)
+        raise RuntimeError("typed into the session, but couldn't confirm it arrived and was sent; check the session")
+
+
+def _write_typing_log(task_dir: Path, shots: dict[str, str]) -> None:
+    """Keep the screens around a failed typing attempt, to see what had focus.
+
+    They hold whatever the session showed, so the file is the operator's
+    alone, and is removed when the session ends unless records are kept.
+    """
+    tmp = task_dir / "typing.log.tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write("".join(f"===== {name}\n{shot}\n" for name, shot in shots.items()))
+    os.replace(tmp, task_dir / "typing.log")
 
 
 def _dejima_pid(task_dir: Path) -> int | None:
