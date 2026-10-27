@@ -1,5 +1,6 @@
 import argparse
 import asyncio
+import base64
 import contextlib
 import hmac
 import json
@@ -133,6 +134,7 @@ def build_job(config: dict, body: object) -> tuple[dict, dict, str]:
         raise RequestError(400, "grants must be an object with domains, internal and dependencies")
     try:
         sets = configsets.load(Path(config.get("configs_dir", "")), _list(body, "configs"))
+        files = configsets.load_files(Path(config.get("configs_dir", "")), sets["files"])
     except (configsets.ConfigSetError, OSError) as e:
         raise RequestError(400, str(e))
     internal = _unique(_without_port(d) for d in sets["internal"] + _list(grants, "internal"))
@@ -146,10 +148,12 @@ def build_job(config: dict, body: object) -> tuple[dict, dict, str]:
             blurbs,
             _text(body, "context", required=False),
             config.get("output_instructions", OUTPUT_INSTRUCTIONS),
+            [name for name, _ in files],
         ),
         "domains": domains,
         "internal_domains": internal,
         "dependencies": _unique(sets["dependencies"] + _list(grants, "dependencies")),
+        "files": [{"name": name, "data": base64.b64encode(data).decode()} for name, data in files],
     }
     # The request's own values override its config sets'.
     for key in ("harness", "backend", "model", "effort"):
@@ -363,7 +367,9 @@ async def create_task(request: web.Request) -> web.Response:
         return web.json_response({"error": str(e)}, status=e.status)
 
     store = request.app[STORE]
-    task, new = store.claim(job["id"], client, source, requester, json.dumps(job))
+    # File contents may be credentials, so the stored job keeps only their names.
+    recorded = {**job, "files": [f["name"] for f in job["files"]]}
+    task, new = store.claim(job["id"], client, source, requester, json.dumps(recorded))
     if not new:
         if task.status == "pending":
             return web.json_response({"error": f"{task.id} is already being launched"}, status=409)

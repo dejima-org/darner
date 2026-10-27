@@ -14,6 +14,7 @@ sent to its server and the prompt is passed as a single argument.
 import argparse
 import contextlib
 import fcntl
+import threading
 import json
 import os
 import re
@@ -129,7 +130,27 @@ def launch(args: argparse.Namespace, data: object) -> dict:
     (task_dir / "domains").write_text("".join(f"{d}\n" for d in job.domains))
     (task_dir / "dependencies").write_text("".join(f"{d}\n" for d in job.dependencies))
     (task_dir / "argv.json").write_text(json.dumps(dejima_argv(args, job, task_dir, dejima)))
+    try:
+        _hold_files(job, task_dir)
+        return _start_window(args, job, task_dir)
+    except BaseException:
+        # No window means no run_session to deliver or remove them.
+        shutil.rmtree(task_dir / "files", ignore_errors=True)
+        raise
 
+
+def _hold_files(job, task_dir: Path) -> None:
+    """Keep the job's files owner-only until the session's ~/shared exists; see _deliver_files."""
+    if not job.files:
+        return
+    pending = task_dir / "files"
+    pending.mkdir(mode=0o700)
+    for name, data in job.files:
+        with os.fdopen(os.open(pending / name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600), "wb") as f:
+            f.write(data)
+
+
+def _start_window(args: argparse.Namespace, job, task_dir: Path) -> dict:
     env = _tmux_env()
     tmux = [args.tmux]
     if subprocess.run([*tmux, "has-session", "-t", f"={args.session}"], env=env, capture_output=True).returncode:
@@ -144,7 +165,7 @@ def launch(args: argparse.Namespace, data: object) -> dict:
             *tmux, "new-window", "-d", "-P", "-F", "#{session_name}:#{window_name} #{window_id} #{pane_id}",
             "-t", f"={args.session}:", "-n", job.id, "-c", str(task_dir),
             "-e", f"XDG_RUNTIME_DIR={env['XDG_RUNTIME_DIR']}",
-            "--", sys.executable, "-m", "meeseeks.launch", "--exec", str(task_dir),
+            "--", sys.executable, "-m", "meeseeks.launch", "--share-root", str(args.share_root), "--exec", str(task_dir),
         ],
         env=env,
         capture_output=True,
@@ -197,13 +218,62 @@ def _tmux_env() -> dict:
     return env
 
 
-def run_session(task_dir: Path) -> int:
+def _deliver_files(args: argparse.Namespace, task_dir: Path, stop: threading.Event) -> None:
+    """Write the task's files into ~/shared/uploads as soon as dejima has made it.
+
+    dejima records the share path before the container starts, so they're
+    there before the agent is. The task directory's copies are removed as
+    each is written.
+    """
+    pending = task_dir / "files"
+    while not (task_dir / "shared-path").exists():
+        if stop.wait(0.2):
+            return
+    try:
+        uploads = _open_uploads(args, task_dir)
+    except RuntimeError as e:
+        print(f"meeseeks: couldn't give the session its files: {e}", file=sys.stderr)
+        return
+    delivered = []
+    try:
+        for path in sorted(pending.iterdir()):
+            delivered.append(_write_new(uploads, path.name, path.read_bytes(), 0o600))
+            _write_atomic(task_dir / "files-delivered", json.dumps(delivered))
+            path.unlink()
+    finally:
+        os.close(uploads)
+
+
+def _remove_files(args: argparse.Namespace, task_dir: Path) -> None:
+    """Take the task's files back out of ~/shared, which dejima keeps after the session if it's not empty."""
+    record = task_dir / "files-delivered"
+    if record.exists():
+        with contextlib.suppress(RuntimeError, OSError, ValueError):
+            names = json.loads(record.read_text())
+            uploads = _open_uploads(args, task_dir)
+            try:
+                # Each on its own: a name the session replaced with something
+                # unlink refuses mustn't keep the rest in place.
+                for name in names:
+                    with contextlib.suppress(OSError):
+                        os.unlink(name, dir_fd=uploads)
+            finally:
+                os.close(uploads)
+        record.unlink(missing_ok=True)
+    shutil.rmtree(task_dir / "files", ignore_errors=True)
+
+
+def run_session(args: argparse.Namespace, task_dir: Path) -> int:
     """Run dejima and record how it exited, so `status` can report it."""
     # Handlers, unlike SIG_IGN, are reset by exec, so dejima still gets these
     # signals as usual while this process stays to record the exit.
     for sig in (signal.SIGINT, signal.SIGHUP, signal.SIGTERM, signal.SIGQUIT):
         signal.signal(sig, lambda *_: None)
     dejima = json.loads((task_dir / "argv.json").read_text())
+    stop = threading.Event()
+    delivery = threading.Thread(target=_deliver_files, args=(args, task_dir, stop), daemon=True)
+    if (task_dir / "files").is_dir():
+        delivery.start()
     try:
         proc = subprocess.Popen(dejima)
         (task_dir / "pid").write_text(str(proc.pid))
@@ -213,6 +283,12 @@ def run_session(task_dir: Path) -> int:
         code = 127
     if code < 0:
         code = 128 - code
+    stop.set()
+    # Delivery writes only new files, so it can't block; waiting for it
+    # means cleanup sees everything it wrote.
+    if delivery.is_alive():
+        delivery.join()
+    _remove_files(args, task_dir)
     tmp = task_dir / "exit.tmp"
     tmp.write_text(f"{code}\n")
     os.replace(tmp, task_dir / "exit")
@@ -372,6 +448,9 @@ def status(args: argparse.Namespace) -> list[dict]:
         if not valid_task_id(task_dir.name):
             continue
         state = _state(task_dir)
+        if state == "exited":
+            # Held files a session never took, if its launcher was killed before removing them.
+            shutil.rmtree(task_dir / "files", ignore_errors=True)
         signals, error = _signals(args, task_dir)
         tasks.append({
             "id": task_dir.name,
@@ -731,11 +810,44 @@ def _claim_domain_request(task_dir: Path, task_id: str, number: int) -> dict:
     return request
 
 
-def _upload_name(name: str) -> str:
-    """A safe file name for an upload, from the name the requester's client gave it."""
-    name = name.rsplit("/", 1)[-1].replace(" ", "-")
-    name = "".join(c for c in name if c.isascii() and (c.isalnum() or c in "._+-")).lstrip("._+-")[:200]
-    return name if archive.safe_component(name) else "upload"
+def _open_uploads(args: argparse.Namespace, task_dir: Path) -> int:
+    """Open the session's ~/shared/uploads, creating it, without following a link."""
+    try:
+        fd = open_share(args, task_dir)
+    except (OSError, ValueError):
+        # The reason names host paths, and this error is relayed to the chat.
+        raise RuntimeError("couldn't open the session's ~/shared")
+    try:
+        try:
+            os.mkdir(archive.UPLOADS, 0o755, dir_fd=fd)
+        except FileExistsError:
+            pass
+        try:
+            return os.open(archive.UPLOADS, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=fd)
+        except OSError:
+            raise RuntimeError("~/shared/uploads in the session isn't a directory")
+    finally:
+        os.close(fd)
+
+
+def _write_new(uploads: int, base: str, data: bytes, mode: int = 0o644) -> str:
+    """Create a file in uploads that didn't exist, numbering the name if it's taken. Returns its name."""
+    stem, dot, ext = base.partition(".")
+    for n in range(1, 101):
+        name = base if n == 1 else f"{stem}-{n}{dot}{ext}"
+        try:
+            out = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, mode, dir_fd=uploads)
+        except FileExistsError:
+            continue
+        try:
+            with os.fdopen(out, "wb") as f:
+                f.write(data)
+        except OSError:
+            with contextlib.suppress(OSError):
+                os.unlink(name, dir_fd=uploads)
+            raise
+        return name
+    raise RuntimeError("too many uploads with that name")
 
 
 def upload(args: argparse.Namespace, task_id: str, stream) -> dict:
@@ -754,36 +866,9 @@ def upload(args: argparse.Namespace, task_id: str, stream) -> dict:
     data = stream.read(args.max_upload + 1)
     if len(data) > args.max_upload:
         raise ValueError(f"the file is over the {args.max_upload}-byte upload limit")
+    uploads = _open_uploads(args, task_dir)
     try:
-        fd = open_share(args, task_dir)
-    except (OSError, ValueError):
-        # The reason names host paths, and this error is relayed to the chat.
-        raise RuntimeError("couldn't open the session's ~/shared")
-    try:
-        try:
-            os.mkdir(archive.UPLOADS, 0o755, dir_fd=fd)
-        except FileExistsError:
-            pass
-        try:
-            uploads = os.open(archive.UPLOADS, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=fd)
-        except OSError:
-            raise RuntimeError("~/shared/uploads in the session isn't a directory")
-    finally:
-        os.close(fd)
-    try:
-        base = _upload_name(header["name"])
-        stem, dot, ext = base.partition(".")
-        for n in range(1, 101):
-            name = base if n == 1 else f"{stem}-{n}{dot}{ext}"
-            try:
-                out = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o644, dir_fd=uploads)
-                break
-            except FileExistsError:
-                continue
-        else:
-            raise RuntimeError("too many uploads with that name")
-        with os.fdopen(out, "wb") as f:
-            f.write(data)
+        name = _write_new(uploads, archive.upload_name(header["name"]), data)
     finally:
         os.close(uploads)
     path = f"~/shared/uploads/{name}"
@@ -940,7 +1025,7 @@ def command(args: argparse.Namespace) -> list[str]:
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(sys.argv[1:] if argv is None else argv)
     if args.exec_dir:
-        return run_session(args.exec_dir)
+        return run_session(args, args.exec_dir)
     try:
         words = command(args)
     except ValueError as e:

@@ -134,3 +134,23 @@ def test_invalid_model_and_effort(job):
 def test_internal_domains_must_be_permitted():
     with pytest.raises(JobError, match="internal domains must also be permitted: recipes.example.com"):
         validate_job({"id": "ms-abc23", "prompt": "p", "domains": ["pypi.org"], "internal_domains": ["recipes.example.com"]})
+
+
+def test_files_are_validated():
+    import base64
+
+    good = {"name": "token", "data": base64.b64encode(b"s").decode()}
+    assert validate_job({"id": "ms-abc23", "prompt": "p", "files": [good]}).files == [("token", b"s")]
+    for files in (
+        [{"name": "../x", "data": ""}],
+        [{"name": "token", "data": "not base64!"}],
+        [good, good],
+        [{"name": "big", "data": base64.b64encode(b"x" * (1024 * 1024 + 1)).decode()}],
+        "token",
+    ):
+        with pytest.raises(JobError):
+            validate_job({"id": "ms-abc23", "prompt": "p", "files": files})
+
+
+def test_prompt_lists_files():
+    assert "## Files for this task\nThe requester provided these, and they may hold credentials:\n- ~/shared/uploads/token" in compose_prompt("T", [], "", "", ["token"])

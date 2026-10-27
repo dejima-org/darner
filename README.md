@@ -436,6 +436,8 @@ The session is presumed hostile, and so is everything it writes to `~/shared`. C
 
 `HELP.md` is read the same way, as a regular file only, at most 16 KiB.
 
+A config set's `file:` lines give every session started with it those files, such as an API token the task needs. The API sends them with the job and keeps only their names in its database. The launcher holds them owner-only in the task directory until the session's `~/shared` exists, writes them into `~/shared/uploads` as `0600` before the agent starts, deletes its copies, and removes them from `~/shared` when the session ends. The prompt tells the agent where they are. A file given to a session is readable by the agent and by anything it can reach, and any allowlisted user who names the config set gives it to their session. Give it only what the task needs, scoped as narrowly as the service allows.
+
 Uploads write into `~/shared` the same careful way. The `uploads` directory is opened without following a link, and each file is created new with `O_EXCL|O_NOFOLLOW`, so a link or file the session planted is never followed or overwritten. Names are reduced to safe characters, and size is capped. The output zip leaves out the top-level `uploads` directory, since the requester already has those files, and its manifest says so. Its text is sent as plain text, like the summary.
 
 ## Answering from chat
@@ -488,7 +490,7 @@ Grants use `dejima --domains FILE` and `--dependencies FILE`, and output collect
 | `db_path` | SQLite database of tasks and events |
 | `blurbs_dir` | context blurbs, as `<name>.md`; read per request, so an edit needs no restart |
 | `max_upload` | largest upload in bytes, default 50 MiB; keep it at or under the launcher's `--max-upload` |
-| `configs_dir` | config sets, one file per set named as it's used, holding keyword lines (see [`examples/configs`](examples/configs)); read per request |
+| `configs_dir` | config sets, one file per set named as it's used, holding keyword lines (see [`examples/configs`](examples/configs)); read per request. A set's `file: <name>` lines give each of its sessions `configs_dir/files/<name>` (up to 1 MiB) in `~/shared/uploads` |
 | `default_blurbs` | blurb names added to every task's prompt, before any it names with `ctx:`; each must exist |
 | `results_dir` | collected output archives |
 | `poll_interval` | seconds between checks on the dejima host |

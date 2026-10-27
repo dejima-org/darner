@@ -71,7 +71,8 @@ def test_launch_creates_session_and_window(env):
     window = calls[2]
     assert window[window.index("-n") + 1] == "ms-abc23"
     assert window[window.index("--") + 1 :] == [
-        sys.executable, "-m", "meeseeks.launch", "--exec", str(env / "tasks" / "ms-abc23"),
+        sys.executable, "-m", "meeseeks.launch", "--share-root", str(Path.home() / ".local/share/dejima/shared/isolated"),
+        "--exec", str(env / "tasks" / "ms-abc23"),
     ]
 
     task = env / "tasks" / "ms-abc23"
@@ -1203,3 +1204,100 @@ def test_catalog_lists_what_dejima_has(env):
     assert json.loads(out) == {
         "harnesses": ["claude-code", "cline"], "backends": ["anthropic", "self-hosted"], "default_harness": "claude-code",
     }
+
+
+def b64(data: bytes) -> str:
+    import base64
+
+    return base64.b64encode(data).decode()
+
+
+def test_files_are_held_owner_only_until_delivery(env):
+    launch(args(env), {"id": "ms-abc23", "prompt": "p", "files": [{"name": "token", "data": b64(b"secret")}]})
+    held = env / "tasks" / "ms-abc23" / "files"
+    assert held.stat().st_mode & 0o777 == 0o700
+    assert (held / "token").stat().st_mode & 0o777 == 0o600 and (held / "token").read_bytes() == b"secret"
+
+
+SESSION_DEJIMA = """#!/bin/sh
+sleep 1
+ls -l "$SHARE/uploads" > "$SEEN"
+cat "$SHARE/uploads/token" >> "$SEEN"
+"""
+
+
+def test_files_are_given_to_the_session_and_taken_back(env, monkeypatch):
+    root = env / "share-root"
+    shared = root / "20261027-120000-AbC123"
+    shared.mkdir(parents=True)
+    dejima = env / "session-dejima"
+    dejima.write_text(SESSION_DEJIMA)
+    dejima.chmod(0o755)
+    a = args(env, "--dejima", str(dejima), "--share-root", str(root))
+    launch(a, {"id": "ms-abc23", "prompt": "p", "files": [{"name": "token", "data": b64(b"secret")}]})
+    task = env / "tasks" / "ms-abc23"
+    (task / "shared-path").write_text(f"{shared}\n")
+    subprocess.run(
+        [sys.executable, "-m", "meeseeks.launch", "--share-root", str(root), "--exec", str(task)],
+        cwd=Path(__file__).parent.parent, check=True,
+        env={**os.environ, "SHARE": str(shared), "SEEN": str(env / "seen")},
+    )
+    seen = (env / "seen").read_text()
+    assert "-rw-------" in seen and seen.endswith("secret")
+    assert not (shared / "uploads" / "token").exists()
+    assert not (task / "files").exists() and not (task / "files-delivered").exists()
+
+
+def test_delivery_wont_follow_a_planted_uploads_link(env):
+    from meeseeks.launch import _deliver_files
+    import threading
+
+    root = env / "share-root"
+    shared = root / "20261027-120000-AbC123"
+    shared.mkdir(parents=True)
+    outside = env / "outside"
+    outside.mkdir()
+    (shared / "uploads").symlink_to(outside)
+    a = args(env, "--share-root", str(root))
+    launch(a, {"id": "ms-abc23", "prompt": "p", "files": [{"name": "token", "data": b64(b"secret")}]})
+    task = env / "tasks" / "ms-abc23"
+    (task / "shared-path").write_text(f"{shared}\n")
+    _deliver_files(a, task, threading.Event())
+    assert list(outside.iterdir()) == []
+
+
+def test_failed_launch_removes_held_files(env, monkeypatch):
+    broken = env / "broken-tmux"
+    broken.write_text("#!/bin/sh\necho nope >&2\nexit 1\n")
+    broken.chmod(0o755)
+    with pytest.raises(RuntimeError):
+        launch(args(env, "--tmux", str(broken)), {"id": "ms-abc23", "prompt": "p", "files": [{"name": "token", "data": b64(b"secret")}]})
+    assert not (env / "tasks" / "ms-abc23" / "files").exists()
+
+
+def test_cleanup_continues_past_a_name_the_session_replaced(env):
+    from meeseeks.launch import _remove_files
+
+    root = env / "share-root"
+    shared = root / "20261027-120000-AbC123"
+    (shared / "uploads" / "first").mkdir(parents=True)
+    (shared / "uploads" / "first" / "kept").write_text("x")
+    (shared / "uploads" / "second").write_text("secret")
+    a = args(env, "--share-root", str(root))
+    launch(a, {"id": "ms-abc23", "prompt": "p"})
+    task = env / "tasks" / "ms-abc23"
+    (task / "shared-path").write_text(f"{shared}\n")
+    (task / "files-delivered").write_text(json.dumps(["first", "second"]))
+    _remove_files(a, task)
+    assert not (shared / "uploads" / "second").exists()
+    assert not (task / "files-delivered").exists()
+
+
+def test_status_sweeps_held_files_of_an_ended_session(env, share):
+    a, _ = share
+    task = env / "tasks" / "ms-abc23"
+    (task / "files").mkdir()
+    (task / "files" / "token").write_text("secret")
+    (task / "exit").write_text("0\n")
+    status(a)
+    assert not (task / "files").exists()
