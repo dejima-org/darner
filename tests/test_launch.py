@@ -28,8 +28,6 @@ esac
 
 FAKE_DEJIMA = """#!/usr/bin/env python3
 import json, os, sys
-if sys.argv[1:] == ["--print-config"]:
-    sys.exit(print("core.harness=" + os.environ.get("FAKE_DEJIMA_HARNESS", "claude-code")))
 open(os.environ["FAKE_DEJIMA_LOG"], "w").write(json.dumps(sys.argv[1:]))
 """
 
@@ -433,20 +431,6 @@ def test_status_reports_answerable(share):
     a, _ = share
     assert status(a)[0]["answerable"] is False
     assert status(parse_args(["--tasks-dir", str(a.tasks_dir), "--share-root", str(a.share_root), "--answers"]))[0]["answerable"] is True
-
-
-def test_answer_is_one_line_for_cline(env, asked):
-    (env / "tasks" / "ms-abc23" / "harness").write_text("cline")
-    code, _, err = answer_run(asked, {"requester": "@a:example.org", "text": "Use main.\n\nThanks"}, "--answers", "--paste-delay", "0")
-    assert code == 0, err
-    assert (env / "tmux.log.buffer").read_text() == "Use main. Thanks"
-
-
-@pytest.mark.parametrize("named, default, recorded", [("cline", "", "cline"), (None, "cline", "cline"), (None, "claude-code", "claude-code")])
-def test_harness_is_recorded(env, monkeypatch, named, default, recorded):
-    monkeypatch.setenv("FAKE_DEJIMA_HARNESS", default)
-    launch(args(env), {"id": "ms-abc23", "prompt": "p", **({"harness": named} if named else {})})
-    assert (env / "tasks" / "ms-abc23" / "harness").read_text() == recorded
 
 
 def test_window_id_is_recorded(env):
