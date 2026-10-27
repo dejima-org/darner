@@ -53,6 +53,7 @@ class Job:
     id: str
     prompt: str
     domains: list[str] = field(default_factory=list)
+    internal_domains: list[str] = field(default_factory=list)
     dependencies: list[str] = field(default_factory=list)
     harness: str | None = None
     backend: str | None = None
@@ -107,11 +108,21 @@ def _optional_name(d: dict, key: str) -> str | None:
     return value
 
 
+def _internal_domains(d: dict) -> list[str]:
+    internal = _str_list(d, "internal_domains", valid_domain, "internal domain")
+    # dejima exempts only a domain the launch also permits.
+    missing = [name for name in internal if name not in d.get("domains", [])]
+    if missing:
+        raise JobError(f"internal domains must also be permitted: {', '.join(missing)}")
+    return internal
+
+
 def validate_job(d: object) -> Job:
     if not isinstance(d, dict):
         raise JobError("job must be an object")
     unknown = set(d) - {
-        "id", "prompt", "domains", "dependencies", "harness", "backend", "model", "effort", "session_wait"
+        "id", "prompt", "domains", "internal_domains", "dependencies", "harness", "backend", "model", "effort",
+        "session_wait",
     }
     if unknown:
         raise JobError(f"unknown job keys: {', '.join(sorted(unknown))}")
@@ -132,6 +143,7 @@ def validate_job(d: object) -> Job:
         id=d["id"],
         prompt=prompt,
         domains=_str_list(d, "domains", valid_domain, "domain"),
+        internal_domains=_internal_domains(d),
         dependencies=_str_list(d, "dependencies", valid_dependency, "dependency spec"),
         harness=_optional_name(d, "harness"),
         backend=_optional_name(d, "backend"),

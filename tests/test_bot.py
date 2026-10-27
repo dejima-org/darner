@@ -281,7 +281,7 @@ async def test_starts_task(maubot_plugin, maubot_test_bot, api):
         "task": "fix the tests",
         "context": "use xdist",
         "blurbs": [],
-        "grants": {"domains": ["pypi.org"], "dependencies": []},
+        "grants": {"domains": ["pypi.org"], "internal": [], "dependencies": []},
         "harness": "claude-code",
         "requester": ALICE,
         "source": {"kind": "matrix", "ref": "$trigger", "channel": ROOM},
@@ -1142,3 +1142,21 @@ async def test_help_with_a_markdown_pill_body(maubot_plugin, maubot_test_bot, ap
     await send(maubot_test_bot, message(body, reply_to=None, format="org.matrix.custom.html", formatted_body=html))
     assert replies(maubot_test_bot)[0].startswith("**Meeseeks**")
     assert api.requests == []
+
+
+async def test_help_lists_harnesses_and_backends(maubot_plugin, maubot_test_bot, api):
+    async def catalog(request):
+        return web.json_response({"harnesses": ["claude-code", "cline"], "backends": ["anthropic", "self-hosted"], "default_harness": "claude-code"})
+
+    api.server.app.router._frozen = False
+    api.server.app.router.add_get("/v1/catalog", catalog)
+    await send(maubot_test_bot, message("@meeseeks:example.org help", reply_to=None))
+    [text] = replies(maubot_test_bot)
+    assert "use this harness instead of the default (claude-code, cline; default claude-code)" in text
+    assert "use this backend instead of the harness's default (anthropic, self-hosted)" in text
+
+
+async def test_help_without_the_catalog(maubot_plugin, maubot_test_bot, api):
+    await send(maubot_test_bot, message("@meeseeks:example.org help", reply_to=None))
+    [text] = replies(maubot_test_bot)
+    assert "use this harness instead of the default\n" in text

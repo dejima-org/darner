@@ -1176,3 +1176,30 @@ def test_a_collapsed_paste_counts_as_arrived(env, asked, monkeypatch):
     (env / "tmux.log.screen").write_text("  > [Pasted text #1 +3 lines]\n")
     code, _, err = answer_run(asked, {"requester": "@a:example.org", "text": "use main"}, "--answers", "--paste-delay", "0")
     assert code == 0, err
+
+
+def test_internal_domains_are_exempted_for_the_launch(env):
+    launch(args(env), {
+        "id": "ms-abc23", "prompt": "p",
+        "domains": ["pypi.org", "recipes.example.com"], "internal_domains": ["recipes.example.com"],
+    })
+    argv = written_argv(env, "ms-abc23")
+    assert argv[argv.index("--internal-domain") + 1] == "recipes.example.com"
+    assert argv.count("--internal-domain") == 1
+    assert (env / "tasks" / "ms-abc23" / "domains").read_text() == "pypi.org\nrecipes.example.com\n"
+
+
+def test_catalog_lists_what_dejima_has(env):
+    root = env / "dejima-install"
+    (root / "bin").mkdir(parents=True)
+    (root / "bin" / "dejima").write_text("#!/bin/sh\n")
+    (root / "bin" / "dejima").chmod(0o755)
+    for kind, name in (("harness", "claude-code"), ("harness", "cline"), ("backend", "anthropic"), ("backend", "self-hosted")):
+        (root / f"{kind}s" / name).mkdir(parents=True)
+        (root / f"{kind}s" / name / f"{kind}.conf").write_text("")
+    (root / "backends" / "notes").mkdir()
+    code, out, _ = run(args(env), "--dejima", str(root / "bin" / "dejima"), "--harness", "claude-code", "catalog")
+    assert code == 0
+    assert json.loads(out) == {
+        "harnesses": ["claude-code", "cline"], "backends": ["anthropic", "self-hosted"], "default_harness": "claude-code",
+    }
