@@ -2,7 +2,9 @@
 # release, so installing or updating the bot needs no local build.
 #
 # A push to main whose version has no tag yet creates the release, and with it
-# the v<version> tag at that commit. Creating the tag from here is not left to a
+# the v<version> tag at that commit. A push to development creates a
+# pre-release of <version>.dev<run>, which the forge's latest release skips
+# and maubot orders before <version>, so a stable release supersedes it. Creating the tag from here is not left to a
 # second workflow, because Gitea doesn't start workflows from events caused by a
 # job's own token. Pushing a v* tag by hand releases that tag the same way.
 #
@@ -16,6 +18,7 @@ on:
   push:
     branches:
       - main
+      - development
     tags:
       - "v*"
 
@@ -39,22 +42,30 @@ jobs:
             echo "plugin/maubot.yaml ($plugin) and pyproject.toml ($package) disagree on the version" >&2
             exit 1
           fi
-          tag="v$plugin"
+          version="$plugin"
+          prerelease=false
           case "$GITHUB_REF" in
             refs/tags/*)
-              if [ "$GITHUB_REF_NAME" != "$tag" ]; then
+              if [ "$GITHUB_REF_NAME" != "v$version" ]; then
                 echo "tag $GITHUB_REF_NAME does not match the version in the repository ($plugin)" >&2
                 exit 1
               fi ;;
+            refs/heads/development)
+              version="$plugin.dev$GITHUB_RUN_NUMBER"
+              prerelease=true ;;
             *)
               if curl -fsS -o /dev/null -H "Authorization: token $TOKEN" \
-                "$GITHUB_SERVER_URL/api/v1/repos/$GITHUB_REPOSITORY/tags/$tag"; then
-                echo "$tag already exists, so there is nothing new to release"
+                "$GITHUB_SERVER_URL/api/v1/repos/$GITHUB_REPOSITORY/tags/v$version"; then
+                echo "v$version already exists, so there is nothing new to release"
                 echo "release=false" >> "$GITHUB_OUTPUT"
                 exit 0
               fi ;;
           esac
-          echo "TAG=$tag" >> "$GITHUB_ENV"
+          {
+            echo "VERSION=$version"
+            echo "TAG=v$version"
+            echo "PRERELEASE=$prerelease"
+          } >> "$GITHUB_ENV"
           echo "release=true" >> "$GITHUB_OUTPUT"
 
       - name: Build the plugin
@@ -62,6 +73,8 @@ jobs:
         working-directory: plugin
         run: |
           id="$(sed -n 's/^id: *//p' maubot.yaml)"
+          # A development build carries its own version, in this checkout only.
+          sed -i "s/^version: .*/version: $VERSION/" maubot.yaml
           echo "MBP=$id-$TAG.mbp" >> "$GITHUB_ENV"
           python3 -m zipfile -c "../$id-$TAG.mbp" maubot.yaml meeseeks_bot base-config.yaml
           python3 -m zipfile -l "../$id-$TAG.mbp"
@@ -77,7 +90,7 @@ jobs:
           # target creates its tag there too, when the tag doesn't exist yet.
           if ! release="$(curl -fsS -H "$auth" "$api/releases/tags/$TAG")"; then
             release="$(curl -fsS -X POST -H "$auth" -H "Content-Type: application/json" \
-              -d "{\"tag_name\": \"$TAG\", \"name\": \"$TAG\", \"target_commitish\": \"$GITHUB_SHA\"}" "$api/releases")"
+              -d "{\"tag_name\": \"$TAG\", \"name\": \"$TAG\", \"target_commitish\": \"$GITHUB_SHA\", \"prerelease\": $PRERELEASE}" "$api/releases")"
           fi
           if printf '%s' "$release" | python3 -c 'import json, os, sys; sys.exit(not any(a["name"] == os.environ["MBP"] for a in json.load(sys.stdin)["assets"]))'; then
             echo "$MBP is already attached"
