@@ -549,6 +549,8 @@ python3 -m venv .venv && .venv/bin/pip install -e '.[test]'
 
 To build the plugin locally, run `mbc build` in `plugin/`.
 
+[`.gitea/workflows/tests.yml`](.gitea/workflows/tests.yml) runs the tests on every pull request on a `dejima-confined` runner, and builds the API's image on a `dejima-privileged` one. The confined runner needs `pypi.org` and `files.pythonhosted.org` on its egress allowlist, for the test dependencies.
+
 ### Releasing
 
 Set the new version in both `plugin/maubot.yaml` and `pyproject.toml`, and merge that to `main`.
