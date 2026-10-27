@@ -833,3 +833,36 @@ async def test_policy_covers_internal_grants(client):
 async def test_bad_port_is_not_stripped(client):
     resp = await client.post("/v1/tasks", json=request(grants={"domains": ["pypi.org:99999"]}), headers=AUTH)
     assert resp.status == 400 and "not a valid domain" in (await resp.json())["error"]
+
+
+async def test_config_sets_expand_and_the_request_overrides(aiohttp_client, config, tmp_path):
+    configs = tmp_path / "configs"
+    configs.mkdir()
+    (configs / "mealie").write_text(
+        "ctx: myapp\nharness: cline\nbackend: self-hosted\nmodel: qwen3-14b\ninternal: recipes.example.com:8443\n"
+    )
+    config["configs_dir"] = str(configs)
+    client = await aiohttp_client(make_app(config, poll=False))
+    body = request(configs=["mealie"], model="qwen3-32b", grants={"domains": ["allrecipes.example.org"]})
+    resp = await client.post("/v1/tasks", json=body, headers=AUTH)
+    assert resp.status == 201, await resp.text()
+    job = launched(tmp_path)[0]
+    assert job["harness"] == "cline" and job["backend"] == "self-hosted" and job["model"] == "qwen3-32b"
+    assert job["domains"] == ["allrecipes.example.org", "recipes.example.com"]
+    assert job["internal_domains"] == ["recipes.example.com"]
+    assert "## Context: myapp" in job["prompt"]
+    assert await (await client.get("/v1/configs", headers=AUTH)).json() == ["mealie"]
+
+
+async def test_unknown_config_set_is_refused(client):
+    resp = await client.post("/v1/tasks", json=request(configs=["nope"]), headers=AUTH)
+    assert resp.status == 400 and "unknown config set 'nope' (available: none)" in (await resp.json())["error"]
+
+
+async def test_config_set_grants_go_through_policy(aiohttp_client, config, tmp_path):
+    configs = tmp_path / "configs"
+    configs.mkdir()
+    (configs / "bad").write_text("allow: api.example.net\n")
+    config["configs_dir"] = str(configs)
+    client = await aiohttp_client(make_app(config, poll=False))
+    assert (await client.post("/v1/tasks", json=request(configs=["bad"]), headers=AUTH)).status == 403

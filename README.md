@@ -386,6 +386,7 @@ The note is the task. The rest of the reply, minus the mention and the keyword l
 
 | keyword | meaning |
 |---|---|
+| `config:` | config sets to use, by name: saved keyword lines for a recurring task. Anything else in the message overrides them: a single value replaces theirs, a list adds to theirs |
 | `ctx:` | context blurbs to add, by name |
 | `allow:` | domains the session may reach |
 | `internal:` | domains inside your network the session may reach, passed to dejima as `--internal-domain` as well as allowed |
@@ -487,6 +488,7 @@ Grants use `dejima --domains FILE` and `--dependencies FILE`, and output collect
 | `db_path` | SQLite database of tasks and events |
 | `blurbs_dir` | context blurbs, as `<name>.md`; read per request, so an edit needs no restart |
 | `max_upload` | largest upload in bytes, default 50 MiB; keep it at or under the launcher's `--max-upload` |
+| `configs_dir` | config sets, one file per set named as it's used, holding keyword lines (see [`examples/configs`](examples/configs)); read per request |
 | `default_blurbs` | blurb names added to every task's prompt, before any it names with `ctx:`; each must exist |
 | `results_dir` | collected output archives |
 | `poll_interval` | seconds between checks on the dejima host |
@@ -526,6 +528,7 @@ Every `poll_interval` seconds the API asks the dejima host for the status of lau
 | `GET /v1/tasks/<id>/outputs/<seq>.zip` | an `output` event's archive (`size` 0 means it was rejected, and `summary` says why) |
 | `POST /v1/events/<seq>/ack` | mark an event delivered |
 | `GET /v1/blurbs` | names of the available context blurbs |
+| `GET /v1/configs` | names of the available config sets |
 | `GET /v1/catalog` | the dejima host's harnesses and backends, and the launcher's default harness |
 | `POST /v1/tasks/<id>/domains/<n>/allow` | `{requester}`: grant domain request `n` as it was shown, minus what policy refuses |
 | `POST /v1/tasks/<id>/domains/<n>/deny` | `{requester}`: refuse domain request `n` |

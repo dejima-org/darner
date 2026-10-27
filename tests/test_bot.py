@@ -281,6 +281,7 @@ async def test_starts_task(maubot_plugin, maubot_test_bot, api):
         "task": "fix the tests",
         "context": "use xdist",
         "blurbs": [],
+        "configs": [],
         "grants": {"domains": ["pypi.org"], "internal": [], "dependencies": []},
         "harness": "claude-code",
         "requester": ALICE,
@@ -1160,3 +1161,9 @@ async def test_help_without_the_catalog(maubot_plugin, maubot_test_bot, api):
     await send(maubot_test_bot, message("@meeseeks:example.org help", reply_to=None))
     [text] = replies(maubot_test_bot)
     assert "use this harness instead of the default\n" in text
+
+
+async def test_config_keyword_is_sent(maubot_plugin, maubot_test_bot, api):
+    await send(maubot_test_bot, message("@meeseeks:example.org add this recipe\nconfig: mealie\nallow: example.com"))
+    payload = api.requests[0][1]
+    assert payload["configs"] == ["mealie"] and payload["grants"]["domains"] == ["example.com"]

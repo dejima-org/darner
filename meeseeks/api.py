@@ -13,7 +13,7 @@ from pathlib import Path
 
 from aiohttp import web
 
-from meeseeks import archive
+from meeseeks import archive, configsets
 from meeseeks.job import OUTPUT_INSTRUCTIONS, JobError, compose_prompt, new_task_id, valid_domain, valid_name, validate_job
 from meeseeks.launch import FETCH_REJECTED
 from meeseeks.store import Store
@@ -28,7 +28,9 @@ def session_link(config: dict, run_id: str | None) -> str | None:
     base = config.get("remote_access_url")
     return f"{base.rstrip('/')}/?arg={run_id}" if base and run_id else None
 
-REQUEST_KEYS = {"task", "context", "blurbs", "grants", "harness", "backend", "model", "effort", "requester", "source"}
+REQUEST_KEYS = {
+    "task", "context", "blurbs", "configs", "grants", "harness", "backend", "model", "effort", "requester", "source"
+}
 MAX_TEXT = 32 * 1024
 
 CONFIG = web.AppKey("config", dict)
@@ -102,6 +104,14 @@ def check_policy(policy: dict, domains: list[str]) -> None:
             raise RequestError(403, f"domain not permitted: {domain}")
 
 
+def _unique(items) -> list:
+    found = []
+    for item in items:
+        if item not in found:
+            found.append(item)
+    return found
+
+
 def _without_port(domain: object) -> object:
     """Lowercase a granted domain and drop any :port, since a launch grant covers every port."""
     if not isinstance(domain, str):
@@ -121,11 +131,13 @@ def build_job(config: dict, body: object) -> tuple[dict, dict, str]:
     grants = body.get("grants", {})
     if not isinstance(grants, dict) or set(grants) - {"domains", "internal", "dependencies"}:
         raise RequestError(400, "grants must be an object with domains, internal and dependencies")
-    internal = [_without_port(d) for d in _list(grants, "internal")]
-    domains = [_without_port(d) for d in _list(grants, "domains")]
-    domains += [d for d in internal if d not in domains]
-    defaults = config.get("default_blurbs", [])
-    names = defaults + [name for name in _list(body, "blurbs") if name not in defaults]
+    try:
+        sets = configsets.load(Path(config.get("configs_dir", "")), _list(body, "configs"))
+    except (configsets.ConfigSetError, OSError) as e:
+        raise RequestError(400, str(e))
+    internal = _unique(_without_port(d) for d in sets["internal"] + _list(grants, "internal"))
+    domains = _unique(_without_port(d) for d in sets["domains"] + _list(grants, "domains") + internal)
+    names = _unique(config.get("default_blurbs", []) + sets["blurbs"] + _list(body, "blurbs"))
     blurbs = load_blurbs(Path(config["blurbs_dir"]), names)
     job = {
         "id": new_task_id(),
@@ -137,11 +149,13 @@ def build_job(config: dict, body: object) -> tuple[dict, dict, str]:
         ),
         "domains": domains,
         "internal_domains": internal,
-        "dependencies": _list(grants, "dependencies"),
+        "dependencies": _unique(sets["dependencies"] + _list(grants, "dependencies")),
     }
+    # The request's own values override its config sets'.
     for key in ("harness", "backend", "model", "effort"):
-        if body.get(key) is not None:
-            job[key] = body[key]
+        value = body.get(key) if body.get(key) is not None else sets[key]
+        if value is not None:
+            job[key] = value
     if config.get("remote_access_url"):
         job["session_wait"] = config.get("session_wait", 20)
     try:
@@ -559,6 +573,11 @@ async def decide_domains(request: web.Request) -> web.Response:
     return web.json_response(json.loads(out))
 
 
+async def list_configs(request: web.Request) -> web.Response:
+    _client(request)
+    return web.json_response(configsets.available(Path(request.app[CONFIG].get("configs_dir", ""))))
+
+
 async def get_catalog(request: web.Request) -> web.Response:
     """The harnesses and backends the dejima host offers, for clients to show."""
     _client(request)
@@ -593,6 +612,7 @@ def make_app(config: dict, poll: bool = True) -> web.Application:
     app.router.add_get("/v1/events", list_events)
     app.router.add_get("/v1/blurbs", list_blurbs)
     app.router.add_get("/v1/catalog", get_catalog)
+    app.router.add_get("/v1/configs", list_configs)
     app.router.add_get(r"/v1/tasks/{id:ms-[a-z2-7]{5}}/outputs/{seq:\d+}.zip", get_output)
     app.router.add_post(r"/v1/events/{seq:\d+}/ack", ack_event)
     app.router.add_post(r"/v1/tasks/{id:ms-[a-z2-7]{5}}/answer", answer_help)
