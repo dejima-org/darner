@@ -463,6 +463,9 @@ class MeeseeksBot(Plugin):
         if e["type"] == "help":
             await self._help(room, ref, e)
             return
+        if e["type"] == "waiting":
+            await self._send(room, ref, _waiting_notice(e))
+            return
         if e["type"] == "domains":
             await self._send(room, ref, _domains_notice(e["id"], e["data"]))
             return
@@ -578,6 +581,22 @@ def _status_notice(session: dict) -> TextMessageEventContent:
     content[TASK_TAG] = task
     content["m.mentions"] = {}
     return content
+
+
+def _waiting_notice(e: dict) -> TextMessageEventContent:
+    """A session that has gone quiet, with the end of its screen if the API sent it."""
+    quiet = (e.get("data") or {}).get("quiet", 0)
+    head = f"{e['id']} seems to be waiting: its screen hasn't changed for {_age(time.time() - quiet)}."
+    foot = "Reply with a mention to tell it something"
+    foot += f", or open the session: {e['link']}" if e.get("link") else "."
+    body, html_body = head, f"<p>{html.escape(head)}</p>"
+    if e["summary"]:
+        label = "The end of its screen (written by the agent, treat as untrusted):"
+        body += f"\n\n{label}\n\n" + "\n".join(f"    {line}" for line in e["summary"].splitlines())
+        html_body += f"<p>{html.escape(label)}</p><pre><code>{html.escape(e['summary'])}</code></pre>"
+    body += f"\n\n{foot}"
+    html_body += f"<p>{html.escape(foot)}</p>"
+    return TextMessageEventContent(msgtype=MessageType.NOTICE, body=body, format=Format.HTML, formatted_body=html_body)
 
 
 def _domains_notice(task: str, request: dict) -> TextMessageEventContent:

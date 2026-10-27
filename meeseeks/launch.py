@@ -14,6 +14,7 @@ sent to its server and the prompt is passed as a single argument.
 import argparse
 import contextlib
 import fcntl
+import hashlib
 import threading
 import json
 import os
@@ -414,7 +415,7 @@ def _signals(args: argparse.Namespace, task_dir: Path) -> tuple[dict[str, bool],
 
     No shared-path yet just means the session is still starting.
     """
-    none = {"done": False, "help": False, "domains": False, "unsignalled": False}
+    none = {"done": False, "help": False, "domains": False, "unsignalled": False, "result_pending": False}
     try:
         fd = open_share(args, task_dir)
     except FileNotFoundError as e:
@@ -425,11 +426,42 @@ def _signals(args: argparse.Namespace, task_dir: Path) -> tuple[dict[str, bool],
         signals = {kind: _signal(fd, task_dir, kind) is not None for kind in SIGNALS}
         signals["domains"] = signals["domains"] or _domains_changed(fd, task_dir)
         signals["unsignalled"] = not signals["done"] and _unsignalled(args, fd, task_dir) is not None
+        delivered = task_dir / "delivered-result"
+        result = _result_id(fd)
+        signals["result_pending"] = result is not None and not (delivered.exists() and delivered.read_text() == result)
     finally:
         os.close(fd)
     signals["help"] = signals["help"] and _request_allowed(args, task_dir, "help")
     signals["domains"] = signals["domains"] and _request_allowed(args, task_dir, "domains")
     return signals, None
+
+
+def _screen(args: argparse.Namespace, task_dir: Path) -> tuple[float | None, str]:
+    """How long the session's screen has gone unchanged, and its last lines.
+
+    Recorded per task, so a session that has stopped at a prompt with no
+    one there to answer shows as quiet whatever the harness.
+    """
+    window = task_dir / "window"
+    target = window.read_text() if window.exists() else f"={args.session}:={task_dir.name}"
+    try:
+        shown = subprocess.run([args.tmux, "capture-pane", "-p", "-t", target], env=_tmux_env(), capture_output=True)
+    except OSError:
+        return None, ""
+    if shown.returncode:
+        return None, ""
+    digest = hashlib.sha256(shown.stdout).hexdigest()
+    record = task_dir / "screen"
+    now = time.time()
+    try:
+        last = json.loads(record.read_text())
+    except (OSError, ValueError):
+        last = {}
+    if last.get("hash") != digest:
+        last = {"hash": digest, "since": now}
+        _write_atomic(record, json.dumps(last))
+    lines = [line.rstrip() for line in archive.clean_text(shown.stdout, 256 * 1024).splitlines() if line.strip()]
+    return now - last["since"], "\n".join(lines[-20:])[-3000:]
 
 
 def _state(task_dir: Path) -> str:
@@ -452,6 +484,7 @@ def status(args: argparse.Namespace) -> list[dict]:
             # Held files a session never took, if its launcher was killed before removing them.
             shutil.rmtree(task_dir / "files", ignore_errors=True)
         signals, error = _signals(args, task_dir)
+        quiet, screen = _screen(args, task_dir) if state == "running" else (None, "")
         tasks.append({
             "id": task_dir.name,
             "state": state,
@@ -460,6 +493,9 @@ def status(args: argparse.Namespace) -> list[dict]:
             "help": signals["help"],
             "domains": signals["domains"],
             "awaiting_answer": (task_dir / "help-pending").exists(),
+            "result_pending": signals["result_pending"],
+            "quiet": quiet,
+            "screen": screen,
             "domain_request": _pending_request_number(task_dir),
             "answerable": args.answers and state == "running",
             "run_id": session_run_id(task_dir) if state == "running" else None,

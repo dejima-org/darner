@@ -1,8 +1,14 @@
 listen = "127.0.0.1:8080"
 db_path = "/var/lib/meeseeks/tasks.db"
 blurbs_dir = "/etc/meeseeks/blurbs"
-# Config sets: saved keyword lines a request names with `config:`.
+# Config sets: saved keyword lines a request names with `config:`. Defaults to
+# configs beside blurbs_dir.
 # configs_dir = "/etc/meeseeks/configs"
+
+# Say a session seems to be waiting once its screen is unchanged this long, and
+# whether to include the end of its screen.
+# waiting_after = 300
+# waiting_screen = true
 # Blurbs added to every task, such as how the network reaches internal services.
 # default_blurbs = ["network"]
 results_dir = "/var/lib/meeseeks/results"

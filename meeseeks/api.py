@@ -9,6 +9,7 @@ import os
 import re
 import sys
 import tempfile
+import time
 import tomllib
 from pathlib import Path
 
@@ -22,6 +23,46 @@ from meeseeks.store import Store
 log = logging.getLogger("meeseeks.api")
 
 RUN_ID = re.compile(r"[0-9a-f]{16}")
+
+REQUIRED = ("db_path", "blurbs_dir", "results_dir", "launch_command", "tokens")
+# Every optional setting, with what it is when api.toml leaves it out, so a
+# setting added by an update works on a config file written before it.
+DEFAULTS = {
+    "listen": "127.0.0.1:8080",
+    "configs_dir": None,  # configs beside blurbs_dir
+    "default_blurbs": [],
+    "output_instructions": OUTPUT_INSTRUCTIONS,
+    "poll_interval": 30,
+    "launch_timeout": 120,
+    "remote_access_url": None,
+    "session_wait": 20,
+    "max_upload": 50 * 1024 * 1024,
+    "waiting_after": 300,
+    "waiting_screen": True,
+    "policy": {},
+    "limits": {},
+}
+
+
+def with_defaults(config: dict) -> tuple[dict, list[str], list[str]]:
+    """The config with every optional setting filled in, a line describing
+    each setting for the log, and any keys this version doesn't know."""
+    for key in REQUIRED:
+        if key not in config:
+            raise KeyError(key)
+    full = {**DEFAULTS, **config}
+    if full["configs_dir"] is None:
+        full["configs_dir"] = str(Path(config["blurbs_dir"]).parent / "configs")
+    lines = []
+    for key in sorted(full):
+        value = full[key]
+        if key == "tokens":
+            value = f"for {', '.join(sorted(value))}"
+        elif key == "output_instructions":
+            value = "custom" if value != OUTPUT_INSTRUCTIONS else "built in"
+        lines.append(f"{key} = {value!r}" + ("" if key in config else " (default)"))
+    unknown = sorted(set(config) - set(DEFAULTS) - set(REQUIRED))
+    return full, lines, unknown
 
 
 def session_link(config: dict, run_id: str | None) -> str | None:
@@ -281,6 +322,26 @@ async def collect_domains(app: web.Application, task: dict) -> None:
     store.add_event(task["id"], "domains", data=data)
 
 
+def check_waiting(config: dict, store: Store, task: dict) -> None:
+    """Record a waiting event for a running session whose screen has gone quiet.
+
+    Not for one waiting on its requester through a help or domain request,
+    one that has a result to deliver, or one that has delivered output,
+    asked or been reported since its screen last changed: those are done or
+    already said so. Each quiet spell is reported once.
+    """
+    quiet = task.get("quiet")
+    if task.get("state") != "running" or not isinstance(quiet, (int, float)) or quiet < config["waiting_after"]:
+        return
+    if any(task.get(key) for key in ("awaiting_answer", "domain_request", "ready", "help", "domains", "unsignalled", "result_pending")):
+        return
+    latest = store.latest_event_time(task["id"], ("output", "help", "domains", "waiting"))
+    if latest is not None and latest >= time.time() - quiet:
+        return
+    screen = archive.clean_text(str(task.get("screen", "")).encode(), 4000) if config["waiting_screen"] else ""
+    store.add_event(task["id"], "waiting", screen, data={"quiet": int(quiet)})
+
+
 async def poll_once(app: web.Application) -> None:
     config, store = app[CONFIG], app[STORE]
     ours = set(store.launched())
@@ -315,6 +376,7 @@ async def poll_once(app: web.Application) -> None:
         except Exception:
             log.exception("collecting %s failed", task["id"])
             continue
+        check_waiting(config, store, task)
         if task["state"] == "exited" and collected:
             store.add_event(task["id"], "ended")
             store.mark(task["id"], "ended")
@@ -603,6 +665,9 @@ async def ack_event(request: web.Request) -> web.Response:
 
 
 def make_app(config: dict, poll: bool = True) -> web.Application:
+    full, _, _ = with_defaults(config)
+    for key, value in full.items():
+        config.setdefault(key, value)
     if config.get("remote_access_url") and not re.match(r"https?://", config["remote_access_url"]):
         raise ValueError("remote_access_url must start with http:// or https://")
     app = web.Application(client_max_size=256 * 1024)
@@ -641,7 +706,8 @@ def main() -> None:
     # a restarting container would otherwise repeat without end.
     try:
         config = tomllib.loads(args.config.read_text())
-        host, _, port = config.get("listen", "127.0.0.1:8080").rpartition(":")
+        full, lines, unknown = with_defaults(config)
+        host, _, port = full["listen"].rpartition(":")
         app = make_app(config)
         port = int(port)
     except tomllib.TOMLDecodeError as e:
@@ -652,4 +718,9 @@ def main() -> None:
     except (OSError, ValueError) as e:
         sys.exit(f"meeseeks-api: {args.config}: {e}")
     logging.basicConfig(level=logging.INFO)
+    log.info("settings from %s:", args.config)
+    for line in lines:
+        log.info("  %s", line)
+    for key in unknown:
+        log.warning("%s: unknown setting %r, which this version ignores; check its spelling", args.config, key)
     web.run_app(app, host=host, port=port)
