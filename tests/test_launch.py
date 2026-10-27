@@ -1130,11 +1130,30 @@ def test_domain_ports_are_checked_on_that_port(env, allow_env):
     assert allow_calls(env) == [["--container", "c0ffee", "--internal", "--port", "8443", "recipes.example.com"]]
 
 
-def test_typing_is_logged_for_diagnosis(env, asked):
+def test_successful_typing_leaves_no_log(env, asked):
     answer_run(asked, {"requester": "@a:example.org", "text": "use main"}, "--answers", "--paste-delay", "0")
-    log = (env / "tasks" / "ms-abc23" / "typing.log").read_text()
-    assert "===== before\n" in log and "===== after paste\nReply from @a:example.org:" in log
-    assert "===== after enter\n" in log and "[submitted]" in log
+    assert not (env / "tasks" / "ms-abc23" / "typing.log").exists()
+
+
+def test_failed_typing_is_logged_for_the_operator_only(env, asked, monkeypatch):
+    monkeypatch.setenv("FAKE_TMUX_DROP", "3")
+    answer_run(asked, {"requester": "@a:example.org", "text": "use main"}, "--answers", "--paste-delay", "0")
+    log = env / "tasks" / "ms-abc23" / "typing.log"
+    assert log.stat().st_mode & 0o777 == 0o600
+    text = log.read_text()
+    assert "===== before\n" in text and "===== after paste\nly from @a:example.org:" in text
+
+
+@pytest.mark.parametrize("keep", [False, True])
+def test_typing_log_goes_when_the_session_ends_unless_records_are_kept(env, keep):
+    dejima = env / "dejima"
+    dejima.write_text("#!/bin/sh\n")
+    dejima.chmod(0o755)
+    launch(args(env, "--dejima", str(dejima), *(["--keep-records"] if keep else [])), {"id": "ms-abc23", "prompt": "p"})
+    task = env / "tasks" / "ms-abc23"
+    (task / "typing.log").write_text("screens")
+    subprocess.run([sys.executable, "-m", "meeseeks.launch", "--exec", str(task)], cwd=Path(__file__).parent.parent, check=True)
+    assert (task / "typing.log").exists() is keep
 
 
 def test_lost_first_keystrokes_are_reported(env, asked, monkeypatch):
