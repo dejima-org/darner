@@ -10,7 +10,7 @@ from pathlib import Path
 
 from meeseeks.job import valid_name
 
-LISTS = {"ctx": "blurbs", "allow": "domains", "internal": "internal", "deps": "dependencies"}
+LISTS = {"ctx": "blurbs", "allow": "domains", "internal": "internal", "deps": "dependencies", "file": "files"}
 SINGLES = ("harness", "backend", "model", "effort")
 _LINE = re.compile(r"\s*([A-Za-z]+)\s*:(.*)")
 
@@ -23,6 +23,27 @@ def available(configs_dir: Path) -> list[str]:
     if not configs_dir.is_dir():
         return []
     return sorted(p.name for p in configs_dir.iterdir() if valid_name(p.name) and p.is_file())
+
+
+def load_files(configs_dir: Path, names: list[str]) -> list[tuple[str, bytes]]:
+    """The files config sets give a session, from configs_dir/files."""
+    from meeseeks.archive import upload_name
+    from meeseeks.job import MAX_FILE_BYTES
+
+    files = []
+    for name in names:
+        path = configs_dir / "files" / name
+        # Messages name the file only: they're relayed to chat, and paths are the host's.
+        if upload_name(name) != name or not path.is_file():
+            raise ConfigSetError(f"config set file {name!r} isn't available")
+        try:
+            data = path.read_bytes()
+        except OSError:
+            raise ConfigSetError(f"couldn't read config set file {name!r}")
+        if len(data) > MAX_FILE_BYTES:
+            raise ConfigSetError(f"config set file {name!r} is over {MAX_FILE_BYTES} bytes")
+        files.append((name, data))
+    return files
 
 
 def parse(name: str, text: str) -> dict:

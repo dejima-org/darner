@@ -866,3 +866,32 @@ async def test_config_set_grants_go_through_policy(aiohttp_client, config, tmp_p
     config["configs_dir"] = str(configs)
     client = await aiohttp_client(make_app(config, poll=False))
     assert (await client.post("/v1/tasks", json=request(configs=["bad"]), headers=AUTH)).status == 403
+
+
+async def test_config_set_files_reach_the_job_but_not_the_database(aiohttp_client, config, tmp_path):
+    import base64
+    import sqlite3
+
+    configs = tmp_path / "configs"
+    (configs / "files").mkdir(parents=True)
+    (configs / "files" / "mealie-token").write_text("s3cret-token")
+    (configs / "mealie").write_text("file: mealie-token\n")
+    config["configs_dir"] = str(configs)
+    client = await aiohttp_client(make_app(config, poll=False))
+    resp = await client.post("/v1/tasks", json=request(configs=["mealie"]), headers=AUTH)
+    assert resp.status == 201, await resp.text()
+    job = launched(tmp_path)[0]
+    assert job["files"] == [{"name": "mealie-token", "data": base64.b64encode(b"s3cret-token").decode()}]
+    assert "- ~/shared/uploads/mealie-token" in job["prompt"]
+    stored = sqlite3.connect(config["db_path"]).execute("SELECT job_json FROM tasks").fetchone()[0]
+    assert json.loads(stored)["files"] == ["mealie-token"] and "s3cret" not in stored and base64.b64encode(b"s3cret-token").decode() not in stored
+
+
+async def test_missing_config_set_file_is_refused(aiohttp_client, config, tmp_path):
+    configs = tmp_path / "configs"
+    configs.mkdir()
+    (configs / "mealie").write_text("file: mealie-token\n")
+    config["configs_dir"] = str(configs)
+    client = await aiohttp_client(make_app(config, poll=False))
+    resp = await client.post("/v1/tasks", json=request(configs=["mealie"]), headers=AUTH)
+    assert resp.status == 400 and "mealie-token" in (await resp.json())["error"]

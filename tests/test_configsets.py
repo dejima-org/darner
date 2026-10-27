@@ -44,3 +44,28 @@ def test_unknown_config_set_lists_the_available_ones(tmp_path):
     assert available(tmp_path) == ["mealie"]
     with pytest.raises(ConfigSetError, match=r"unknown config set '../etc' \(available: mealie\)"):
         load(tmp_path, ["../etc"])
+
+
+def test_files_are_loaded_from_the_files_directory(tmp_path):
+    from meeseeks.configsets import load_files
+
+    (tmp_path / "files").mkdir()
+    (tmp_path / "files" / "mealie-token").write_text("secret")
+    (tmp_path / "mealie").write_text("file: mealie-token\n")
+    assert load(tmp_path, ["mealie"])["files"] == ["mealie-token"]
+    assert load_files(tmp_path, ["mealie-token"]) == [("mealie-token", b"secret")]
+    for bad in ["missing", "../mealie", ".hidden"]:
+        with pytest.raises(ConfigSetError):
+            load_files(tmp_path, [bad])
+    (tmp_path / "files" / "big").write_bytes(b"x" * (1024 * 1024 + 1))
+    with pytest.raises(ConfigSetError, match="over"):
+        load_files(tmp_path, ["big"])
+
+
+def test_file_errors_name_no_host_path(tmp_path):
+    from meeseeks.configsets import load_files
+
+    (tmp_path / "files").mkdir()
+    with pytest.raises(ConfigSetError) as e:
+        load_files(tmp_path, ["missing"])
+    assert str(tmp_path) not in str(e.value)

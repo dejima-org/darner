@@ -4,12 +4,16 @@ Domain and dependency rules mirror dejima's own validators
 (bin/dejima-config-lib.sh), so a job that passes here is one dejima accepts.
 """
 
+import base64
+import binascii
 import re
 import secrets
 from dataclasses import dataclass, field
 
 MAX_PROMPT = 64 * 1024
 MAX_SESSION_WAIT = 60
+MAX_FILES = 16
+MAX_FILE_BYTES = 1024 * 1024
 MAX_GRANTS = 64
 
 _LABEL = r"[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?"
@@ -60,6 +64,7 @@ class Job:
     model: str | None = None
     effort: str | None = None
     session_wait: int = 0
+    files: list[tuple[str, bytes]] = field(default_factory=list)
 
 
 def new_task_id() -> str:
@@ -108,6 +113,28 @@ def _optional_name(d: dict, key: str) -> str | None:
     return value
 
 
+def _files(d: dict) -> list[tuple[str, bytes]]:
+    """Files to give the session, as name and contents; names already safe to write as they are."""
+    from meeseeks.archive import upload_name
+
+    items = d.get("files", [])
+    if not isinstance(items, list) or len(items) > MAX_FILES:
+        raise JobError(f"files must be a list of at most {MAX_FILES}")
+    files = []
+    for item in items:
+        name = item.get("name") if isinstance(item, dict) else None
+        if not isinstance(name, str) or upload_name(name) != name or name in [n for n, _ in files]:
+            raise JobError(f"not a valid file name: {name!r}")
+        try:
+            data = base64.b64decode(item.get("data", ""), validate=True)
+        except (binascii.Error, TypeError, ValueError):
+            raise JobError(f"file {name!r} isn't base64")
+        if len(data) > MAX_FILE_BYTES:
+            raise JobError(f"file {name!r} is over {MAX_FILE_BYTES} bytes")
+        files.append((name, data))
+    return files
+
+
 def _internal_domains(d: dict) -> list[str]:
     internal = _str_list(d, "internal_domains", valid_domain, "internal domain")
     # dejima exempts only a domain the launch also permits.
@@ -122,7 +149,7 @@ def validate_job(d: object) -> Job:
         raise JobError("job must be an object")
     unknown = set(d) - {
         "id", "prompt", "domains", "internal_domains", "dependencies", "harness", "backend", "model", "effort",
-        "session_wait",
+        "session_wait", "files",
     }
     if unknown:
         raise JobError(f"unknown job keys: {', '.join(sorted(unknown))}")
@@ -150,6 +177,7 @@ def validate_job(d: object) -> Job:
         model=d.get("model"),
         effort=d.get("effort"),
         session_wait=session_wait,
+        files=_files(d),
     )
 
 
@@ -158,12 +186,19 @@ def valid_task_id(s: str) -> bool:
 
 
 def compose_prompt(
-    task: str, blurbs: list[tuple[str, str]], context: str, output_instructions: str = OUTPUT_INSTRUCTIONS
+    task: str,
+    blurbs: list[tuple[str, str]],
+    context: str,
+    output_instructions: str = OUTPUT_INSTRUCTIONS,
+    files: list[str] = (),
 ) -> str:
     parts = [task.strip()]
     parts += [f"## Context: {name}\n{text.strip()}" for name, text in blurbs]
     if context.strip():
         parts.append(f"## Context from requester\n{context.strip()}")
+    if files:
+        listed = "\n".join(f"- ~/shared/uploads/{name}" for name in files)
+        parts.append(f"## Files for this task\nThe requester provided these, and they may hold credentials:\n{listed}")
     if output_instructions.strip():
         parts.append(f"## Delivering your output\n{output_instructions.strip()}")
     return "\n\n".join(parts) + "\n"

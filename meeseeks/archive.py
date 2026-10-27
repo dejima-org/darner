@@ -64,6 +64,13 @@ def safe_component(name: str) -> bool:
     )
 
 
+def upload_name(name: str) -> str:
+    """A safe file name for a file given to a session, from whatever name it came with."""
+    name = name.rsplit("/", 1)[-1].replace(" ", "-")
+    name = "".join(c for c in name if c.isascii() and (c.isalnum() or c in "._+-")).lstrip("._+-")[:200]
+    return name if safe_component(name) else "upload"
+
+
 def _entry(path: str) -> zipfile.ZipInfo:
     info = zipfile.ZipInfo(path, date_time=_DATE)
     info.create_system = 3
