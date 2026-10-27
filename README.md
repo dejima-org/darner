@@ -396,7 +396,7 @@ The note is the task. The rest of the reply, minus the mention and the keyword l
 | `harness:` | harness for this task, overriding the default |
 | `backend:` | backend for this task, overriding the harness's default |
 | `model:` | model for this task, overriding the harness's default |
-| `effort:` | Claude Code's effort level for this task: `low`, `medium`, `high` or `xhigh` |
+| `effort:` | effort level for this task: `low`, `medium`, `high` or `xhigh`, or `none` for cline, which dejima passes to cline as `--thinking` |
 | `context_window:` | context window for this task, in tokens, for a harness that has the setting (cline). Set it a little under what the model's server allows, so cline compacts before the server refuses |
 
 The bot replies with the task id and its tmux target, plus a link to the session if the API has `remote_access_url` set, or with why it was refused. It only acts when both the reply and the note are from users in its `allowlist`, since the note becomes the agent's instructions.
@@ -463,7 +463,7 @@ The files are still agent-written: treat what is in the zip as untrusted. Neithe
 | `--harness NAME` | dejima's | default harness |
 | `--backend HARNESS=NAME` | dejima's | default backend for a harness; repeatable |
 | `--model HARNESS=MODEL` | dejima's | default model for a harness; repeatable |
-| `--effort HARNESS=LEVEL` | dejima's | default effort level for a harness that has one (claude-code); repeatable |
+| `--effort HARNESS=LEVEL` | dejima's | default effort level for a harness that has one (claude-code, cline); repeatable |
 | `--context-window HARNESS=TOKENS` | dejima's | default context window for a harness that has one (cline); repeatable |
 | `--session NAME` | `meeseeks` | tmux session the windows go in |
 | `--tasks-dir DIR` | `~/meeseeks/tasks` | per-task grant files, argv and exit status |

@@ -28,7 +28,8 @@ _TARBALL = re.compile(r"tarball:([A-Za-z0-9][A-Za-z0-9._-]*)@[a-f0-9]{64}:(https
 _NAME = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}")
 # dejima's modelid rule: vendor/name, a :variant and a [context] bracket are all real.
 _MODEL = re.compile(r"[A-Za-z0-9][][A-Za-z0-9._:/-]{0,199}")
-EFFORTS = ("low", "medium", "high", "xhigh")
+# Every harness's levels: none is cline's only. dejima holds each harness to its own.
+EFFORTS = ("none", "low", "medium", "high", "xhigh")
 # dejima's range for a harness's context_window, in tokens.
 CONTEXT_WINDOW = range(512, 100_000_001)
 _ID = re.compile(r"ms-[a-z2-7]{5}")
