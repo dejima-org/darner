@@ -1058,7 +1058,7 @@ async def test_selftest_sends_hostile_text_as_a_finished_task(client):
     events = [e for e in await (await client.get("/v1/events", headers=AUTH)).json() if e["id"] == task_id]
     assert [e["type"] for e in events] == ["output", "help", "waiting", "ended"]
     for e in events[:3]:
-        assert "<script>" in e["summary"] and "10. The last line" in e["summary"]
+        assert "<script>" in e["summary"] and "Check 10, the end." in e["summary"]
         assert "\u200b" not in e["summary"] and "\u202e" not in e["summary"] and "\x07" not in e["summary"]
     assert events[0]["size"] == 0 and events[1]["answerable"] is False
     assert await (await client.get("/v1/tasks", headers=AUTH)).json() == []

@@ -1304,29 +1304,28 @@ class _Shown(HTMLParser):
 
 
 def assert_shown_safely(content: dict) -> None:
-    """What POST /v1/selftest's numbered lines ask of a frontend, checked on one message."""
-    assert content.get("m.mentions") == {}, "line 6: nobody may be notified"
+    """Each PASS in POST /v1/selftest's checks, tested on one message."""
+    assert content.get("m.mentions") == {}, "check 6: nobody may be notified"
     shown = _Shown(content["formatted_body"])
     visible = "".join(shown.text)
     safe = {"p", "br", "pre", "code", "strong", "em", "ul", "ol", "li", "blockquote", "hr", "h1", "h2", "h3", "h4", "h5", "h6"}
     for tag, attrs in shown.tags:
-        assert tag in safe or tag == "a", f"lines 1-3: a {tag} tag came through as markup"
-        assert not any(name.startswith("on") or name == "src" for name in attrs), "line 2: a handler or source came through"
+        assert tag in safe or tag == "a", f"checks 1-3: a {tag} tag came through as markup"
+        assert not any(name.startswith("on") or name == "src" for name in attrs), "check 2: a handler or source came through"
         if tag == "a":
-            assert attrs.get("href", "") in visible, "line 4: a link hides where it goes"
-    for line in (
-        "<b>not bold</b>", "<script>", 'onerror="alert', '<a href="https://evil.selftest.invalid">',
-    ):
-        assert line in visible, f"{line!r} should show as text"
-    def line(start: str, end: str) -> str:
-        return visible.split(start, 1)[1].split(end, 1)[0]
+            assert attrs.get("href", "") in visible, "checks 3, 4 and 7: a link hides where it goes"
 
-    # Each line's own wording mentions the host, so only what follows the colon counts.
-    assert "evil.selftest.invalid" in line("says: ", "A markdown image"), "line 4: the real destination isn't shown"
-    assert "pixel.selftest.invalid" in line("invalid: ", "None of these"), "line 5: the image's address isn't shown"
-    assert "evil.selftest.invalid" in line("just good: ", "Invisible"), "line 7: the real destination isn't shown"
-    assert 'letters: abc' in visible, "line 8: invisible characters came through"
-    assert "10. The last line" in visible and "10. The last line" in content["body"], "line 10: the message was cut short"
+    def test_line(n: int) -> str:
+        return visible.split(f"Test line {n}:", 1)[1].split("Check ", 1)[0].strip()
+
+    assert "<b>" in test_line(1) and "</b>" in test_line(1), "check 1"
+    assert "<script>" in test_line(2) and "<img" in test_line(2), "check 2"
+    assert '<a href="https://evil.selftest.invalid">' in test_line(3), "check 3"
+    assert "evil.selftest.invalid" in test_line(4), "check 4"
+    assert "pixel.selftest.invalid" in test_line(5), "check 5"
+    assert "evil.selftest.invalid" in test_line(7), "check 7"
+    assert test_line(8) == "abc", "check 8"
+    assert "Check 10, the end." in visible and "Check 10, the end." in content["body"], "check 10: the message was cut short"
 
 
 async def test_selftest_is_shown_safely(maubot_plugin, maubot_test_bot, api):
@@ -1371,3 +1370,13 @@ def test_the_selftest_check_catches_an_unsafe_frontend(unsafe):
         assert_shown_safely(content)
     content = {"body": text, "formatted_body": render(text), "m.mentions": {}}
     assert_shown_safely(content)
+
+
+def test_selftest_checks_hold_no_markup():
+    # A check has to read the same in a frontend that fails it.
+    from meeseeks.selftest import PAYLOAD
+
+    checks = [line for line in PAYLOAD.splitlines() if line.startswith(("Check ", "Frontend self-test"))]
+    assert len(checks) == 11
+    for line in checks:
+        assert not any(mark in line for mark in ("<", ">", "](", "`", "*", "_", "@")), line

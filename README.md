@@ -618,7 +618,7 @@ The workflow fails if the two versions disagree, or if a pushed tag doesn't matc
 
 The API passes on what the agent wrote with control and invisible characters removed, and nothing more: making it safe to show is each frontend's job. `POST /v1/selftest`, or `@bot selftest` in Matrix, sends text written like a hostile agent's ([`meeseeks/selftest.py`](meeseeks/selftest.py)) as a finished task's output, help request and waiting screen. It arrives through `/v1/events` like any task's, so it goes down the same paths an agent's text does.
 
-Each numbered line says what a safe frontend shows: raw HTML, scripts and HTML links as plain text; a markdown link or image showing where it really points; no notifications from `@room` and the like, in Matrix or Slack syntax; and the last line, so a cut-off message shows. Anything else is a failure of that frontend.
+Each check says what you see if the frontend is safe (PASS) and what you see if it isn't (FAIL), then gives a test line on its own: raw HTML, scripts and HTML links must show as characters; markdown and Slack links and markdown images must show where they really point, not just "click here"; `@room` and the like, in Matrix or Slack syntax, must notify nobody; and the last check must arrive, so a cut-off message shows.
 
 For the Matrix bot, `assert_shown_safely` in `tests/test_bot.py` checks those lines on each message it sends for the self-test, and is shown to fail on unescaped HTML, plain markdown and missing `m.mentions`. A new frontend should get a test like it.
 
