@@ -38,8 +38,9 @@ TELL = re.compile(r"tell(?:\s+(ms-[a-z2-7]{5}))?\s+(\S.*)", re.IGNORECASE | re.D
 UPLOAD = re.compile(r"upload\s+(ms-[a-z2-7]{5})", re.IGNORECASE)
 DESCRIBE = re.compile(r"describe\s+(\S.*)", re.IGNORECASE | re.DOTALL)
 MAX_DESCRIBED = 10
-# Each blurb shown is cut here, to keep the reply inside an event.
-MAX_BLURB_SHOWN = 8000
+# Each blurb shown is cut here, so a reply doesn't fill the room. Lines wrap,
+# so characters are capped too.
+MAX_BLURB_LINES, MAX_BLURB_CHARS = 20, 1000
 STATUS_HOW = "Send `status ms-xxxxx` with a mention, or reply `status` with a mention to one of my messages about the session."
 DECIDE_HOW = "To allow or deny domains, reply `allow` or `deny` with a mention to my message listing them."
 NO_TASK = "Tell me the task after the mention, or reply to a note to make it the task. Send `help` with a mention for usage."
@@ -615,8 +616,8 @@ def _described_notice(sections: list[tuple[str, str, object]], missing: list[str
             ) or "(nothing)"
             note = "Each file: is put in the session's ~/shared/uploads; its contents aren't shown here." if "file" in data else ""
         else:
-            text = data if len(data) <= MAX_BLURB_SHOWN else data[:MAX_BLURB_SHOWN]
-            note = f"Cut at {MAX_BLURB_SHOWN} of its {len(data)} characters." if len(data) > MAX_BLURB_SHOWN else ""
+            text = "\n".join(data.strip().splitlines()[:MAX_BLURB_LINES])[:MAX_BLURB_CHARS]
+            note = "Cut short here; the whole blurb is in the API's blurbs directory." if text != data.strip() else ""
         head = f"{name} ({kind})"
         body.append(f"{head}\n\n" + "\n".join(f"    {line}" for line in text.splitlines()) + (f"\n\n{note}" if note else ""))
         html_body.append(

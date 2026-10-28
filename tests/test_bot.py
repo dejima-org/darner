@@ -68,7 +68,7 @@ class Api:
         return web.json_response(sorted(self.configs))
 
     async def blurb(self, request):
-        text = {"recipes": "Recipes live in Mealie.", "loki": "Logs <b>are</b> in Loki.", "long": "x" * 9000}
+        text = {"recipes": "Recipes live in Mealie.", "loki": "Logs <b>are</b> in Loki.", "long": "x" * 9000, "tall": "".join(f"line {i}\n" for i in range(30))}
         if request.match_info["name"] not in text:
             raise web.HTTPNotFound()
         return web.json_response(text[request.match_info["name"]])
@@ -1252,9 +1252,11 @@ async def test_describe_names_what_it_did_not_find(maubot_plugin, maubot_test_bo
 
 
 async def test_describe_cuts_a_long_blurb(maubot_plugin, maubot_test_bot, api):
-    await send(maubot_test_bot, message("@meeseeks:example.org describe long", reply_to=None))
+    await send(maubot_test_bot, message("@meeseeks:example.org describe long tall recipes", reply_to=None))
     [body] = replies(maubot_test_bot)
-    assert "x" * 8001 not in body and body.endswith("Cut at 8000 of its 9000 characters.")
+    assert "x" * 1000 in body and "x" * 1001 not in body
+    assert "line 19\n" in body and "line 20" not in body
+    assert body.count("Cut short here") == 2
 
 
 async def test_describe_is_limited(maubot_plugin, maubot_test_bot, api):

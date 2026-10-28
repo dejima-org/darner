@@ -384,7 +384,7 @@ To manage open sessions, mention the bot with one of these. Replying to any of t
 
 Replying to one of the bot's messages about a session with anything else, with a mention, sends it to the session like `tell`.
 
-To see what config sets and context blurbs there are, mention the bot with `list configs` or `list blurbs`. `describe <names>` shows each named config set's keyword lines, with the names of any files it gives a session but not their contents, then each named blurb's text. A name that's both a config set and a blurb shows both, config set first. Up to 10 names at once, and a blurb over 8000 characters is cut.
+To see what config sets and context blurbs there are, mention the bot with `list configs` or `list blurbs`. `describe <names>` shows each named config set's keyword lines, with the names of any files it gives a session but not their contents, then each named blurb's text. A name that's both a config set and a blurb shows both, config set first. Up to 10 names at once. A blurb is cut at 20 lines or 1000 characters, so a reply doesn't fill the room; the whole text is in the blurbs directory.
 
 To end a session, reply `@meeseeks stop` to any of the bot's messages about it, or send `@meeseeks stop ms-xxxxx`. The launcher stops the session's sandbox container, so dejima exits and cleans up as usual, then closes its tmux window.
 
