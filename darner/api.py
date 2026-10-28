@@ -43,6 +43,7 @@ DEFAULTS = {
     "max_upload": 50 * 1024 * 1024,
     "waiting_after": 300,
     "waiting_screen": True,
+    "max_session_age": 86400,
     "policy": {},
     "limits": {},
 }
@@ -83,6 +84,7 @@ MAX_TEXT = 32 * 1024
 CONFIG = web.AppKey("config", dict)
 STORE = web.AppKey("store", Store)
 SHARE_ERRORS = web.AppKey("share_errors", dict)
+EXPIRE_FAILED = web.AppKey("expire_failed", set)
 
 
 class RequestError(Exception):
@@ -354,6 +356,24 @@ def check_waiting(config: dict, store: Store, task: dict) -> None:
     store.add_event(task["id"], "waiting", screen, data={"quiet": int(quiet)})
 
 
+async def expire(app: web.Application, task: dict) -> None:
+    """Stop a running session once it's older than max_session_age, so none is forgotten."""
+    config, store = app[CONFIG], app[STORE]
+    age = time.time() - store.created(task["id"])
+    if not config["max_session_age"] or age < config["max_session_age"] or task["state"] != "running":
+        return
+    if store.latest_event_time(task["id"], ("expired",)) is not None:
+        return
+    code, _, err = await run_remote(config, ["stop", task["id"]])
+    if code:
+        # Retried every poll, so logged once.
+        if task["id"] not in app[EXPIRE_FAILED]:
+            app[EXPIRE_FAILED].add(task["id"])
+            log.warning("couldn't stop %s after max_session_age: %s", task["id"], err or f"exit {code}")
+        return
+    store.add_event(task["id"], "expired", data={"age": int(age)})
+
+
 async def poll_once(app: web.Application) -> None:
     config, store = app[CONFIG], app[STORE]
     ours = set(store.launched())
@@ -363,7 +383,15 @@ async def poll_once(app: web.Application) -> None:
     if code:
         log.warning("status failed: %s", err or f"exit {code}")
         return
-    for task in json.loads(out):
+    listed = json.loads(out)
+    # A task the launcher no longer lists can never report ending, such as one
+    # whose task directory was removed, so it's ended once it's past its age.
+    gone = ours - {task["id"] for task in listed}
+    for task_id in sorted(gone):
+        if config["max_session_age"] and time.time() - store.created(task_id) > config["max_session_age"]:
+            store.add_event(task_id, "ended")
+            store.mark(task_id, "ended")
+    for task in listed:
         if task["id"] not in ours:
             continue
         # Logged once per change: it's repeated every poll until fixed.
@@ -389,6 +417,7 @@ async def poll_once(app: web.Application) -> None:
             log.exception("collecting %s failed", task["id"])
             continue
         check_waiting(config, store, task)
+        await expire(app, task)
         if task["state"] == "exited" and collected:
             store.add_event(task["id"], "ended")
             store.mark(task["id"], "ended")
@@ -760,6 +789,7 @@ def make_app(config: dict, poll: bool = True) -> web.Application:
             raise ValueError(f"default blurb {name!r} has no {name}.md in {config['blurbs_dir']}")
     app[STORE].fail_pending()
     app[SHARE_ERRORS] = {}
+    app[EXPIRE_FAILED] = set()
     app.router.add_post("/v1/tasks", create_task)
     app.router.add_post("/v1/selftest", create_selftest)
     app.router.add_get("/v1/events", list_events)

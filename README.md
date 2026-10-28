@@ -528,6 +528,7 @@ Grants use `dejima --domains FILE` and `--dependencies FILE`, and output collect
 | `blurbs_dir` | context blurbs, as `<name>.md`; read per request, so an edit needs no restart |
 | `max_upload` | largest upload in bytes, default 50 MiB; keep it at or under the launcher's `--max-upload` |
 | `waiting_after` | seconds a running session's screen can stay unchanged before the bot says it seems to be waiting (default 300) |
+| `max_session_age` | seconds a session may run before it's stopped, so none is left running forgotten (default 86400, a day; 0 never stops one). A task the launcher no longer knows about is marked ended at the same age |
 | `waiting_screen` | whether that notice includes the end of the session's screen (default true) |
 | `configs_dir` | config sets, by default `configs` beside `blurbs_dir`; one file per set named as it's used, holding keyword lines (see [`examples/configs`](examples/configs)); read per request. A set's `file: <name>` lines give each of its sessions `configs_dir/files/<name>` (up to 1 MiB) in `~/shared/uploads` |
 | `default_blurbs` | blurb names added to every task's prompt, before any it names with `ctx:`; each must exist |
@@ -565,7 +566,7 @@ Every `poll_interval` seconds the API asks the dejima host for the status of lau
 
 | endpoint | |
 |---|---|
-| `GET /v1/events` | unacknowledged events, oldest first: `{seq, id, type, summary, size, answerable, target, source}`, `type` is `output`, `help`, `domains` or `ended`; `data` holds a domain request |
+| `GET /v1/events` | unacknowledged events, oldest first: `{seq, id, type, summary, size, answerable, target, source}`, `type` is `output`, `help`, `domains`, `waiting`, `expired` or `ended`; `data` holds a domain request, a waiting session's `quiet` seconds, or a stopped session's `age` |
 | `GET /v1/tasks/<id>/outputs/<seq>.zip` | an `output` event's archive (`size` 0 means it was rejected, and `summary` says why) |
 | `POST /v1/events/<seq>/ack` | mark an event delivered |
 | `GET /v1/blurbs` | names of the available context blurbs |

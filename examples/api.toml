@@ -8,6 +8,9 @@ blurbs_dir = "/etc/darner/blurbs"
 # Say a session seems to be waiting once its screen is unchanged this long, and
 # whether to include the end of its screen.
 # waiting_after = 300
+# Stop a session once it has run this long, so none is left running forgotten; 0
+# never stops one.
+# max_session_age = 86400
 # waiting_screen = true
 # Blurbs added to every task, such as how the network reaches internal services.
 # default_blurbs = ["network"]

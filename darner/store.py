@@ -117,6 +117,9 @@ class Store:
             (status, target, error, task_id),
         )
 
+    def created(self, task_id: str) -> float:
+        return self.db.execute("SELECT created FROM tasks WHERE id = ?", (task_id,)).fetchone()[0]
+
     def launched(self) -> list[str]:
         return [r[0] for r in self.db.execute("SELECT id FROM tasks WHERE status = 'launched' ORDER BY created")]
 

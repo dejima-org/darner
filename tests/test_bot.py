@@ -1381,3 +1381,18 @@ def test_selftest_checks_hold_no_markup():
     for line in checks:
         assert not any(mark in line for mark in ("<", ">", "](", "`", "*", "_", "@")), line
 
+
+
+async def test_an_expired_session_is_announced(maubot_plugin, maubot_test_bot, api):
+    api.add(1, type="expired", summary="", data=None)
+    api.events[-1]["data"] = {"age": 86460}
+    await maubot_plugin.poll_once()
+    assert replies(maubot_test_bot) == ["dn-7f3k2 has run for 1d0h, longer than sessions may run here, so it was stopped."]
+
+
+@pytest.mark.parametrize("command", ["stop ms-abc23", "Status MS-ABC23", "tell xx-12345 hello", "upload ab-cdefg"])
+async def test_something_like_a_task_id_is_not_taken_as_a_task(maubot_plugin, maubot_test_bot, api, command):
+    await send(maubot_test_bot, message(f"@dragonlet:example.org {command}", reply_to=None))
+    [reply] = replies(maubot_test_bot)
+    assert reply.endswith("isn't one of my task ids, which look like dn-xxxxx.")
+    assert api.requests == [] and api.stops == []
