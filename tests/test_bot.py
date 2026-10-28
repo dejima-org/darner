@@ -62,6 +62,12 @@ class Api:
         self.blurbs = ["loki", "myapp"]
         self.stops = []
         self.stop_status = 204
+        self.configs = {"recipes": {"ctx": ["myapp"], "file": ["recipes-token"], "harness": "cline", "context_window": "30000"}}
+
+    async def describe(self, request):
+        if request.match_info["name"] not in self.configs:
+            raise web.HTTPNotFound()
+        return web.json_response(self.configs[request.match_info["name"]])
 
     async def stop(self, request):
         self.stops.append(request.match_info["id"])
@@ -131,6 +137,7 @@ async def api(aiohttp_server):
     app.router.add_post("/v1/tasks/{id}/answer", api.answer)
     app.router.add_get("/v1/blurbs", api.list_blurbs)
     app.router.add_post("/v1/tasks/{id}/stop", api.stop)
+    app.router.add_get("/v1/configs/{name}", api.describe)
     api.server = await aiohttp_server(app)
     return api
 
@@ -1203,3 +1210,18 @@ async def test_waiting_notice(maubot_plugin, maubot_test_bot, api, summary):
     else:
         assert "<pre>" not in msg["formatted_body"]
     assert api.acked == [5]
+
+
+async def test_describe_shows_a_config_set(maubot_plugin, maubot_test_bot, api):
+    await send(maubot_test_bot, message("@meeseeks:example.org describe recipes", reply_to=None))
+    [msg] = [r for r in maubot_test_bot.responded if r.event_type == EventType.ROOM_MESSAGE]
+    assert "ctx: myapp\n    file: recipes-token\n    harness: cline\n    context_window: 30000" in msg.content.body
+    assert "<pre><code>ctx: myapp\nfile: recipes-token" in msg.content.formatted_body
+    assert "contents aren't shown" in msg.content.body
+    assert api.requests == []
+
+
+async def test_describe_unknown_config_set(maubot_plugin, maubot_test_bot, api):
+    await send(maubot_test_bot, message("@meeseeks:example.org describe nope", reply_to=None))
+    assert replies(maubot_test_bot) == ["There's no config set called nope. Send `help` with a mention to list them."]
+    assert api.requests == []

@@ -4,7 +4,7 @@ import html
 import re
 import time
 from typing import Awaitable, Type
-from urllib.parse import unquote
+from urllib.parse import quote, unquote
 
 from maubot import MessageEvent, Plugin
 from maubot.handlers import event
@@ -36,6 +36,7 @@ STOP_HOW = "To stop a session, reply `stop` with a mention to one of my messages
 STATUS = re.compile(r"status(?:\s+(ms-[a-z2-7]{5}))?", re.IGNORECASE)
 TELL = re.compile(r"tell(?:\s+(ms-[a-z2-7]{5}))?\s+(\S.*)", re.IGNORECASE | re.DOTALL)
 UPLOAD = re.compile(r"upload\s+(ms-[a-z2-7]{5})", re.IGNORECASE)
+DESCRIBE = re.compile(r"describe\s+(\S+)", re.IGNORECASE)
 STATUS_HOW = "Send `status ms-xxxxx` with a mention, or reply `status` with a mention to one of my messages about the session."
 DECIDE_HOW = "To allow or deny domains, reply `allow` or `deny` with a mention to my message listing them."
 NO_TASK = "Tell me the task after the mention, or reply to a note to make it the task. Send `help` with a mention for usage."
@@ -65,6 +66,8 @@ Values are separated by commas or spaces, and keywords can repeat. For example:
 ctx: myapp
 allow: pypi.org, files.pythonhosted.org
 ```
+
+**Config sets:** `describe <name>` with a mention shows what a config set applies.
 
 **Updates:** I reply when the session starts, when it delivers output (a summary and a zip), when it needs something from you, and when it ends. When a help request says "Reply to this message to answer", reply to it and your answer is typed into the session.
 
@@ -225,6 +228,9 @@ class MeeseeksBot(Plugin):
         if mentioned and command.lower() in ("allow", "deny"):
             await self._respond(evt, self._decide_domains(evt, command.lower()))
             return
+        if mentioned and (describe := DESCRIBE.fullmatch(command)):
+            await self._respond(evt, self._describe(describe[1]))
+            return
         if mentioned and command.lower() in ("sessions", "list"):
             await self._respond(evt, self._sessions())
             return
@@ -370,6 +376,15 @@ class MeeseeksBot(Plugin):
             resp.raise_for_status()
             session = await resp.json()
         return _status_notice(session), True
+
+    async def _describe(self, name: str) -> tuple[str | TextMessageEventContent, bool]:
+        async with self._api("GET", f"/v1/configs/{quote(name, safe='')}") as resp:
+            if resp.status == 404:
+                return f"There's no config set called {name}. Send `help` with a mention to list them.", False
+            data = await resp.json(content_type=None)
+            if not resp.ok:
+                return f"Failed: {data.get('error') if isinstance(data, dict) else f'HTTP {resp.status}'}", False
+        return _config_notice(name, data), True
 
     async def _upload_replied_file(self, evt: MessageEvent, task: str) -> tuple[str, bool]:
         file_event = None
@@ -563,6 +578,21 @@ def _waiting_on(session: dict) -> str:
 def _session_line(session: dict) -> str:
     where = session["link"] or session["target"]
     return f"{session['id']}: {_waiting_on(session)}, started {_age(session['started'])} ago by {session['requester']} ({where})"
+
+
+def _config_notice(name: str, described: dict) -> TextMessageEventContent:
+    """A config set's keyword lines, as it would apply them."""
+    lines = "\n".join(
+        f"{key}: {', '.join(value) if isinstance(value, list) else value}" for key, value in described.items()
+    ) or "(nothing)"
+    head = f"{name} applies:"
+    foot = "Each file: is put in the session's ~/shared/uploads; its contents aren't shown here."
+    body = f"{head}\n\n" + "\n".join(f"    {line}" for line in lines.splitlines())
+    html_body = f"<p>{html.escape(head)}</p><pre><code>{html.escape(lines)}</code></pre>"
+    if "file" in described:
+        body += f"\n\n{foot}"
+        html_body += f"<p>{html.escape(foot)}</p>"
+    return TextMessageEventContent(msgtype=MessageType.NOTICE, body=body, format=Format.HTML, formatted_body=html_body)
 
 
 def _status_notice(session: dict) -> TextMessageEventContent:

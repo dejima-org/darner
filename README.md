@@ -384,6 +384,8 @@ To manage open sessions, mention the bot with one of these. Replying to any of t
 
 Replying to one of the bot's messages about a session with anything else, with a mention, sends it to the session like `tell`.
 
+To see what a config set applies, mention the bot with `describe <name>`. It lists the set's keyword lines, with the names of any files it gives a session but not their contents.
+
 To end a session, reply `@meeseeks stop` to any of the bot's messages about it, or send `@meeseeks stop ms-xxxxx`. The launcher stops the session's sandbox container, so dejima exits and cleans up as usual, then closes its tmux window.
 
 The note is the task. The rest of the reply, minus the mention and the keyword lines, is extra context. Keyword lines take comma or space separated values and can repeat. A domain can carry a `:port`, which is ignored, since a launch grant covers every port:
@@ -539,6 +541,7 @@ Every `poll_interval` seconds the API asks the dejima host for the status of lau
 | `POST /v1/events/<seq>/ack` | mark an event delivered |
 | `GET /v1/blurbs` | names of the available context blurbs |
 | `GET /v1/configs` | names of the available config sets |
+| `GET /v1/configs/{name}` | what a config set applies, by keyword; `file` lists names only, never contents |
 | `GET /v1/catalog` | the dejima host's harnesses and backends, and the launcher's default harness |
 | `POST /v1/tasks/<id>/domains/<n>/allow` | `{requester}`: grant domain request `n` as it was shown, minus what policy refuses |
 | `POST /v1/tasks/<id>/domains/<n>/deny` | `{requester}`: refuse domain request `n` |

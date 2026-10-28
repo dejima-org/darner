@@ -866,6 +866,19 @@ async def test_config_sets_expand_and_the_request_overrides(aiohttp_client, conf
     assert job["internal_domains"] == ["recipes.example.com"]
     assert "## Context: myapp" in job["prompt"]
     assert await (await client.get("/v1/configs", headers=AUTH)).json() == ["mealie"]
+    (configs / "files").mkdir()
+    (configs / "files" / "token").write_text("s3cret")
+    (configs / "mealie").write_text((configs / "mealie").read_text() + "file: token\ncontext_window: 30000\n")
+    described = await (await client.get("/v1/configs/mealie", headers=AUTH)).json()
+    assert described == {
+        "ctx": ["myapp"], "internal": ["recipes.example.com:8443"], "file": ["token"],
+        "harness": "cline", "backend": "self-hosted", "model": "qwen3-14b", "context_window": "30000",
+    }
+    assert (await client.get("/v1/configs/nope", headers=AUTH)).status == 404
+    assert (await client.get("/v1/configs/mealie")).status == 401
+    (configs / "mealie").write_text("bogus line\n")
+    resp = await client.get("/v1/configs/mealie", headers=AUTH)
+    assert resp.status == 400 and str(configs) not in (await resp.json())["error"]
 
 
 async def test_unknown_config_set_is_refused(client):
