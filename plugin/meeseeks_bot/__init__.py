@@ -25,7 +25,7 @@ from mautrix.types import (
 from mautrix.util.config import BaseProxyConfig, ConfigUpdateHelper
 
 from .markdown import render
-from .parse import ParseError, parse_reply, strip_mention
+from .parse import MARKDOWN_LINK, ParseError, parse_reply, strip_mention
 
 TASK_ID = re.compile(r"ms-[a-z2-7]{5}")
 # Marks each of the bot's messages about a task, so a reply to any of them can name it.
@@ -61,7 +61,7 @@ context_window: <tokens>  cline's context window, for a self-hosted model
 Values are separated by commas or spaces, and keywords can repeat. For example:
 
 ```
-@meeseeks find out why the import job fails since the deploy
+{bot} find out why the import job fails since the deploy
 ctx: myapp
 allow: pypi.org, files.pythonhosted.org
 ```
@@ -91,12 +91,6 @@ class Config(BaseProxyConfig):
 class MeeseeksBot(Plugin):
     async def start(self) -> None:
         self.config.load_and_update()
-        self.names = [self.client.mxid]
-        try:
-            if name := await self.client.get_displayname(self.client.mxid):
-                self.names.append(name)
-        except Exception:
-            self.log.warning("Couldn't fetch own display name", exc_info=True)
         self.sched.run_periodically(self.config["poll_interval"], self.poll_once)
 
     @classmethod
@@ -112,23 +106,30 @@ class MeeseeksBot(Plugin):
         )
 
     def _names(self, evt: MessageEvent) -> list[str]:
-        """The bot's names, plus whatever text a client gave a pill linking to it.
+        """The bot's user ID, plus the text of any pill or markdown link to it.
 
         A pill's plain-text body is its visible text, usually the bot's display
-        name in that room, which needn't match the names known at startup.
+        name in that room, so that's what's stripped from the body.
         """
-        names = list(self.names)
+        names = [self.client.mxid]
         for target, text in PILL.findall(evt.content.formatted_body or ""):
             if unquote(target) == self.client.mxid:
                 names.append(html.unescape(re.sub(r"<[^>]+>", "", text)).strip())
+        for text, target in MARKDOWN_LINK.findall(evt.content.body):
+            linked = re.search(r"(@[^/?#\s]+)(?:\?.*)?$", unquote(target))
+            if linked and linked[1] == self.client.mxid:
+                names.append(text.strip())
         return names
 
     def _mentioned(self, evt: MessageEvent, names: list[str]) -> bool:
-        mentions = evt.content.get("m.mentions") or {}
-        body = evt.content.body.lower()
-        return self.client.mxid in mentions.get("user_ids", []) or any(
-            n and n.lower() in body for n in names
-        )
+        """Whether the message mentions the bot directly: a pill, or its user ID written out.
+
+        Not its display name, which is also a word people use about it, and not
+        m.mentions alone, which clients fill in for every reply to the bot.
+        """
+        return len(names) > 1 or re.search(
+            rf"(?<![\w@]){re.escape(self.client.mxid)}(?![\w-]|[.:]\w)", evt.content.body, re.IGNORECASE
+        ) is not None
 
     async def _note_body(self, note: Event | None) -> str:
         if note is None:
@@ -289,7 +290,7 @@ class MeeseeksBot(Plugin):
             self.log.warning("Couldn't list config sets", exc_info=True)
             configs = None
         configs = f" (available: {', '.join(configs) or 'none'})" if isinstance(configs, list) else ""
-        return USAGE.format(blurbs=listed, harnesses=harnesses, backends=backends, configs=configs)
+        return USAGE.format(blurbs=listed, harnesses=harnesses, backends=backends, configs=configs, bot=self.client.mxid)
 
     def _help_task(self, replied: Event | None) -> str | None:
         # Only the bot's own tag counts, so a user can't steer an answer into another task

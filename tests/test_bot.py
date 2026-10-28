@@ -183,9 +183,6 @@ async def maubot_test_bot():
     async def redact(room_id, event_id, **kwargs):
         bot.redacted.append(event_id)
 
-    async def get_displayname(user_id):
-        return "Meeseeks"
-
     async def upload_media(data, mime_type=None, filename=None, **kwargs):
         bot.uploads.append((data, mime_type, filename))
         return MXC
@@ -213,7 +210,6 @@ async def maubot_test_bot():
     bot.client.api.request = api_request
     bot.client.get_event = get_event
     bot.client.redact = redact
-    bot.client.get_displayname = get_displayname
     yield bot
     await bot.client.api.session.close()
 
@@ -314,8 +310,27 @@ async def test_ignored(maubot_plugin, maubot_test_bot, api, evt):
 
 
 async def test_mention_from_body(maubot_plugin, maubot_test_bot, api):
-    await send(maubot_test_bot, message("Meeseeks: go", mention=False))
+    await send(maubot_test_bot, message("@Meeseeks:example.org: go", mention=False))
     assert api.requests[0][1]["context"] == "go"
+
+
+@pytest.mark.parametrize("body", ["Meeseeks: go", "meeseeks should get a describe command", "@meeseeks go", "@meeseeks:example.org.uk go", "@meeseeks:example.org:8448 go"])
+async def test_talking_about_the_bot_is_not_a_mention(maubot_plugin, maubot_test_bot, api, body):
+    # m.mentions is set as a client sets it on any reply to the bot.
+    await send(maubot_test_bot, message(body))
+    await send(maubot_test_bot, message(body, reply_to=None))
+    assert maubot_test_bot.responded == [] and api.requests == []
+
+
+async def test_pill_with_any_text_is_a_mention(maubot_plugin, maubot_test_bot, api):
+    evt = message("Mr M: go", format="org.matrix.custom.html", formatted_body=f"{pill('Mr M', BOT)}: go")
+    await send(maubot_test_bot, evt)
+    assert api.requests[0][1]["context"] == "go"
+
+
+async def test_markdown_link_with_any_text_is_a_mention(maubot_plugin, maubot_test_bot, api):
+    await send(maubot_test_bot, message(f"[Mr M](https://matrix.to/#/{BOT}?via=example.org) go", reply_to=None))
+    assert api.requests[0][1]["task"] == "go"
 
 
 async def test_mention_in_fallback_only_is_ignored(maubot_plugin, maubot_test_bot, api):
@@ -622,7 +637,7 @@ def help_message(sender=BOT, **content):
     "body, mention",
     [
         ("> <@meeseeks:example.org> ms-7f3k2 needs help\n\nuse postgres\n\nallow: x", False),
-        ("> <@meeseeks:example.org> ms-7f3k2 needs help\n\nMeeseeks: use postgres\n\nallow: x", True),
+        ("> <@meeseeks:example.org> ms-7f3k2 needs help\n\n@meeseeks:example.org use postgres\n\nallow: x", True),
     ],
     ids=["no-mention", "mention"],
 )
@@ -660,7 +675,7 @@ async def test_tag_from_another_sender_is_not_an_answer(maubot_plugin, maubot_te
 
 async def test_empty_answer(maubot_plugin, maubot_test_bot, api):
     maubot_test_bot.events[HELP_ID] = help_message(**HELP_TAG)
-    await send(maubot_test_bot, message("Meeseeks:  ", reply_to=HELP_ID, mention=False))
+    await send(maubot_test_bot, message("@meeseeks:example.org  ", reply_to=HELP_ID, mention=False))
     assert replies(maubot_test_bot) == ["the answer is empty"]
     assert reactions(maubot_test_bot) == ["⏳", "❌"]
     assert api.answers == []
@@ -699,12 +714,13 @@ async def test_fetch_error(maubot_plugin, maubot_test_bot, api):
     assert reactions(maubot_test_bot) == ["❌"]
 
 
-@pytest.mark.parametrize("body", ["@meeseeks:example.org help", "meeseeks: Help", "@meeseeks:example.org  HELP "])
+@pytest.mark.parametrize("body", ["@meeseeks:example.org help", "@Meeseeks:example.org: Help", "@meeseeks:example.org  HELP "])
 async def test_help_command_shows_usage(maubot_plugin, maubot_test_bot, api, body):
     await send(maubot_test_bot, message(body, reply_to=None))
     [text] = replies(maubot_test_bot)
     assert text.startswith("**Meeseeks** starts an isolated dejima session")
     assert "ctx: <names>       add context blurbs (available: loki, myapp)" in text
+    assert "\n@meeseeks:example.org find out why" in text
     assert api.requests == []
     [msg] = sent(maubot_test_bot)
     assert "formatted_body" in msg
@@ -772,7 +788,8 @@ async def test_help_with_a_pill_of_any_text(maubot_plugin, maubot_test_bot, api,
 
 async def test_pill_to_someone_else_is_not_stripped(maubot_plugin, maubot_test_bot, api):
     evt = message(
-        "Alice: help", reply_to=None, format="org.matrix.custom.html", formatted_body=f"{pill('Alice', ALICE)}: help"
+        "@meeseeks:example.org Alice: help", reply_to=None, format="org.matrix.custom.html",
+        formatted_body=f"@meeseeks:example.org {pill('Alice', ALICE)}: help",
     )
     await send(maubot_test_bot, evt)
     assert api.requests[0][1]["task"] == "Alice: help"

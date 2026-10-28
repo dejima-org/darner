@@ -364,6 +364,8 @@ backend: openrouter
 
 Or send the task directly, in a message that mentions the bot and isn't a reply. That message, minus the mention and the keyword lines, is the task, with no extra context.
 
+A mention is a pill for the bot, whatever its text, or the bot's full user ID typed out, such as `@meeseeks:example.org`. The bot's name on its own isn't one, so a room can talk about the bot without starting tasks, and neither is replying to one of its messages without a mention.
+
 `@meeseeks help` replies with this usage, including the available context blurbs.
 
 When the agent needs to reach domains the sandbox blocks, it lists them in `~/shared/DOMAINS` and the bot posts every one for you to check. A line can name a port, as in `internal recipes.example.com:8443`. The grant covers the domain on every port, and the port is the one dejima-allow checks it answers on. Reply `@meeseeks allow` to that message to let the running session reach them, or `@meeseeks deny`. Internal domains are marked as such, and any the API's `deny_domains` policy refuses are marked and never allowed. An agent that edits `DOMAINS` without signalling again is still asking: the changed list becomes a request once it has been left alone for 30 seconds. After you decide a request, a follow-up, such as asking again for a domain as internal, comes straight through. What gets allowed is the list as shown: the launcher keeps its own copy, so the agent can't change it afterwards. If answering from chat is on, the agent is told the outcome. Otherwise, tell it in the session.
