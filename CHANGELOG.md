@@ -8,6 +8,7 @@ Each release names the dejima release it was released against: the one it was te
 
 Released against dejima: N/A
 
+- **Weak API tokens refused:** the API won't start if a token in `[tokens]` is shorter than 32 characters, is `examples/api.toml`'s placeholder, or is shared by two frontends. If yours is refused, generate a new one with `openssl rand -hex 32` and set it in both `api.toml` and the bot's config. ([#46](https://gitbox.branderson.io/dejima/meeseeks/pulls/46))
 - **Looking things up from chat:** `list configs` and `list blurbs` name the config sets and context blurbs, and `describe <names>` shows what each config set applies and what each blurb says. ([#43](https://gitbox.branderson.io/dejima/meeseeks/pulls/43))
 - **Waiting notices:** the bot says when a session's screen has stopped changing, with the end of its screen, so a question asked at the agent's own prompt isn't missed. ([#36](https://gitbox.branderson.io/dejima/meeseeks/pulls/36))
 - **Settings defaults:** every optional API setting has a default, and the API logs the settings it uses and warns about unknown keys. `configs_dir` defaults to `configs` beside `blurbs_dir`. ([#36](https://gitbox.branderson.io/dejima/meeseeks/pulls/36))

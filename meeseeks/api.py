@@ -26,6 +26,8 @@ log = logging.getLogger("meeseeks.api")
 
 RUN_ID = re.compile(r"[0-9a-f]{16}")
 
+EXAMPLE_TOKEN = "replace-with-a-long-random-token"
+MIN_TOKEN = 32
 REQUIRED = ("db_path", "blurbs_dir", "results_dir", "launch_command", "tokens")
 # Every optional setting, with what it is when api.toml leaves it out, so a
 # setting added by an update works on a config file written before it.
@@ -699,10 +701,25 @@ async def ack_event(request: web.Request) -> web.Response:
     return web.Response(status=204)
 
 
+def check_tokens(tokens: object) -> None:
+    """Refuse a token anyone could guess: examples/api.toml's, or a short one."""
+    if not isinstance(tokens, dict):
+        raise ValueError("tokens must be a table of frontend names and their tokens")
+    for name, token in tokens.items():
+        if not isinstance(token, str) or token == EXAMPLE_TOKEN or len(token) < MIN_TOKEN:
+            raise ValueError(
+                f"the token for {name} must be at least {MIN_TOKEN} characters and not the example's;"
+                " generate one with: openssl rand -hex 32"
+            )
+    if len(set(tokens.values())) < len(tokens):
+        raise ValueError("each frontend needs its own token, so tokens must all differ")
+
+
 def make_app(config: dict, poll: bool = True) -> web.Application:
     full, _, _ = with_defaults(config)
     for key, value in full.items():
         config.setdefault(key, value)
+    check_tokens(config["tokens"])
     if config.get("remote_access_url") and not re.match(r"https?://", config["remote_access_url"]):
         raise ValueError("remote_access_url must start with http:// or https://")
     app = web.Application(client_max_size=256 * 1024)
