@@ -613,6 +613,10 @@ Pull requests target `development`, which merges to `main` when it's ready to re
 
 The workflow fails if the two versions disagree, or if a pushed tag doesn't match them. It uses the job's automatic `GITEA_TOKEN`, so Actions must be enabled for the repository, and the token must be allowed to create releases.
 
+## Security
+
+[SECURITY.md](SECURITY.md) says what meeseeks claims, what it holds that's worth taking, and how to report a vulnerability.
+
 ## License
 
 GPL-3.0-or-later. See [LICENSE](LICENSE).
