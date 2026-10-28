@@ -2,14 +2,27 @@
 
 ## What meeseeks claims
 
-It starts dejima sessions for tasks sent from chat, and brings their output back. It doesn't make an agent safe to run, and it isn't a sandbox: the session's boundary is [dejima](https://gitbox.branderson.io/dejima/dejima)'s.
+It starts dejima sessions for tasks sent from chat or another frontend, and brings their output back. It doesn't make an agent safe to run, and it isn't a sandbox: the session's boundary is [dejima](https://gitbox.branderson.io/dejima/dejima)'s.
 
 What it does claim is that it doesn't widen that boundary. The agent is presumed hostile, as dejima presumes it:
 
 - **What the agent leaves in `~/shared` is read by descriptor, never by path.** Every component is opened with `O_NOFOLLOW`, every file is checked to be a regular file before it's read, and the output zip is rebuilt from scratch rather than passed on. A session can rearrange its `~/shared` while it's being read, and can't make the host read or write outside it.
-- **What the agent writes reaches chat inert.** HTML is escaped, every link shows where it goes, nothing it writes can mention anyone, and its text is labelled as written by the agent.
+- **What the agent writes reaches Matrix inert.** The bot escapes HTML, shows where every link goes, lets nothing the agent writes mention anyone, and labels its text as written by the agent.
 - **The agent gets only the domains a person approves.** A domain request is posted for an allowlisted user to allow or deny. What's granted is the launcher's saved copy of the request as shown, minus what the API's policy refuses, so the agent can't change it after it's been shown.
-- **Only allowlisted users can act through the bot.** A reply counts as being about a session only when it replies to one of the bot's own messages.
+- **Only allowlisted users can act through the Matrix bot.** A reply counts as being about a session only when it replies to one of the bot's own messages. The allowlist is the bot's, not the API's: see below.
+
+## Every frontend holds a key to the whole system
+
+The API takes requests from frontends: today the Matrix bot, later a web interface, and possibly Slack or others. Each frontend authenticates with an API token, and the API trusts it completely. It acts on whatever requester the frontend names, so deciding who may use meeseeks is the frontend's job: the Matrix bot does it with its allowlist. The API can't check that itself, because a token holder can name any requester.
+
+So adding a frontend adds a way in. Each one, and anyone who can administer it or read its configuration, can do everything the API does within its policy, for every task started through that token. Before adding one, treat it as you would the ssh key below:
+
+- **Give each frontend its own token**, so one can be revoked by removing its line from `[tokens]`, and its tasks stay separate from the others'.
+- **Keep the token where only the frontend can read it.** For the Matrix bot, that's the plugin's config in maubot, so a maubot admin can read it, or just edit the allowlist. maubot admin access is as good as the token.
+- **Know who the frontend lets in.** Its access control is the only access control there is.
+- **Check how it shows what the agent wrote.** The API hands summaries, help requests and screens over as the agent wrote them. Making them inert, so a link can't hide where it goes and markup can't run or ping anyone, is each frontend's job.
+
+The API refuses to start with a token that's the example's placeholder or shorter than 32 characters.
 
 ## What it holds, which is the new risk it introduces
 
@@ -17,8 +30,8 @@ Starting sessions for other people means holding the means to start them, so mee
 
 | It holds | Taking it gets | It doesn't get |
 | --- | --- | --- |
-| An allowlisted Matrix account | Everything the bot does for that user: sessions within the API's policy, their output, answers typed into them, domain approvals | Anything past the API's policy |
-| The bot's API token | The same, for every task started through that client, without the allowlist | Other clients' tasks |
+| A user a frontend lets in, such as an allowlisted Matrix account | Everything that frontend does for them: sessions within the API's policy, their output, answers typed into them, domain approvals | Anything past the API's policy |
+| A frontend's API token, or admin access to the frontend | The same, for every task started through that token, without its access control | Other tokens' tasks, anything past the API's policy |
 | The API's ssh key to the dejima host | The launcher's fixed command grammar, as the dejima host's user: sessions with any domains and dependencies, typing into them if `--answers` is on, their output, stopping them | A shell, a file outside the task and share directories, a tunnel |
 | `configs_dir/files` | Whatever you put there, such as an API token handed to sessions | |
 | The API's database | Every task's prompt and context, and who asked | Output zips, which are kept in `results_dir` |
@@ -28,9 +41,9 @@ The policy (`deny_domains`, `max_domains`) is the API's. The launcher re-validat
 ## What it deliberately does not do
 
 - **It doesn't check what the agent did.** The summary and the zip are the agent's work, written by something presumed hostile. Read them as that.
-- **It doesn't keep secrets from the session.** A file a config set gives a session is in its `~/shared/uploads`, readable by the agent and by anything it can reach, for as long as the session runs. Any allowlisted user who names that config set gives the file to their session.
-- **It doesn't keep tasks from the chat server.** Prompts, context, summaries and zips pass through the Matrix homeserver and every client in the room. Use an encrypted room if that matters.
-- **It doesn't stop an allowlisted user.** They can grant what the policy allows, and with `--answers`, type anything into a session, including a harness command such as `/compact`, or a shell command where the harness takes one. That's inside the session's container.
+- **It doesn't keep secrets from the session.** A file a config set gives a session is in its `~/shared/uploads`, readable by the agent and by anything it can reach, for as long as the session runs. Any user a frontend lets in who names that config set gives the file to their session.
+- **It doesn't keep tasks from the frontend's own service.** Prompts, context, summaries and zips pass through the frontend: for the Matrix bot, the homeserver and every client in the room. Use an encrypted room if that matters, and weigh the same question for any other frontend.
+- **It doesn't stop a user a frontend lets in.** They can grant what the policy allows, and with `--answers`, type anything into a session, including a harness command such as `/compact`, or a shell command where the harness takes one. That's inside the session's container.
 
 ## This is not proven software
 
