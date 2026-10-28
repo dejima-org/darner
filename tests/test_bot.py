@@ -2,6 +2,7 @@
 # Copyright (C) 2026 Brad Anderson
 import asyncio
 import sys
+from html.parser import HTMLParser
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -62,7 +63,12 @@ class Api:
         self.blurbs = ["loki", "myapp"]
         self.stops = []
         self.stop_status = 204
+        self.selftests = []
         self.configs = {"recipes": {"ctx": ["myapp"], "file": ["recipes-token"], "harness": "cline", "context_window": "30000"}}
+
+    async def selftest(self, request):
+        self.selftests.append(await request.json())
+        return web.json_response({"id": "ms-5e1f7"}, status=201)
 
     async def list_configs(self, request):
         return web.json_response(sorted(self.configs))
@@ -149,6 +155,7 @@ async def api(aiohttp_server):
     app.router.add_get("/v1/configs/{name}", api.describe)
     app.router.add_get("/v1/blurbs/{name}", api.blurb)
     app.router.add_get("/v1/configs", api.list_configs)
+    app.router.add_post("/v1/selftest", api.selftest)
     api.server = await aiohttp_server(app)
     return api
 
@@ -1279,3 +1286,97 @@ async def test_list_with_none(maubot_plugin, maubot_test_bot, api):
     api.blurbs = []
     await send(maubot_test_bot, message("@meeseeks:example.org list blurbs", reply_to=None))
     assert replies(maubot_test_bot) == ["There are no context blurbs."]
+
+
+class _Shown(HTMLParser):
+    """A formatted body's tags, attributes and visible text."""
+
+    def __init__(self, formatted: str):
+        super().__init__()
+        self.tags, self.text = [], []
+        self.feed(formatted)
+
+    def handle_starttag(self, tag, attrs):
+        self.tags.append((tag, dict(attrs)))
+
+    def handle_data(self, data):
+        self.text.append(data)
+
+
+def assert_shown_safely(content: dict) -> None:
+    """Each PASS in POST /v1/selftest's checks, tested on one message."""
+    assert content.get("m.mentions") == {}, "check 6: nobody may be notified"
+    shown = _Shown(content["formatted_body"])
+    visible = "".join(shown.text)
+    safe = {"p", "br", "pre", "code", "strong", "em", "ul", "ol", "li", "blockquote", "hr", "h1", "h2", "h3", "h4", "h5", "h6"}
+    for tag, attrs in shown.tags:
+        assert tag in safe or tag == "a", f"checks 1-3: a {tag} tag came through as markup"
+        assert not any(name.startswith("on") or name == "src" for name in attrs), "check 2: a handler or source came through"
+        if tag == "a":
+            assert attrs.get("href", "") in visible, "checks 3, 4 and 7: a link hides where it goes"
+
+    def test_line(n: int) -> str:
+        return visible.split(f"Test line {n}:", 1)[1].split("Check ", 1)[0].strip()
+
+    assert "<b>" in test_line(1) and "</b>" in test_line(1), "check 1"
+    assert "<script>" in test_line(2) and "<img" in test_line(2), "check 2"
+    assert '<a href="https://evil.selftest.invalid">' in test_line(3), "check 3"
+    assert "evil.selftest.invalid" in test_line(4), "check 4"
+    assert "pixel.selftest.invalid" in test_line(5), "check 5"
+    assert "evil.selftest.invalid" in test_line(7), "check 7"
+    assert test_line(8) == "abc", "check 8"
+    assert "Check 10, the end." in visible and "Check 10, the end." in content["body"], "check 10: the message was cut short"
+
+
+async def test_selftest_is_shown_safely(maubot_plugin, maubot_test_bot, api):
+    from meeseeks.archive import clean_text
+    from meeseeks.selftest import PAYLOAD
+
+    text = clean_text(PAYLOAD.encode())
+    api.add(1, summary=text, data=None)
+    api.add(2, type="help", summary=text, data=None)
+    api.add(3, type="waiting", summary=text, data={"quiet": 300})
+    await maubot_plugin.poll_once()
+    messages = sent(maubot_test_bot)
+    assert len(messages) == 3
+    for content in messages:
+        assert_shown_safely(content)
+
+
+async def test_selftest_command(maubot_plugin, maubot_test_bot, api):
+    await send(maubot_test_bot, message("@meeseeks:example.org selftest", reply_to=None))
+    [reply] = replies(maubot_test_bot)
+    assert reply.startswith("Self-test ms-5e1f7: its output, help request and waiting notice follow")
+    assert api.selftests == [{"requester": ALICE, "source": {"kind": "matrix", "ref": "$trigger", "channel": ROOM}}]
+
+
+@pytest.mark.parametrize("unsafe", ["no m.mentions", "raw html", "plain markdown"])
+def test_the_selftest_check_catches_an_unsafe_frontend(unsafe):
+    from mautrix.util.markdown import render as plain_render
+
+    from meeseeks.archive import clean_text
+    from meeseeks.selftest import PAYLOAD
+    from meeseeks_bot.markdown import render
+
+    text = clean_text(PAYLOAD.encode())
+    content = {"body": text, "formatted_body": render(text), "m.mentions": {}}
+    if unsafe == "no m.mentions":
+        del content["m.mentions"]
+    elif unsafe == "raw html":
+        content["formatted_body"] = text
+    else:
+        content["formatted_body"] = plain_render(text, allow_html=True)
+    with pytest.raises(AssertionError):
+        assert_shown_safely(content)
+    content = {"body": text, "formatted_body": render(text), "m.mentions": {}}
+    assert_shown_safely(content)
+
+
+def test_selftest_checks_hold_no_markup():
+    # A check has to read the same in a frontend that fails it.
+    from meeseeks.selftest import PAYLOAD
+
+    checks = [line for line in PAYLOAD.splitlines() if line.startswith(("Check ", "Frontend self-test"))]
+    assert len(checks) == 11
+    for line in checks:
+        assert not any(mark in line for mark in ("<", ">", "](", "`", "*", "_", "@")), line

@@ -17,7 +17,7 @@ from pathlib import Path
 
 from aiohttp import web
 
-from meeseeks import archive, configsets
+from meeseeks import archive, configsets, selftest
 from meeseeks.job import OUTPUT_INSTRUCTIONS, JobError, compose_prompt, new_task_id, valid_domain, valid_name, validate_job
 from meeseeks.launch import FETCH_REJECTED
 from meeseeks.store import Store
@@ -464,6 +464,35 @@ async def create_task(request: web.Request) -> web.Response:
     return web.json_response({"id": job["id"], "target": target, "link": session_link(config, run_id)}, status=201)
 
 
+async def create_selftest(request: web.Request) -> web.Response:
+    """A finished task whose output, help request and waiting screen are hostile text.
+
+    It reaches the frontend through /v1/events like any task's, so how the
+    frontend shows it is how it shows an agent's.
+    """
+    client, store = _client(request), request.app[STORE]
+    try:
+        body = await request.json()
+    except ValueError:
+        return web.json_response({"error": "body must be JSON"}, status=400)
+    try:
+        if not isinstance(body, dict) or set(body) != {"source", "requester"}:
+            raise RequestError(400, "body must have source and requester")
+        source, requester = _source(body), _text(body, "requester")
+    except RequestError as e:
+        return web.json_response({"error": str(e)}, status=e.status)
+    task, new = store.claim(new_task_id(), client, source, requester, json.dumps({"selftest": True}))
+    if not new:
+        return web.json_response({"id": task.id})
+    store.mark(task.id, "ended")
+    text = archive.clean_text(selftest.PAYLOAD.encode())
+    store.add_event(task.id, "output", text)
+    store.add_event(task.id, "help", text)
+    store.add_event(task.id, "waiting", text, data={"quiet": 300})
+    store.add_event(task.id, "ended")
+    return web.json_response({"id": task.id}, status=201)
+
+
 async def list_events(request: web.Request) -> web.Response:
     config = request.app[CONFIG]
     events = request.app[STORE].events(_client(request))
@@ -732,6 +761,7 @@ def make_app(config: dict, poll: bool = True) -> web.Application:
     app[STORE].fail_pending()
     app[SHARE_ERRORS] = {}
     app.router.add_post("/v1/tasks", create_task)
+    app.router.add_post("/v1/selftest", create_selftest)
     app.router.add_get("/v1/events", list_events)
     app.router.add_get("/v1/blurbs", list_blurbs)
     app.router.add_get("/v1/catalog", get_catalog)
