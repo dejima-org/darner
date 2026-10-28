@@ -4,7 +4,7 @@ Work lands on `development`, and every merge there publishes a pre-release. A re
 
 ## 1. It trails a dejima release
 
-meeseeks runs dejima on the dejima host and relies on its flags and tools: `--isolated`, `--shared-path-file`, `--internal-domain`, `--model`, `dejima-allow --port` and others. A meeseeks release is released against one dejima release, the tag on dejima's `main` that it was tested with and that has everything it needs. `CHANGELOG.md` names it under the version's heading:
+darner runs dejima on the dejima host and relies on its flags and tools: `--isolated`, `--shared-path-file`, `--internal-domain`, `--model`, `dejima-allow --port` and others. A darner release is released against one dejima release, the tag on dejima's `main` that it was tested with and that has everything it needs. `CHANGELOG.md` names it under the version's heading:
 
 ```
 ## 0.1.18
@@ -12,7 +12,7 @@ meeseeks runs dejima on the dejima host and relies on its flags and tools: `--is
 Released against dejima: 2026.10.14
 ```
 
-So a meeseeks release trails its dejima release. If it needs a dejima change that isn't in a dejima release yet, it waits for one. Until then the line says `N/A`. Pre-releases from `development` may need dejima's `development`, and say so in their pull requests.
+So a darner release trails its dejima release. If it needs a dejima change that isn't in a dejima release yet, it waits for one. Until then the line says `N/A`. Pre-releases from `development` may need dejima's `development`, and say so in their pull requests.
 
 The release workflow refuses a stable release whose `CHANGELOG.md` entry is missing, has no `Released against dejima:` line, or says `N/A`. It doesn't check that the tag exists on dejima's `main`, so check that yourself.
 

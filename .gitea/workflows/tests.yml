@@ -43,7 +43,7 @@ jobs:
       image: node:20-bookworm
     env:
       DOCKER_CLI_VERSION: 27.5.1
-      IMAGE: meeseeks-api-ci-${{ github.run_id }}
+      IMAGE: darner-api-ci-${{ github.run_id }}
     steps:
       - name: Install the Docker CLI
         run: |
@@ -58,7 +58,7 @@ jobs:
 
       - name: Check the image runs as uid and gid 10001 and starts the API
         run: |
-          [ "$(docker run --rm --entrypoint id "$IMAGE")" = "uid=10001(meeseeks) gid=10001(meeseeks) groups=10001(meeseeks)" ]
+          [ "$(docker run --rm --entrypoint id "$IMAGE")" = "uid=10001(darner) gid=10001(darner) groups=10001(darner)" ]
           docker run --rm "$IMAGE" --help
 
       - name: Remove the image

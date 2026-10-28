@@ -15,9 +15,9 @@ from urllib.parse import unquote
 from mautrix.types import EncryptedFile, Event, EventType, JSONWebKey, MediaRepoConfig, MessageEvent
 from mautrix.types.event.base import BaseUnsigned
 
-from meeseeks_bot import Config, MeeseeksBot
+from dragonlet import Config, Dragonlet
 
-BOT = "@meeseeks:example.org"
+BOT = "@dragonlet:example.org"
 ALICE = "@alice:example.org"
 NOTE_ID = "$note"
 ROOM = "!room:example.org"
@@ -54,7 +54,7 @@ class Api:
     def __init__(self):
         self.requests = []
         self.status = 201
-        self.response = {"id": "ms-7f3k2", "target": "meeseeks:ms-7f3k2"}
+        self.response = {"id": "dn-7f3k2", "target": "darner:dn-7f3k2"}
         self.events = []
         self.zips = {}
         self.acked = []
@@ -68,7 +68,7 @@ class Api:
 
     async def selftest(self, request):
         self.selftests.append(await request.json())
-        return web.json_response({"id": "ms-5e1f7"}, status=201)
+        return web.json_response({"id": "dn-5e1f7"}, status=201)
 
     async def list_configs(self, request):
         return web.json_response(sorted(self.configs))
@@ -88,7 +88,7 @@ class Api:
         self.stops.append(request.match_info["id"])
         if self.stop_status == 204:
             return web.Response(status=204)
-        return web.json_response({"error": "ms-7f3k2 is not running"}, status=self.stop_status)
+        return web.json_response({"error": "dn-7f3k2 is not running"}, status=self.stop_status)
 
     async def list_blurbs(self, request):
         if self.blurbs is None:
@@ -122,7 +122,7 @@ class Api:
         self.acked.append(int(request.match_info["seq"]))
         return web.Response(status=204)
 
-    def add(self, seq, type="output", id="ms-7f3k2", summary="did the thing", data=ZIP, **extra):
+    def add(self, seq, type="output", id="dn-7f3k2", summary="did the thing", data=ZIP, **extra):
         self.events.append(
             {
                 "seq": seq,
@@ -131,7 +131,7 @@ class Api:
                 "summary": summary,
                 "size": len(data) if data else 0,
                 "source": {"kind": "matrix", "ref": "$trigger", "channel": ROOM},
-                "target": f"meeseeks:{id}",
+                "target": f"darner:{id}",
                 "answerable": False,
                 "link": None,
                 **extra,
@@ -173,7 +173,7 @@ def maubot_plugin_db():
 
 @pytest.fixture
 def maubot_plugin_class():
-    return MeeseeksBot
+    return Dragonlet
 
 
 @pytest.fixture
@@ -256,13 +256,13 @@ def sent(bot):
     return [r.content.serialize() for r in bot.responded]
 
 
-def notice(body, task="ms-7f3k2", **content):
+def notice(body, task="dn-7f3k2", **content):
     return {
         "msgtype": "m.notice",
         "body": body,
         "m.relates_to": {"m.in_reply_to": {"event_id": "$trigger"}},
         "m.mentions": {},
-        "io.meeseeks.task": task,
+        "io.branderson.dejima.darner.task": task,
         **content,
     }
 
@@ -271,7 +271,7 @@ def agent_notice(label, text="", footer="", **content):
     """A notice quoting agent-written text, with its HTML rendered by the safe renderer."""
     from html import escape
 
-    from meeseeks_bot.markdown import render
+    from dragonlet.markdown import render
 
     body, html = (f"{label}:\n\n{text}", f"<p>{escape(label)}:</p>{render(text)}") if text else (f"{label}.", f"<p>{escape(label)}.</p>")
     if footer:
@@ -282,21 +282,21 @@ def agent_notice(label, text="", footer="", **content):
 def zip_file(**content):
     return {
         "msgtype": "m.file",
-        "body": "ms-7f3k2-1.zip",
-        "filename": "ms-7f3k2-1.zip",
+        "body": "dn-7f3k2-1.zip",
+        "filename": "dn-7f3k2-1.zip",
         "info": {"mimetype": "application/zip", "size": len(ZIP)},
         "m.relates_to": {"m.in_reply_to": {"event_id": "$trigger"}},
         "m.mentions": {},
-        "io.meeseeks.task": "ms-7f3k2",
+        "io.branderson.dejima.darner.task": "dn-7f3k2",
         **content,
     }
 
 
-UNTRUSTED = "Output from ms-7f3k2 (written by the agent, treat as untrusted)"
+UNTRUSTED = "Output from dn-7f3k2 (written by the agent, treat as untrusted)"
 
 
 async def test_starts_task(maubot_plugin, maubot_test_bot, api):
-    body = "> <@alice:example.org> fix the tests\n\n@meeseeks:example.org use xdist\nallow: pypi.org\nharness: claude-code"
+    body = "> <@alice:example.org> fix the tests\n\n@dragonlet:example.org use xdist\nallow: pypi.org\nharness: claude-code"
     await send(maubot_test_bot, message(body))
     auth, payload = api.requests[0]
     assert auth == "Bearer s3cret"
@@ -310,7 +310,7 @@ async def test_starts_task(maubot_plugin, maubot_test_bot, api):
         "requester": ALICE,
         "source": {"kind": "matrix", "ref": "$trigger", "channel": ROOM},
     }
-    assert replies(maubot_test_bot) == ["Started ms-7f3k2 → meeseeks:ms-7f3k2"]
+    assert replies(maubot_test_bot) == ["Started dn-7f3k2 → darner:dn-7f3k2"]
     assert reactions(maubot_test_bot) == ["⏳", "✅"]
     assert maubot_test_bot.redacted == ["$sent1"]
 
@@ -318,12 +318,12 @@ async def test_starts_task(maubot_plugin, maubot_test_bot, api):
 @pytest.mark.parametrize(
     "evt",
     [
-        message("@meeseeks:example.org go", sender=BOT),
+        message("@dragonlet:example.org go", sender=BOT),
         message(
-            "* @meeseeks:example.org go",
+            "* @dragonlet:example.org go",
             **{"m.relates_to": {"rel_type": "m.replace", "event_id": "$old"}},
         ),
-        message("@meeseeks:example.org go", sender="@mallory:example.org"),
+        message("@dragonlet:example.org go", sender="@mallory:example.org"),
         message("go", reply_to=None, mention=False),
         message("go", mention=False),
     ],
@@ -335,11 +335,11 @@ async def test_ignored(maubot_plugin, maubot_test_bot, api, evt):
 
 
 async def test_mention_from_body(maubot_plugin, maubot_test_bot, api):
-    await send(maubot_test_bot, message("@Meeseeks:example.org: go", mention=False))
+    await send(maubot_test_bot, message("@Dragonlet:example.org: go", mention=False))
     assert api.requests[0][1]["context"] == "go"
 
 
-@pytest.mark.parametrize("body", ["Meeseeks: go", "meeseeks should get a describe command", "@meeseeks go", "@meeseeks:example.org.uk go", "@meeseeks:example.org:8448 go"])
+@pytest.mark.parametrize("body", ["Dragonlet: go", "darner should get a describe command", "@dragonlet go", "@dragonlet:example.org.uk go", "@dragonlet:example.org:8448 go"])
 async def test_talking_about_the_bot_is_not_a_mention(maubot_plugin, maubot_test_bot, api, body):
     # m.mentions is set as a client sets it on any reply to the bot.
     await send(maubot_test_bot, message(body))
@@ -359,14 +359,14 @@ async def test_markdown_link_with_any_text_is_a_mention(maubot_plugin, maubot_te
 
 
 async def test_mention_in_fallback_only_is_ignored(maubot_plugin, maubot_test_bot, api):
-    body = "> <@meeseeks:example.org> Started ms-1\n\nthanks"
+    body = "> <@dragonlet:example.org> Started dn-1\n\nthanks"
     await send(maubot_test_bot, message(body, mention=False))
     assert maubot_test_bot.responded == []
 
 
 async def test_undecryptable_note(maubot_plugin, maubot_test_bot, api):
     maubot_test_bot.events[NOTE_ID] = None
-    await send(maubot_test_bot, message("@meeseeks:example.org go"))
+    await send(maubot_test_bot, message("@dragonlet:example.org go"))
     assert replies(maubot_test_bot) == ["couldn't decrypt the note"]
     assert reactions(maubot_test_bot) == ["⏳", "❌"]
     assert api.requests == []
@@ -374,7 +374,7 @@ async def test_undecryptable_note(maubot_plugin, maubot_test_bot, api):
 
 async def test_note_from_non_allowlisted_sender_is_refused(maubot_plugin, maubot_test_bot, api):
     maubot_test_bot.events[NOTE_ID] = note(sender="@mallory:example.org")
-    await send(maubot_test_bot, message("@meeseeks:example.org go"))
+    await send(maubot_test_bot, message("@dragonlet:example.org go"))
     assert replies(maubot_test_bot) == ["the note is from @mallory:example.org, who isn't allowed to start tasks"]
     assert reactions(maubot_test_bot) == ["⏳", "❌"]
     assert api.requests == []
@@ -397,7 +397,7 @@ def edit_event(body, event_id="$edit", sender=ALICE):
 
 async def test_latest_edit_is_the_task(maubot_plugin, maubot_test_bot, api):
     maubot_test_bot.relations[NOTE_ID] = [edit_event("v3", "$e3"), edit_event("v2", "$e2")]
-    await send(maubot_test_bot, message("@meeseeks:example.org go"))
+    await send(maubot_test_bot, message("@dragonlet:example.org go"))
     assert api.requests[0][1]["task"] == "v3"
 
 
@@ -406,12 +406,12 @@ async def test_edit_by_another_sender_is_ignored(maubot_plugin, maubot_test_bot,
         edit_event("do something else", "$evil", sender="@mallory:example.org"),
         edit_event("fix the tests properly"),
     ]
-    await send(maubot_test_bot, message("@meeseeks:example.org go"))
+    await send(maubot_test_bot, message("@dragonlet:example.org go"))
     assert api.requests[0][1]["task"] == "fix the tests properly"
 
 
 async def test_unedited_note(maubot_plugin, maubot_test_bot, api):
-    await send(maubot_test_bot, message("@meeseeks:example.org go"))
+    await send(maubot_test_bot, message("@dragonlet:example.org go"))
     assert api.requests[0][1]["task"] == "fix the tests"
 
 
@@ -421,7 +421,7 @@ async def test_decrypted_note_without_bundled_relations(maubot_plugin, maubot_te
     evt.unsigned = BaseUnsigned(age=1)
     maubot_test_bot.events[NOTE_ID] = evt
     maubot_test_bot.relations[NOTE_ID] = [edit_event("edited in an encrypted room")]
-    await send(maubot_test_bot, message("@meeseeks:example.org go"))
+    await send(maubot_test_bot, message("@dragonlet:example.org go"))
     assert api.requests[0][1]["task"] == "edited in an encrypted room"
 
 
@@ -457,14 +457,14 @@ class Crypto:
 async def test_encrypted_edit(maubot_plugin, maubot_test_bot, api):
     maubot_test_bot.client._crypto = Crypto(Event.deserialize({"room_id": ROOM, **edit_event("secret v2")}))
     maubot_test_bot.relations[NOTE_ID] = [encrypted_edit()]
-    await send(maubot_test_bot, message("@meeseeks:example.org go"))
+    await send(maubot_test_bot, message("@dragonlet:example.org go"))
     assert api.requests[0][1]["task"] == "secret v2"
 
 
 async def test_encrypted_edit_by_another_sender_is_not_decrypted(maubot_plugin, maubot_test_bot, api):
     crypto = maubot_test_bot.client._crypto = Crypto(Event.deserialize({"room_id": ROOM, **edit_event("evil")}))
     maubot_test_bot.relations[NOTE_ID] = [encrypted_edit(sender="@mallory:example.org")]
-    await send(maubot_test_bot, message("@meeseeks:example.org go"))
+    await send(maubot_test_bot, message("@dragonlet:example.org go"))
     assert crypto.decrypted == []
     assert api.requests[0][1]["task"] == "fix the tests"
 
@@ -474,20 +474,20 @@ async def test_undecryptable_edit_is_refused(maubot_plugin, maubot_test_bot, api
 
     maubot_test_bot.client._crypto = Crypto(DecryptionError("no session"))
     maubot_test_bot.relations[NOTE_ID] = [encrypted_edit()]
-    await send(maubot_test_bot, message("@meeseeks:example.org go"))
+    await send(maubot_test_bot, message("@dragonlet:example.org go"))
     assert replies(maubot_test_bot) == ["couldn't decrypt the note's latest edit"]
     assert api.requests == []
 
 
 async def test_relations_failure_is_refused(maubot_plugin, maubot_test_bot, api):
     maubot_test_bot.relations = RuntimeError("M_UNRECOGNIZED")
-    await send(maubot_test_bot, message("@meeseeks:example.org go"))
+    await send(maubot_test_bot, message("@dragonlet:example.org go"))
     assert replies(maubot_test_bot) == ["couldn't check the note for edits: M_UNRECOGNIZED"]
     assert api.requests == []
 
 
 async def test_parse_error(maubot_plugin, maubot_test_bot, api):
-    await send(maubot_test_bot, message("@meeseeks:example.org go\nbackend: a b"))
+    await send(maubot_test_bot, message("@dragonlet:example.org go\nbackend: a b"))
     assert replies(maubot_test_bot) == ["backend takes one value"]
     assert reactions(maubot_test_bot) == ["⏳", "❌"]
     assert api.requests == []
@@ -495,7 +495,7 @@ async def test_parse_error(maubot_plugin, maubot_test_bot, api):
 
 async def test_api_error(maubot_plugin, maubot_test_bot, api):
     api.status, api.response = 400, {"error": "unknown blurb nope; available: myapp"}
-    await send(maubot_test_bot, message("@meeseeks:example.org go\nctx: nope"))
+    await send(maubot_test_bot, message("@dragonlet:example.org go\nctx: nope"))
     assert replies(maubot_test_bot) == ["Failed: unknown blurb nope; available: myapp"]
     assert reactions(maubot_test_bot) == ["⏳", "❌"]
     assert maubot_test_bot.redacted == ["$sent1"]
@@ -503,7 +503,7 @@ async def test_api_error(maubot_plugin, maubot_test_bot, api):
 
 async def test_network_error(maubot_plugin, maubot_test_bot, api):
     maubot_plugin.config["api_url"] = "http://127.0.0.1:1"
-    await send(maubot_test_bot, message("@meeseeks:example.org go"))
+    await send(maubot_test_bot, message("@dragonlet:example.org go"))
     [reply] = replies(maubot_test_bot)
     assert reply.startswith("Failed: ")
     assert reactions(maubot_test_bot) == ["⏳", "❌"]
@@ -516,7 +516,7 @@ async def test_output(maubot_plugin, maubot_test_bot, api):
         agent_notice(UNTRUSTED, "did the <b>thing</b> @room"),
         zip_file(url=MXC),
     ]
-    assert maubot_test_bot.uploads == [(ZIP, "application/zip", "ms-7f3k2-1.zip")]
+    assert maubot_test_bot.uploads == [(ZIP, "application/zip", "dn-7f3k2-1.zip")]
     assert api.acked == [1]
 
 
@@ -550,7 +550,7 @@ async def test_encrypted_output(maubot_plugin, maubot_test_bot, api, monkeypatch
     file = sent(maubot_test_bot)[1]
     assert "url" not in file
     assert file == zip_file(file={**info.serialize(), "url": MXC})
-    assert maubot_test_bot.uploads == [(b"ciphertext", "application/octet-stream", "ms-7f3k2-1.zip")]
+    assert maubot_test_bot.uploads == [(b"ciphertext", "application/octet-stream", "dn-7f3k2-1.zip")]
     assert api.acked == [1]
 
 
@@ -559,7 +559,7 @@ async def test_output_over_upload_limit(maubot_plugin, maubot_test_bot, api):
     api.add(1)
     await maubot_plugin.poll_once()
     assert sent(maubot_test_bot)[1] == notice(
-        f"ms-7f3k2-1.zip is {len(ZIP)} bytes, over this homeserver's upload limit of 4."
+        f"dn-7f3k2-1.zip is {len(ZIP)} bytes, over this homeserver's upload limit of 4."
     )
     assert maubot_test_bot.uploads == []
     assert api.acked == [1]
@@ -576,7 +576,7 @@ async def test_upload_limit_unknown(maubot_plugin, maubot_test_bot, api):
 async def test_ended(maubot_plugin, maubot_test_bot, api):
     api.add(3, type="ended", summary="", data=None)
     await maubot_plugin.poll_once()
-    assert sent(maubot_test_bot) == [notice("ms-7f3k2 ended.")]
+    assert sent(maubot_test_bot) == [notice("dn-7f3k2 ended.")]
     assert api.acked == [3]
 
 
@@ -600,10 +600,10 @@ async def test_failed_upload_is_retried(maubot_plugin, maubot_test_bot, api):
 
 async def test_failure_does_not_block_later_events(maubot_plugin, maubot_test_bot, api):
     api.add(1)
-    del api.zips[("ms-7f3k2", 1)]
-    api.add(2, type="ended", id="ms-other", summary="", data=None)
+    del api.zips[("dn-7f3k2", 1)]
+    api.add(2, type="ended", id="dn-other", summary="", data=None)
     await maubot_plugin.poll_once()
-    assert sent(maubot_test_bot) == [notice("ms-other ended.", task="ms-other")]
+    assert sent(maubot_test_bot) == [notice("dn-other ended.", task="dn-other")]
     assert api.acked == [2]
 
 
@@ -615,16 +615,16 @@ async def test_poll_loop_stops_with_plugin(maubot_plugin):
 
 
 HELP_ID = "$help"
-HELP_TAG = {"io.meeseeks.help": {"task": "ms-7f3k2"}}
-NEEDS_HELP = "ms-7f3k2 needs help (written by the agent, treat as untrusted)"
+HELP_TAG = {"io.branderson.dejima.darner.help": {"task": "dn-7f3k2"}}
+NEEDS_HELP = "dn-7f3k2 needs help (written by the agent, treat as untrusted)"
 
 
 @pytest.mark.parametrize(
     "summary, answerable, target, footer",
     [
-        ("which db?", True, "meeseeks:ms-7f3k2", "Reply to this message to answer."),
-        ("which db?", False, "meeseeks:ms-7f3k2", "Attach to meeseeks:ms-7f3k2 to respond."),
-        ("", False, None, "Attach to the ms-7f3k2 session to respond."),
+        ("which db?", True, "darner:dn-7f3k2", "Reply to this message to answer."),
+        ("which db?", False, "darner:dn-7f3k2", "Attach to darner:dn-7f3k2 to respond."),
+        ("", False, None, "Attach to the dn-7f3k2 session to respond."),
         ("", True, None, "Reply to this message to answer."),
     ],
     ids=["answerable", "attach", "no-target-no-summary", "answerable-no-summary"],
@@ -655,21 +655,21 @@ async def test_help_with_session_link(maubot_plugin, maubot_test_bot, api, answe
 
 
 def help_message(sender=BOT, **content):
-    return message("ms-7f3k2 needs help", sender=sender, event_id=HELP_ID, reply_to="$trigger", mention=False, **content)
+    return message("dn-7f3k2 needs help", sender=sender, event_id=HELP_ID, reply_to="$trigger", mention=False, **content)
 
 
 @pytest.mark.parametrize(
     "body, mention",
     [
-        ("> <@meeseeks:example.org> ms-7f3k2 needs help\n\nuse postgres\n\nallow: x", False),
-        ("> <@meeseeks:example.org> ms-7f3k2 needs help\n\n@meeseeks:example.org use postgres\n\nallow: x", True),
+        ("> <@dragonlet:example.org> dn-7f3k2 needs help\n\nuse postgres\n\nallow: x", False),
+        ("> <@dragonlet:example.org> dn-7f3k2 needs help\n\n@dragonlet:example.org use postgres\n\nallow: x", True),
     ],
     ids=["no-mention", "mention"],
 )
 async def test_answer(maubot_plugin, maubot_test_bot, api, body, mention):
     maubot_test_bot.events[HELP_ID] = help_message(**HELP_TAG)
     await send(maubot_test_bot, message(body, reply_to=HELP_ID, mention=mention))
-    assert api.answers == [("ms-7f3k2", {"text": "use postgres\n\nallow: x", "requester": ALICE})]
+    assert api.answers == [("dn-7f3k2", {"text": "use postgres\n\nallow: x", "requester": ALICE})]
     assert api.requests == []
     assert replies(maubot_test_bot) == []
     assert reactions(maubot_test_bot) == ["⏳", "✅"]
@@ -678,11 +678,11 @@ async def test_answer(maubot_plugin, maubot_test_bot, api, body, mention):
 
 @pytest.mark.parametrize(
     "tag",
-    [{"task": "../ms-7f3k2"}, {"task": 1}, "ms-7f3k2"],
+    [{"task": "../dn-7f3k2"}, {"task": 1}, "dn-7f3k2"],
     ids=["bad-id", "not-str", "not-dict"],
 )
 async def test_malformed_tag_is_not_an_answer(maubot_plugin, maubot_test_bot, api, tag):
-    maubot_test_bot.events[HELP_ID] = help_message(**{"io.meeseeks.help": tag})
+    maubot_test_bot.events[HELP_ID] = help_message(**{"io.branderson.dejima.darner.help": tag})
     await send(maubot_test_bot, message("use postgres", reply_to=HELP_ID, mention=False))
     assert maubot_test_bot.responded == [] and api.answers == []
 
@@ -691,7 +691,7 @@ async def test_tag_from_another_sender_is_not_an_answer(maubot_plugin, maubot_te
     maubot_test_bot.events[HELP_ID] = help_message(sender="@mallory:example.org", **HELP_TAG)
     await send(maubot_test_bot, message("use postgres", reply_to=HELP_ID, mention=False))
     assert maubot_test_bot.responded == [] and api.answers == []
-    await send(maubot_test_bot, message("@meeseeks:example.org use postgres", reply_to=HELP_ID))
+    await send(maubot_test_bot, message("@dragonlet:example.org use postgres", reply_to=HELP_ID))
     assert replies(maubot_test_bot) == [
         "the note is from @mallory:example.org, who isn't allowed to start tasks"
     ]
@@ -700,7 +700,7 @@ async def test_tag_from_another_sender_is_not_an_answer(maubot_plugin, maubot_te
 
 async def test_empty_answer(maubot_plugin, maubot_test_bot, api):
     maubot_test_bot.events[HELP_ID] = help_message(**HELP_TAG)
-    await send(maubot_test_bot, message("@meeseeks:example.org  ", reply_to=HELP_ID, mention=False))
+    await send(maubot_test_bot, message("@dragonlet:example.org  ", reply_to=HELP_ID, mention=False))
     assert replies(maubot_test_bot) == ["the answer is empty"]
     assert reactions(maubot_test_bot) == ["⏳", "❌"]
     assert api.answers == []
@@ -734,18 +734,18 @@ async def test_fetch_error(maubot_plugin, maubot_test_bot, api):
     maubot_test_bot.client.get_event = get_event
     await send(maubot_test_bot, message("thanks", mention=False))
     assert maubot_test_bot.responded == []
-    await send(maubot_test_bot, message("@meeseeks:example.org go"))
+    await send(maubot_test_bot, message("@dragonlet:example.org go"))
     assert replies(maubot_test_bot) == ["Failed: not found"]
     assert reactions(maubot_test_bot) == ["❌"]
 
 
-@pytest.mark.parametrize("body", ["@meeseeks:example.org help", "@Meeseeks:example.org: Help", "@meeseeks:example.org  HELP "])
+@pytest.mark.parametrize("body", ["@dragonlet:example.org help", "@Dragonlet:example.org: Help", "@dragonlet:example.org  HELP "])
 async def test_help_command_shows_usage(maubot_plugin, maubot_test_bot, api, body):
     await send(maubot_test_bot, message(body, reply_to=None))
     [text] = replies(maubot_test_bot)
-    assert text.startswith("**Meeseeks** starts an isolated dejima session")
+    assert text.startswith("**darner** starts an isolated dejima session")
     assert "ctx: <names>       add context blurbs (available: loki, myapp)" in text
-    assert "\n@meeseeks:example.org find out why" in text
+    assert "\n@dragonlet:example.org find out why" in text
     assert api.requests == []
     [msg] = sent(maubot_test_bot)
     assert "formatted_body" in msg
@@ -753,19 +753,19 @@ async def test_help_command_shows_usage(maubot_plugin, maubot_test_bot, api, bod
 
 async def test_help_command_without_blurbs_listing(maubot_plugin, maubot_test_bot, api):
     api.blurbs = None
-    await send(maubot_test_bot, message("@meeseeks:example.org help", reply_to=None))
+    await send(maubot_test_bot, message("@dragonlet:example.org help", reply_to=None))
     [text] = replies(maubot_test_bot)
     assert "ctx: <names>       add context blurbs\n" in text
 
 
 async def test_help_command_as_reply_to_note_shows_usage(maubot_plugin, maubot_test_bot, api):
-    await send(maubot_test_bot, message("@meeseeks:example.org help"))
-    assert replies(maubot_test_bot)[0].startswith("**Meeseeks**")
+    await send(maubot_test_bot, message("@dragonlet:example.org help"))
+    assert replies(maubot_test_bot)[0].startswith("**darner**")
     assert api.requests == []
 
 
 async def test_help_command_ignored_for_non_allowlisted(maubot_plugin, maubot_test_bot, api):
-    await send(maubot_test_bot, message("@meeseeks:example.org help", sender="@mallory:example.org", reply_to=None))
+    await send(maubot_test_bot, message("@dragonlet:example.org help", sender="@mallory:example.org", reply_to=None))
     assert maubot_test_bot.responded == []
 
 
@@ -778,18 +778,18 @@ NO_TASK = "Tell me the task after the mention, or reply to a note to make it the
 
 
 async def test_message_that_is_not_a_reply_is_the_task(maubot_plugin, maubot_test_bot, api):
-    body = "@meeseeks:example.org find out why the import job fails\nallow: pypi.org\nctx: myapp"
+    body = "@dragonlet:example.org find out why the import job fails\nallow: pypi.org\nctx: myapp"
     await send(maubot_test_bot, message(body, reply_to=None))
     payload = api.requests[0][1]
     assert payload["task"] == "find out why the import job fails"
     assert payload["context"] == ""
     assert payload["blurbs"] == ["myapp"] and payload["grants"]["domains"] == ["pypi.org"]
     assert payload["source"]["ref"] == "$trigger"
-    assert replies(maubot_test_bot) == ["Started ms-7f3k2 → meeseeks:ms-7f3k2"]
+    assert replies(maubot_test_bot) == ["Started dn-7f3k2 → darner:dn-7f3k2"]
 
 
 async def test_mention_with_only_keywords_asks_for_a_task(maubot_plugin, maubot_test_bot, api):
-    await send(maubot_test_bot, message("@meeseeks:example.org\nallow: pypi.org", reply_to=None))
+    await send(maubot_test_bot, message("@dragonlet:example.org\nallow: pypi.org", reply_to=None))
     assert replies(maubot_test_bot) == [NO_TASK]
     assert api.requests == []
 
@@ -800,7 +800,7 @@ def pill(text, href=BOT):
 
 @pytest.mark.parametrize(
     "text,href",
-    [("Meeseeks Bot", BOT), ("meeseeks", "%40meeseeks%3Aexample.org"), ("Task &amp; Co", BOT), ("@meeseeks:example.org", BOT)],
+    [("Dragonlet Bot", BOT), ("dragonlet", "%40dragonlet%3Aexample.org"), ("Task &amp; Co", BOT), ("@dragonlet:example.org", BOT)],
 )
 async def test_help_with_a_pill_of_any_text(maubot_plugin, maubot_test_bot, api, text, href):
     import html
@@ -808,13 +808,13 @@ async def test_help_with_a_pill_of_any_text(maubot_plugin, maubot_test_bot, api,
     shown = html.unescape(text)
     evt = message(f"{shown}: help", reply_to=None, format="org.matrix.custom.html", formatted_body=f"{pill(text, href)}: help")
     await send(maubot_test_bot, evt)
-    assert replies(maubot_test_bot)[0].startswith("**Meeseeks**")
+    assert replies(maubot_test_bot)[0].startswith("**darner**")
 
 
 async def test_pill_to_someone_else_is_not_stripped(maubot_plugin, maubot_test_bot, api):
     evt = message(
-        "@meeseeks:example.org Alice: help", reply_to=None, format="org.matrix.custom.html",
-        formatted_body=f"@meeseeks:example.org {pill('Alice', ALICE)}: help",
+        "@dragonlet:example.org Alice: help", reply_to=None, format="org.matrix.custom.html",
+        formatted_body=f"@dragonlet:example.org {pill('Alice', ALICE)}: help",
     )
     await send(maubot_test_bot, evt)
     assert api.requests[0][1]["task"] == "Alice: help"
@@ -822,16 +822,16 @@ async def test_pill_to_someone_else_is_not_stripped(maubot_plugin, maubot_test_b
 
 async def test_pill_text_stays_out_of_task_context(maubot_plugin, maubot_test_bot, api):
     evt = message(
-        "Meeseeks Bot: use xdist", format="org.matrix.custom.html", formatted_body=f"{pill('Meeseeks Bot')}: use xdist"
+        "Dragonlet Bot: use xdist", format="org.matrix.custom.html", formatted_body=f"{pill('Dragonlet Bot')}: use xdist"
     )
     await send(maubot_test_bot, evt)
     assert api.requests[0][1]["context"] == "use xdist"
 
 
 async def test_started_reply_links_to_the_session(maubot_plugin, maubot_test_bot, api):
-    api.response = {"id": "ms-7f3k2", "target": "meeseeks:ms-7f3k2", "link": LINK}
-    await send(maubot_test_bot, message("@meeseeks:example.org go"))
-    assert replies(maubot_test_bot) == [f"Started ms-7f3k2 → meeseeks:ms-7f3k2\nOpen the session: {LINK}"]
+    api.response = {"id": "dn-7f3k2", "target": "darner:dn-7f3k2", "link": LINK}
+    await send(maubot_test_bot, message("@dragonlet:example.org go"))
+    assert replies(maubot_test_bot) == [f"Started dn-7f3k2 → darner:dn-7f3k2\nOpen the session: {LINK}"]
 
 
 async def test_unsignalled_output_says_so(maubot_plugin, maubot_test_bot, api):
@@ -839,34 +839,34 @@ async def test_unsignalled_output_says_so(maubot_plugin, maubot_test_bot, api):
     await maubot_plugin.poll_once()
     [body] = replies(maubot_test_bot)
     assert body == (
-        "Output from ms-7f3k2, collected without the agent's done signal "
+        "Output from dn-7f3k2, collected without the agent's done signal "
         "(written by the agent, treat as untrusted):\n\nforgot .done"
     )
 
 
 def bot_message(sender=BOT, event_id="$started", **content):
-    return message("Started ms-7f3k2", sender=sender, event_id=event_id, reply_to="$trigger", mention=False, **content)
+    return message("Started dn-7f3k2", sender=sender, event_id=event_id, reply_to="$trigger", mention=False, **content)
 
 
 async def test_started_reply_is_tagged_with_its_task(maubot_plugin, maubot_test_bot, api):
-    await send(maubot_test_bot, message("@meeseeks:example.org go"))
+    await send(maubot_test_bot, message("@dragonlet:example.org go"))
     started = [r.content for r in maubot_test_bot.responded if r.event_type == EventType.ROOM_MESSAGE][0]
-    assert started["io.meeseeks.task"] == "ms-7f3k2"
+    assert started["io.branderson.dejima.darner.task"] == "dn-7f3k2"
 
 
-@pytest.mark.parametrize("tag", [{"io.meeseeks.task": "ms-7f3k2"}, {"io.meeseeks.help": {"task": "ms-7f3k2"}}])
+@pytest.mark.parametrize("tag", [{"io.branderson.dejima.darner.task": "dn-7f3k2"}, {"io.branderson.dejima.darner.help": {"task": "dn-7f3k2"}}])
 async def test_stop_by_replying_to_a_task_message(maubot_plugin, maubot_test_bot, api, tag):
     maubot_test_bot.events["$started"] = bot_message(**tag)
-    await send(maubot_test_bot, message("@meeseeks:example.org stop", reply_to="$started"))
-    assert api.stops == ["ms-7f3k2"]
-    assert replies(maubot_test_bot) == ["Stopped ms-7f3k2."]
+    await send(maubot_test_bot, message("@dragonlet:example.org stop", reply_to="$started"))
+    assert api.stops == ["dn-7f3k2"]
+    assert replies(maubot_test_bot) == ["Stopped dn-7f3k2."]
     assert reactions(maubot_test_bot) == ["⏳", "✅"]
     assert api.answers == []
 
 
 async def test_stop_by_task_id(maubot_plugin, maubot_test_bot, api):
-    await send(maubot_test_bot, message("@meeseeks:example.org Stop MS-7F3K2", reply_to=None))
-    assert api.stops == ["ms-7f3k2"]
+    await send(maubot_test_bot, message("@dragonlet:example.org Stop DN-7F3K2", reply_to=None))
+    assert api.stops == ["dn-7f3k2"]
 
 
 @pytest.mark.parametrize(
@@ -876,19 +876,19 @@ async def test_stop_by_task_id(maubot_plugin, maubot_test_bot, api):
 )
 async def test_stop_needs_a_task(maubot_plugin, maubot_test_bot, api, replied):
     if replied == "foreign":
-        maubot_test_bot.events["$started"] = bot_message(sender="@mallory:example.org", **{"io.meeseeks.task": "ms-7f3k2"})
+        maubot_test_bot.events["$started"] = bot_message(sender="@mallory:example.org", **{"io.branderson.dejima.darner.task": "dn-7f3k2"})
     elif replied == "untagged":
         maubot_test_bot.events["$started"] = bot_message()
     reply_to = "$started" if replied else None
-    await send(maubot_test_bot, message("@meeseeks:example.org stop", reply_to=reply_to))
+    await send(maubot_test_bot, message("@dragonlet:example.org stop", reply_to=reply_to))
     assert api.stops == []
     assert replies(maubot_test_bot)[0].startswith("To stop a session")
 
 
 async def test_stop_failure_is_relayed(maubot_plugin, maubot_test_bot, api):
     api.stop_status = 409
-    await send(maubot_test_bot, message("@meeseeks:example.org stop ms-7f3k2", reply_to=None))
-    assert replies(maubot_test_bot) == ["Failed: ms-7f3k2 is not running"]
+    await send(maubot_test_bot, message("@dragonlet:example.org stop dn-7f3k2", reply_to=None))
+    assert replies(maubot_test_bot) == ["Failed: dn-7f3k2 is not running"]
     assert reactions(maubot_test_bot) == ["⏳", "❌"]
 
 
@@ -896,7 +896,7 @@ async def test_stop_without_mention_answers_a_help_request(maubot_plugin, maubot
     maubot_test_bot.events[HELP_ID] = help_message(**HELP_TAG)
     await send(maubot_test_bot, message("stop", reply_to=HELP_ID, mention=False))
     assert api.stops == []
-    assert api.answers == [("ms-7f3k2", {"text": "stop", "requester": ALICE})]
+    assert api.answers == [("dn-7f3k2", {"text": "stop", "requester": ALICE})]
 
 
 REQUEST = {
@@ -908,7 +908,7 @@ REQUEST = {
     ],
     "rejected": 1,
 }
-DOMAINS_TAG = {"io.meeseeks.domains": {"task": "ms-7f3k2", "request": 3}}
+DOMAINS_TAG = {"io.branderson.dejima.darner.domains": {"task": "dn-7f3k2", "request": 3}}
 
 
 async def test_domain_request_lists_every_domain(maubot_plugin, maubot_test_bot, api):
@@ -917,19 +917,19 @@ async def test_domain_request_lists_every_domain(maubot_plugin, maubot_test_bot,
     await maubot_plugin.poll_once()
     [msg] = sent(maubot_test_bot)
     assert msg["body"] == (
-        "ms-7f3k2 asks to reach these domains (requested by the agent, check each one before allowing):\n\n"
+        "dn-7f3k2 asks to reach these domains (requested by the agent, check each one before allowing):\n\n"
         "- pypi.org\n- mirror.internal.example (internal)\n- api.example.net (refused by policy, won't be allowed)\n\n"
         "1 line(s) in the request weren't valid domains and were dropped.\n\n"
         "Reply `allow` with a mention to allow them, or `deny`."
     )
     assert "<li><code>mirror.internal.example</code> (internal)</li>" in msg["formatted_body"]
-    assert msg["io.meeseeks.domains"] == {"task": "ms-7f3k2", "request": 3}
-    assert msg["io.meeseeks.task"] == "ms-7f3k2" and msg["m.mentions"] == {}
+    assert msg["io.branderson.dejima.darner.domains"] == {"task": "dn-7f3k2", "request": 3}
+    assert msg["io.branderson.dejima.darner.task"] == "dn-7f3k2" and msg["m.mentions"] == {}
     assert api.acked == [4]
 
 
 def domains_message(sender=BOT, **content):
-    return message("ms-7f3k2 asks to reach these domains", sender=sender, event_id="$domains", reply_to="$trigger", mention=False, **content)
+    return message("dn-7f3k2 asks to reach these domains", sender=sender, event_id="$domains", reply_to="$trigger", mention=False, **content)
 
 
 @pytest.fixture
@@ -950,19 +950,19 @@ def decisions(api):
 
 async def test_allow_reply_grants_the_request(maubot_plugin, maubot_test_bot, decisions):
     maubot_test_bot.events["$domains"] = domains_message(**DOMAINS_TAG)
-    await send(maubot_test_bot, message("@meeseeks:example.org allow", reply_to="$domains"))
+    await send(maubot_test_bot, message("@dragonlet:example.org allow", reply_to="$domains"))
     assert decisions.decisions == [("allow", "3", {"requester": ALICE})]
     assert replies(maubot_test_bot) == [
-        "Allowed for ms-7f3k2: pypi.org.\nCouldn't allow x.example.com: unreachable\n"
+        "Allowed for dn-7f3k2: pypi.org.\nCouldn't allow x.example.com: unreachable\n"
         "Tell the agent in its session that it can carry on."
     ]
 
 
 async def test_deny_reply(maubot_plugin, maubot_test_bot, decisions):
     maubot_test_bot.events["$domains"] = domains_message(**DOMAINS_TAG)
-    await send(maubot_test_bot, message("@meeseeks:example.org deny", reply_to="$domains"))
+    await send(maubot_test_bot, message("@dragonlet:example.org deny", reply_to="$domains"))
     assert decisions.decisions == [("deny", "3", {"requester": ALICE})]
-    assert replies(maubot_test_bot) == ["Denied the domain request from ms-7f3k2."]
+    assert replies(maubot_test_bot) == ["Denied the domain request from dn-7f3k2."]
 
 
 @pytest.mark.parametrize("replied", [None, "foreign", "untagged"])
@@ -970,8 +970,8 @@ async def test_allow_needs_the_bots_domain_request(maubot_plugin, maubot_test_bo
     if replied == "foreign":
         maubot_test_bot.events["$domains"] = domains_message(sender="@mallory:example.org", **DOMAINS_TAG)
     elif replied == "untagged":
-        maubot_test_bot.events["$domains"] = domains_message(**{"io.meeseeks.task": "ms-7f3k2"})
-    await send(maubot_test_bot, message("@meeseeks:example.org allow", reply_to="$domains" if replied else None))
+        maubot_test_bot.events["$domains"] = domains_message(**{"io.branderson.dejima.darner.task": "dn-7f3k2"})
+    await send(maubot_test_bot, message("@dragonlet:example.org allow", reply_to="$domains" if replied else None))
     assert decisions.decisions == []
     assert replies(maubot_test_bot)[0].startswith("To allow or deny domains")
 
@@ -980,7 +980,7 @@ def session(**overrides):
     import time
 
     s = {
-        "id": "ms-7f3k2", "target": "meeseeks:ms-7f3k2", "link": None, "requester": ALICE,
+        "id": "dn-7f3k2", "target": "darner:dn-7f3k2", "link": None, "requester": ALICE,
         "started": time.time() - 3720, "state": "running", "answerable": True,
         "waiting": {"answer": None, "domains": None},
     }
@@ -1013,64 +1013,64 @@ def sessions(api):
 
 @pytest.mark.parametrize("command", ["sessions", "list", "list sessions"])
 async def test_sessions_when_none_are_open(maubot_plugin, maubot_test_bot, sessions, command):
-    await send(maubot_test_bot, message(f"@meeseeks:example.org {command}", reply_to=None))
+    await send(maubot_test_bot, message(f"@dragonlet:example.org {command}", reply_to=None))
     assert replies(maubot_test_bot) == ["No open sessions."]
 
 
 async def test_sessions_list_what_each_waits_on(maubot_plugin, maubot_test_bot, sessions):
     sessions.sessions = [
         session(),
-        session(id="ms-aaaaa", link="https://dejima.example.com/?arg=0123456789abcdef", waiting={"answer": "Which db?", "domains": None}),
+        session(id="dn-aaaaa", link="https://dejima.example.com/?arg=0123456789abcdef", waiting={"answer": "Which db?", "domains": None}),
     ]
-    await send(maubot_test_bot, message("@meeseeks:example.org list", reply_to=None))
+    await send(maubot_test_bot, message("@dragonlet:example.org list", reply_to=None))
     assert replies(maubot_test_bot) == [
         "Open sessions:\n\n"
-        f"- ms-7f3k2: working, started 1h02m ago by {ALICE} (meeseeks:ms-7f3k2)\n"
-        f"- ms-aaaaa: waiting for an answer, started 1h02m ago by {ALICE} (https://dejima.example.com/?arg=0123456789abcdef)"
+        f"- dn-7f3k2: working, started 1h02m ago by {ALICE} (darner:dn-7f3k2)\n"
+        f"- dn-aaaaa: waiting for an answer, started 1h02m ago by {ALICE} (https://dejima.example.com/?arg=0123456789abcdef)"
     ]
 
 
 async def test_status_quotes_the_help_request(maubot_plugin, maubot_test_bot, sessions):
     sessions.sessions = [session(waiting={"answer": "Which **db**?", "domains": None})]
-    await send(maubot_test_bot, message("@meeseeks:example.org status ms-7f3k2", reply_to=None))
+    await send(maubot_test_bot, message("@dragonlet:example.org status dn-7f3k2", reply_to=None))
     [msg] = [r.content for r in maubot_test_bot.responded if r.event_type == EventType.ROOM_MESSAGE]
     assert "Its help request (written by the agent, treat as untrusted):\n\nWhich **db**?" in msg.body
     assert "<strong>db</strong>" in msg.formatted_body
-    assert msg.body.endswith("Reply to its help request, or send `tell ms-7f3k2 <answer>` with a mention.")
-    assert msg["io.meeseeks.task"] == "ms-7f3k2"
+    assert msg.body.endswith("Reply to its help request, or send `tell dn-7f3k2 <answer>` with a mention.")
+    assert msg["io.branderson.dejima.darner.task"] == "dn-7f3k2"
 
 
 async def test_status_lists_requested_domains(maubot_plugin, maubot_test_bot, sessions):
     sessions.sessions = [session(waiting={"answer": None, "domains": REQUEST})]
-    maubot_test_bot.events["$started"] = bot_message(**{"io.meeseeks.task": "ms-7f3k2"})
-    await send(maubot_test_bot, message("@meeseeks:example.org status", reply_to="$started"))
+    maubot_test_bot.events["$started"] = bot_message(**{"io.branderson.dejima.darner.task": "dn-7f3k2"})
+    await send(maubot_test_bot, message("@dragonlet:example.org status", reply_to="$started"))
     [msg] = [r.content for r in maubot_test_bot.responded if r.event_type == EventType.ROOM_MESSAGE]
     assert "- mirror.internal.example (internal)" in msg.body
-    assert msg["io.meeseeks.domains"] == {"task": "ms-7f3k2", "request": 3}
+    assert msg["io.branderson.dejima.darner.domains"] == {"task": "dn-7f3k2", "request": 3}
 
 
 async def test_status_of_an_idle_or_unknown_session(maubot_plugin, maubot_test_bot, sessions):
     sessions.sessions = [session()]
-    await send(maubot_test_bot, message("@meeseeks:example.org status ms-7f3k2", reply_to=None))
-    await send(maubot_test_bot, message("@meeseeks:example.org status ms-zzzzz", reply_to=None))
+    await send(maubot_test_bot, message("@dragonlet:example.org status dn-7f3k2", reply_to=None))
+    await send(maubot_test_bot, message("@dragonlet:example.org status dn-zzzzz", reply_to=None))
     bodies = replies(maubot_test_bot)
     assert bodies[0].endswith("It isn't waiting on you.")
-    assert bodies[1] == "ms-zzzzz isn't an open session."
+    assert bodies[1] == "dn-zzzzz isn't an open session."
 
 
 async def test_tell_by_id_and_by_reply(maubot_plugin, maubot_test_bot, sessions):
-    await send(maubot_test_bot, message("@meeseeks:example.org tell ms-7f3k2 Also check\nthe logs.", reply_to=None))
-    maubot_test_bot.events["$started"] = bot_message(**{"io.meeseeks.task": "ms-7f3k2"})
-    await send(maubot_test_bot, message("@meeseeks:example.org tell use main", reply_to="$started"))
+    await send(maubot_test_bot, message("@dragonlet:example.org tell dn-7f3k2 Also check\nthe logs.", reply_to=None))
+    maubot_test_bot.events["$started"] = bot_message(**{"io.branderson.dejima.darner.task": "dn-7f3k2"})
+    await send(maubot_test_bot, message("@dragonlet:example.org tell use main", reply_to="$started"))
     assert sessions.messages == [
-        ("ms-7f3k2", {"text": "Also check\nthe logs.", "requester": ALICE}),
-        ("ms-7f3k2", {"text": "use main", "requester": ALICE}),
+        ("dn-7f3k2", {"text": "Also check\nthe logs.", "requester": ALICE}),
+        ("dn-7f3k2", {"text": "use main", "requester": ALICE}),
     ]
     assert reactions(maubot_test_bot) == ["⏳", "✅", "⏳", "✅"]
 
 
 async def test_tell_without_a_session_is_a_task(maubot_plugin, maubot_test_bot, sessions):
-    await send(maubot_test_bot, message("@meeseeks:example.org tell me why the build fails", reply_to=None))
+    await send(maubot_test_bot, message("@dragonlet:example.org tell me why the build fails", reply_to=None))
     assert sessions.messages == []
     assert sessions.requests[0][1]["task"] == "tell me why the build fails"
 
@@ -1081,24 +1081,24 @@ async def test_unverified_domain_is_reported_as_allowed(maubot_plugin, maubot_te
         "unverified": [{"domain": "recipes.example.com", "warning": "curl exit 28"}], "told": True,
     }
     maubot_test_bot.events["$domains"] = domains_message(**DOMAINS_TAG)
-    await send(maubot_test_bot, message("@meeseeks:example.org allow", reply_to="$domains"))
+    await send(maubot_test_bot, message("@dragonlet:example.org allow", reply_to="$domains"))
     assert replies(maubot_test_bot) == [
-        "Allowed for ms-7f3k2: recipes.example.com.\n"
+        "Allowed for dn-7f3k2: recipes.example.com.\n"
         "recipes.example.com is allowed, but didn't answer on port 443 from the session: curl exit 28"
     ]
 
 
 async def test_mentioned_reply_to_a_session_message_is_told_to_it(maubot_plugin, maubot_test_bot, sessions):
-    maubot_test_bot.events["$started"] = bot_message(**{"io.meeseeks.task": "ms-7f3k2"})
-    await send(maubot_test_bot, message("@meeseeks:example.org try port 8443 instead", reply_to="$started"))
-    assert sessions.messages == [("ms-7f3k2", {"text": "try port 8443 instead", "requester": ALICE})]
+    maubot_test_bot.events["$started"] = bot_message(**{"io.branderson.dejima.darner.task": "dn-7f3k2"})
+    await send(maubot_test_bot, message("@dragonlet:example.org try port 8443 instead", reply_to="$started"))
+    assert sessions.messages == [("dn-7f3k2", {"text": "try port 8443 instead", "requester": ALICE})]
     assert sessions.requests == []
 
 
 async def test_mention_alone_in_reply_to_a_session_message(maubot_plugin, maubot_test_bot, sessions):
-    maubot_test_bot.events["$started"] = bot_message(**{"io.meeseeks.task": "ms-7f3k2"})
-    await send(maubot_test_bot, message("@meeseeks:example.org", reply_to="$started"))
-    assert replies(maubot_test_bot) == ["Say what to tell ms-7f3k2 after the mention."]
+    maubot_test_bot.events["$started"] = bot_message(**{"io.branderson.dejima.darner.task": "dn-7f3k2"})
+    await send(maubot_test_bot, message("@dragonlet:example.org", reply_to="$started"))
+    assert replies(maubot_test_bot) == ["Say what to tell dn-7f3k2 after the mention."]
     assert sessions.messages == [] and sessions.requests == []
 
 
@@ -1127,22 +1127,22 @@ def uploads(api, maubot_test_bot):
         return downloads[url]
 
     maubot_test_bot.client.download_media = download_media
-    maubot_test_bot.events["$started"] = bot_message(**{"io.meeseeks.task": "ms-7f3k2"})
+    maubot_test_bot.events["$started"] = bot_message(**{"io.branderson.dejima.darner.task": "dn-7f3k2"})
     return api
 
 
 async def test_file_sent_as_a_reply_to_a_session_message_is_uploaded(maubot_plugin, maubot_test_bot, uploads):
     await send(maubot_test_bot, file_message(reply_to="$started", filename="access.log"))
-    assert uploads.files == [("ms-7f3k2", {"name": "access.log", "requester": ALICE}, b"log")]
+    assert uploads.files == [("dn-7f3k2", {"name": "access.log", "requester": ALICE}, b"log")]
     assert replies(maubot_test_bot) == [
-        "Uploaded access.log to ms-7f3k2 as ~/shared/uploads/access.log.\nTell the agent in its session where to find it."
+        "Uploaded access.log to dn-7f3k2 as ~/shared/uploads/access.log.\nTell the agent in its session where to find it."
     ]
 
 
 async def test_upload_command_in_reply_to_a_file(maubot_plugin, maubot_test_bot, uploads):
     maubot_test_bot.events["$file"] = file_message()
-    await send(maubot_test_bot, message("@meeseeks:example.org upload ms-7f3k2", reply_to="$file"))
-    assert uploads.files == [("ms-7f3k2", {"name": "access.log", "requester": ALICE}, b"log")]
+    await send(maubot_test_bot, message("@dragonlet:example.org upload dn-7f3k2", reply_to="$file"))
+    assert uploads.files == [("dn-7f3k2", {"name": "access.log", "requester": ALICE}, b"log")]
 
 
 async def test_encrypted_file_is_decrypted_before_upload(maubot_plugin, maubot_test_bot, uploads, monkeypatch):
@@ -1157,9 +1157,9 @@ async def test_encrypted_file_is_decrypted_before_upload(maubot_plugin, maubot_t
 
 
 async def test_upload_command_needs_a_file(maubot_plugin, maubot_test_bot, uploads):
-    await send(maubot_test_bot, message("@meeseeks:example.org upload ms-7f3k2", reply_to="$started"))
+    await send(maubot_test_bot, message("@dragonlet:example.org upload dn-7f3k2", reply_to="$started"))
     assert uploads.files == []
-    assert replies(maubot_test_bot) == ["To upload a file to ms-7f3k2, reply `upload ms-7f3k2` with a mention to the file."]
+    assert replies(maubot_test_bot) == ["To upload a file to dn-7f3k2, reply `upload dn-7f3k2` with a mention to the file."]
 
 
 async def test_files_from_others_or_not_for_a_session_are_ignored(maubot_plugin, maubot_test_bot, uploads):
@@ -1169,7 +1169,7 @@ async def test_files_from_others_or_not_for_a_session_are_ignored(maubot_plugin,
 
 
 async def test_model_and_effort_are_sent(maubot_plugin, maubot_test_bot, api):
-    await send(maubot_test_bot, message("@meeseeks:example.org go\nmodel: opus\neffort: high\ncontext_window: 32768"))
+    await send(maubot_test_bot, message("@dragonlet:example.org go\nmodel: opus\neffort: high\ncontext_window: 32768"))
     payload = api.requests[0][1]
     assert payload["model"] == "opus" and payload["effort"] == "high" and payload["context_window"] == "32768"
 
@@ -1183,10 +1183,10 @@ async def test_domain_port_is_shown(maubot_plugin, maubot_test_bot, api):
 
 
 async def test_help_with_a_markdown_pill_body(maubot_plugin, maubot_test_bot, api):
-    body = "[@meeseeks:example.org](https://matrix.to/#/@meeseeks:example.org) help"
-    html = '<a href="https://matrix.to/#/@meeseeks:example.org">@meeseeks:example.org</a> help'
+    body = "[@dragonlet:example.org](https://matrix.to/#/@dragonlet:example.org) help"
+    html = '<a href="https://matrix.to/#/@dragonlet:example.org">@dragonlet:example.org</a> help'
     await send(maubot_test_bot, message(body, reply_to=None, format="org.matrix.custom.html", formatted_body=html))
-    assert replies(maubot_test_bot)[0].startswith("**Meeseeks**")
+    assert replies(maubot_test_bot)[0].startswith("**darner**")
     assert api.requests == []
 
 
@@ -1196,20 +1196,20 @@ async def test_help_lists_harnesses_and_backends(maubot_plugin, maubot_test_bot,
 
     api.server.app.router._frozen = False
     api.server.app.router.add_get("/v1/catalog", catalog)
-    await send(maubot_test_bot, message("@meeseeks:example.org help", reply_to=None))
+    await send(maubot_test_bot, message("@dragonlet:example.org help", reply_to=None))
     [text] = replies(maubot_test_bot)
     assert "use this harness instead of the default (claude-code, cline; default claude-code)" in text
     assert "use this backend instead of the harness's default (anthropic, self-hosted)" in text
 
 
 async def test_help_without_the_catalog(maubot_plugin, maubot_test_bot, api):
-    await send(maubot_test_bot, message("@meeseeks:example.org help", reply_to=None))
+    await send(maubot_test_bot, message("@dragonlet:example.org help", reply_to=None))
     [text] = replies(maubot_test_bot)
     assert "use this harness instead of the default\n" in text
 
 
 async def test_config_keyword_is_sent(maubot_plugin, maubot_test_bot, api):
-    await send(maubot_test_bot, message("@meeseeks:example.org add this recipe\nconfig: mealie\nallow: example.com"))
+    await send(maubot_test_bot, message("@dragonlet:example.org add this recipe\nconfig: mealie\nallow: example.com"))
     payload = api.requests[0][1]
     assert payload["configs"] == ["mealie"] and payload["grants"]["domains"] == ["example.com"]
 
@@ -1220,9 +1220,9 @@ async def test_waiting_notice(maubot_plugin, maubot_test_bot, api, summary):
     api.events[-1]["data"] = {"quiet": 360}
     await maubot_plugin.poll_once()
     [msg] = sent(maubot_test_bot)
-    assert msg["body"].startswith("ms-7f3k2 seems to be waiting: its screen hasn't changed for 6m.")
+    assert msg["body"].startswith("dn-7f3k2 seems to be waiting: its screen hasn't changed for 6m.")
     assert msg["body"].endswith(f"Reply with a mention to tell it something, or open the session: {LINK}")
-    assert msg["io.meeseeks.task"] == "ms-7f3k2" and msg["m.mentions"] == {}
+    assert msg["io.branderson.dejima.darner.task"] == "dn-7f3k2" and msg["m.mentions"] == {}
     if summary:
         assert "    Do you want to continue? (y/n)" in msg["body"]
         assert "<pre><code>Do you want to continue? (y/n)\n&gt; </code></pre>" in msg["formatted_body"]
@@ -1232,7 +1232,7 @@ async def test_waiting_notice(maubot_plugin, maubot_test_bot, api, summary):
 
 
 async def test_describe_shows_a_config_set(maubot_plugin, maubot_test_bot, api):
-    await send(maubot_test_bot, message("@meeseeks:example.org describe recipes", reply_to=None))
+    await send(maubot_test_bot, message("@dragonlet:example.org describe recipes", reply_to=None))
     [msg] = [r for r in maubot_test_bot.responded if r.event_type == EventType.ROOM_MESSAGE]
     assert "ctx: myapp\n    file: recipes-token\n    harness: cline\n    context_window: 30000" in msg.content.body
     assert "<pre><code>ctx: myapp\nfile: recipes-token" in msg.content.formatted_body
@@ -1241,7 +1241,7 @@ async def test_describe_shows_a_config_set(maubot_plugin, maubot_test_bot, api):
 
 
 async def test_describe_shows_config_sets_then_blurbs_in_order(maubot_plugin, maubot_test_bot, api):
-    await send(maubot_test_bot, message("@meeseeks:example.org describe loki, recipes", reply_to=None))
+    await send(maubot_test_bot, message("@dragonlet:example.org describe loki, recipes", reply_to=None))
     [body] = replies(maubot_test_bot)
     heads = [line for line in body.splitlines() if line.endswith(")")]
     assert heads == ["loki (blurb)", "recipes (config set)", "recipes (blurb)"]
@@ -1251,7 +1251,7 @@ async def test_describe_shows_config_sets_then_blurbs_in_order(maubot_plugin, ma
 
 
 async def test_describe_names_what_it_did_not_find(maubot_plugin, maubot_test_bot, api):
-    await send(maubot_test_bot, message("@meeseeks:example.org describe recipes nope", reply_to=None))
+    await send(maubot_test_bot, message("@dragonlet:example.org describe recipes nope", reply_to=None))
     [body] = replies(maubot_test_bot)
     assert body.startswith("recipes (config set)")
     assert body.endswith("No config set or blurb called nope. Send `help` with a mention to list them.")
@@ -1259,7 +1259,7 @@ async def test_describe_names_what_it_did_not_find(maubot_plugin, maubot_test_bo
 
 
 async def test_describe_cuts_a_long_blurb(maubot_plugin, maubot_test_bot, api):
-    await send(maubot_test_bot, message("@meeseeks:example.org describe long tall recipes", reply_to=None))
+    await send(maubot_test_bot, message("@dragonlet:example.org describe long tall recipes", reply_to=None))
     [body] = replies(maubot_test_bot)
     assert "x" * 1000 in body and "x" * 1001 not in body
     assert "line 19\n" in body and "line 20" not in body
@@ -1268,7 +1268,7 @@ async def test_describe_cuts_a_long_blurb(maubot_plugin, maubot_test_bot, api):
 
 async def test_describe_is_limited(maubot_plugin, maubot_test_bot, api):
     names = " ".join(f"b{i}" for i in range(11))
-    await send(maubot_test_bot, message(f"@meeseeks:example.org describe {names}", reply_to=None))
+    await send(maubot_test_bot, message(f"@dragonlet:example.org describe {names}", reply_to=None))
     assert replies(maubot_test_bot) == ["I can describe up to 10 at once."]
 
 
@@ -1277,14 +1277,14 @@ async def test_describe_is_limited(maubot_plugin, maubot_test_bot, api):
     ("List Configs", "Config sets: recipes. Send `describe <names>` with a mention to see them."),
 ])
 async def test_list_blurbs_and_configs(maubot_plugin, maubot_test_bot, api, command, expected):
-    await send(maubot_test_bot, message(f"@meeseeks:example.org {command}", reply_to=None))
+    await send(maubot_test_bot, message(f"@dragonlet:example.org {command}", reply_to=None))
     assert replies(maubot_test_bot) == [expected]
     assert api.requests == []
 
 
 async def test_list_with_none(maubot_plugin, maubot_test_bot, api):
     api.blurbs = []
-    await send(maubot_test_bot, message("@meeseeks:example.org list blurbs", reply_to=None))
+    await send(maubot_test_bot, message("@dragonlet:example.org list blurbs", reply_to=None))
     assert replies(maubot_test_bot) == ["There are no context blurbs."]
 
 
@@ -1329,8 +1329,8 @@ def assert_shown_safely(content: dict) -> None:
 
 
 async def test_selftest_is_shown_safely(maubot_plugin, maubot_test_bot, api):
-    from meeseeks.archive import clean_text
-    from meeseeks.selftest import PAYLOAD
+    from darner.archive import clean_text
+    from darner.selftest import PAYLOAD
 
     text = clean_text(PAYLOAD.encode())
     api.add(1, summary=text, data=None)
@@ -1344,9 +1344,9 @@ async def test_selftest_is_shown_safely(maubot_plugin, maubot_test_bot, api):
 
 
 async def test_selftest_command(maubot_plugin, maubot_test_bot, api):
-    await send(maubot_test_bot, message("@meeseeks:example.org selftest", reply_to=None))
+    await send(maubot_test_bot, message("@dragonlet:example.org selftest", reply_to=None))
     [reply] = replies(maubot_test_bot)
-    assert reply.startswith("Self-test ms-5e1f7: its output, help request and waiting notice follow")
+    assert reply.startswith("Self-test dn-5e1f7: its output, help request and waiting notice follow")
     assert api.selftests == [{"requester": ALICE, "source": {"kind": "matrix", "ref": "$trigger", "channel": ROOM}}]
 
 
@@ -1354,9 +1354,9 @@ async def test_selftest_command(maubot_plugin, maubot_test_bot, api):
 def test_the_selftest_check_catches_an_unsafe_frontend(unsafe):
     from mautrix.util.markdown import render as plain_render
 
-    from meeseeks.archive import clean_text
-    from meeseeks.selftest import PAYLOAD
-    from meeseeks_bot.markdown import render
+    from darner.archive import clean_text
+    from darner.selftest import PAYLOAD
+    from dragonlet.markdown import render
 
     text = clean_text(PAYLOAD.encode())
     content = {"body": text, "formatted_body": render(text), "m.mentions": {}}
@@ -1374,9 +1374,19 @@ def test_the_selftest_check_catches_an_unsafe_frontend(unsafe):
 
 def test_selftest_checks_hold_no_markup():
     # A check has to read the same in a frontend that fails it.
-    from meeseeks.selftest import PAYLOAD
+    from darner.selftest import PAYLOAD
 
     checks = [line for line in PAYLOAD.splitlines() if line.startswith(("Check ", "Frontend self-test"))]
     assert len(checks) == 11
     for line in checks:
         assert not any(mark in line for mark in ("<", ">", "](", "`", "*", "_", "@")), line
+
+
+async def test_messages_from_before_the_rename_are_still_understood(maubot_plugin, maubot_test_bot, api):
+    maubot_test_bot.events[HELP_ID] = help_message(**{"io.meeseeks.help": {"task": "ms-7f3k2"}})
+    await send(maubot_test_bot, message("use postgres", reply_to=HELP_ID, mention=False))
+    assert api.answers == [("ms-7f3k2", {"text": "use postgres", "requester": ALICE})]
+    maubot_test_bot.events["$started"] = bot_message(**{"io.meeseeks.task": "ms-7f3k2"})
+    await send(maubot_test_bot, message("@dragonlet:example.org stop", reply_to="$started"))
+    await send(maubot_test_bot, message("@dragonlet:example.org stop ms-7f3k2", reply_to=None))
+    assert api.stops == ["ms-7f3k2", "ms-7f3k2"]

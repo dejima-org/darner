@@ -8,9 +8,9 @@ from pathlib import Path
 
 import pytest
 
-from meeseeks.api import STORE, make_app, poll_once
-from meeseeks.archive import MANIFEST_SLACK
-from meeseeks.store import Store
+from darner.api import STORE, make_app, poll_once
+from darner.archive import MANIFEST_SLACK
+from darner.store import Store
 from tests.test_launch import FAKE_TMUX
 
 STUB = """import json, os, sys
@@ -32,16 +32,16 @@ elif command[:1] == ["upload"]:
 elif command[:1] == ["stop"]:
     open(os.environ["STUB_LOG"], "a").write(json.dumps(command) + "\\n")
     if os.environ.get("STUB_STOP_ERROR"):
-        sys.exit("meeseeks-launch: " + os.environ["STUB_STOP_ERROR"])
+        sys.exit("darner-launch: " + os.environ["STUB_STOP_ERROR"])
 elif command[:1] in (["answer"], ["message"]):
     open(os.environ["STUB_LOG"], "a").write(json.dumps([*command, json.load(sys.stdin)]) + "\\n")
     if os.environ.get("STUB_ANSWER_ERROR"):
-        sys.exit("meeseeks-launch: " + os.environ["STUB_ANSWER_ERROR"])
+        sys.exit("darner-launch: " + os.environ["STUB_ANSWER_ERROR"])
 elif command[:1] == ["fetch"]:
     open(os.environ["STUB_LOG"], "a").write(json.dumps(command) + "\\n")
     code = int(os.environ.get("STUB_FETCH_CODE", "0"))
     if code:
-        sys.stderr.write("meeseeks-launch: boom\\n" if code == 1 else "meeseeks-launch: more than 10 bytes\\n")
+        sys.stderr.write("darner-launch: boom\\n" if code == 1 else "darner-launch: more than 10 bytes\\n")
         sys.exit(code)
     sys.stdout.buffer.write(open(os.environ["STUB_FETCH"], "rb").read())
 else:
@@ -49,7 +49,7 @@ else:
     open(os.environ["STUB_LOG"], "a").write(json.dumps(job) + "\\n")
     if os.environ.get("STUB_FAIL"):
         sys.exit("no such harness")
-    result = {"id": job["id"], "target": "meeseeks:" + job["id"]}
+    result = {"id": job["id"], "target": "darner:" + job["id"]}
     if os.environ.get("STUB_RUN_ID"):
         result["run_id"] = os.environ["STUB_RUN_ID"]
     print(json.dumps(result))
@@ -110,7 +110,7 @@ async def test_launches_task(client, tmp_path):
     resp = await client.post("/v1/tasks", json=request(blurbs=["myapp"], harness="cline"), headers=AUTH)
     assert resp.status == 201
     body = await resp.json()
-    assert body["target"] == "meeseeks:" + body["id"]
+    assert body["target"] == "darner:" + body["id"]
 
     [job] = launched(tmp_path)
     assert job["id"] == body["id"]
@@ -171,9 +171,9 @@ async def test_non_utf8_body_is_rejected(client):
 
 
 async def test_pending_task_from_previous_run_is_retried(aiohttp_client, config, tmp_path):
-    from meeseeks.store import Store
+    from darner.store import Store
 
-    Store(config["db_path"]).claim("ms-aaaaa", "maubot", request()["source"], "@u:example.org", "{}")
+    Store(config["db_path"]).claim("dn-aaaaa", "maubot", request()["source"], "@u:example.org", "{}")
     client = await aiohttp_client(make_app(config, poll=False))
     resp = await client.post("/v1/tasks", json=request(), headers=AUTH)
     assert resp.status == 201
@@ -208,7 +208,7 @@ async def test_end_to_end_with_launcher(aiohttp_client, config, tmp_path, monkey
     dejima.write_text("#!/bin/sh\n")
     dejima.chmod(0o755)
     config["launch_command"] = [
-        sys.executable, "-m", "meeseeks.launch", "--tmux", str(tmux), "--tasks-dir", str(tmp_path / "tasks"),
+        sys.executable, "-m", "darner.launch", "--tmux", str(tmux), "--tasks-dir", str(tmp_path / "tasks"),
         "--dejima", str(dejima),
         "--harness", "claude-code", "--backend", "claude-code=anthropic", "--share-root", str(tmp_path / "isolated"),
     ]
@@ -262,7 +262,7 @@ async def started(aiohttp_client, config, tmp_path, monkeypatch):
         path = tmp_path / "status.json"
         path.write_text(json.dumps([
             {"id": task_id, "state": state, "ready": ready, "help": help, "answerable": answerable},
-            {"id": "ms-zzzzz", "state": "exited", "ready": True, "help": True},
+            {"id": "dn-zzzzz", "state": "exited", "ready": True, "help": True},
         ]))
         monkeypatch.setenv("STUB_STATUS", str(path))
 
@@ -373,11 +373,11 @@ async def test_other_clients_output_is_not_downloadable(started, config):
     config["tokens"]["other"] = "0ther-0123456789abcdef0123456789abcdef"
     resp = await client.get(f"/v1/tasks/{task_id}/outputs/{event['seq']}.zip", headers={"Authorization": "Bearer 0ther-0123456789abcdef0123456789abcdef"})
     assert resp.status == 404
-    resp = await client.get(f"/v1/tasks/ms-zzzzz/outputs/{event['seq']}.zip", headers=AUTH)
+    resp = await client.get(f"/v1/tasks/dn-zzzzz/outputs/{event['seq']}.zip", headers=AUTH)
     assert resp.status == 404
 
 
-@pytest.mark.parametrize("path", ["/v1/events", "/v1/tasks/ms-aaaaa/outputs/1.zip"])
+@pytest.mark.parametrize("path", ["/v1/events", "/v1/tasks/dn-aaaaa/outputs/1.zip"])
 async def test_events_need_auth(client, path):
     assert (await client.get(path)).status == 401
 
@@ -423,7 +423,7 @@ async def test_help_request_becomes_event(started, monkeypatch, answerable):
     [event] = await events(client)
     assert event["type"] == "help" and event["summary"] == "Which branch?[2J"
     assert event["answerable"] is answerable
-    assert event["target"] == f"meeseeks:{task_id}"
+    assert event["target"] == f"darner:{task_id}"
 
 
 async def test_answer_reaches_launcher(started, tmp_path):
@@ -521,14 +521,14 @@ def test_existing_database_gains_run_id_column(tmp_path):
         "CREATE TABLE tasks (id TEXT PRIMARY KEY, client TEXT NOT NULL, source_kind TEXT NOT NULL,"
         " source_ref TEXT NOT NULL, source_json TEXT NOT NULL, requester TEXT NOT NULL, job_json TEXT NOT NULL,"
         " status TEXT NOT NULL, target TEXT, error TEXT, created REAL NOT NULL, UNIQUE (client, source_kind, source_ref));"
-        "INSERT INTO tasks VALUES ('ms-aaaaa', 'maubot', 'matrix', '$e', '{}', '@u:example.org', '{}', 'launched',"
-        " 'meeseeks:ms-aaaaa', NULL, 0);"
+        "INSERT INTO tasks VALUES ('dn-aaaaa', 'maubot', 'matrix', '$e', '{}', '@u:example.org', '{}', 'launched',"
+        " 'darner:dn-aaaaa', NULL, 0);"
     )
     old.commit()
     old.close()
     store = Store(str(db))
-    store.set_run_id("ms-aaaaa", RUN)
-    assert store.launched() == ["ms-aaaaa"]
+    store.set_run_id("dn-aaaaa", RUN)
+    assert store.launched() == ["dn-aaaaa"]
 
 
 async def test_unsignalled_result_is_collected_and_marked(started, tmp_path, monkeypatch):
@@ -563,15 +563,15 @@ def test_existing_events_table_gains_signalled_column(tmp_path):
         " acked INTEGER NOT NULL DEFAULT 0, created REAL NOT NULL);"
         "DROP TABLE events_new;"
         "INSERT INTO tasks (id, client, source_kind, source_ref, source_json, requester, job_json, status, created)"
-        " VALUES ('ms-aaaaa', 'maubot', 'matrix', '$e', '{}', '@u:example.org', '{}', 'launched', 0);"
-        "INSERT INTO events (task_id, type, created) VALUES ('ms-aaaaa', 'ended', 0);"
+        " VALUES ('dn-aaaaa', 'maubot', 'matrix', '$e', '{}', '@u:example.org', '{}', 'launched', 0);"
+        "INSERT INTO events (task_id, type, created) VALUES ('dn-aaaaa', 'ended', 0);"
     )
     old.commit()
     old.close()
     store = Store(str(db))
     [event] = store.events("maubot")
     assert event.signalled is True
-    store.add_event("ms-aaaaa", "output", signalled=False)
+    store.add_event("dn-aaaaa", "output", signalled=False)
     assert store.events("maubot")[1].signalled is False
 
 
@@ -588,11 +588,11 @@ def test_config_errors_are_one_line(tmp_path, toml, message):
     path = tmp_path / "api.toml"
     path.write_text(toml)
     result = subprocess.run(
-        [sys.executable, "-c", "from meeseeks.api import main; main()", "--config", str(path)],
+        [sys.executable, "-c", "from darner.api import main; main()", "--config", str(path)],
         capture_output=True, text=True, cwd=Path(__file__).parent.parent,
     )
     assert result.returncode == 1
-    assert result.stderr.strip().startswith(f"meeseeks-api: {path}: ")
+    assert result.stderr.strip().startswith(f"darner-api: {path}: ")
     assert message in result.stderr and "Traceback" not in result.stderr
 
 
@@ -601,7 +601,7 @@ async def test_share_error_is_logged_once(started, tmp_path, monkeypatch, caplog
     path = tmp_path / "status.json"
     path.write_text(json.dumps([{"id": task_id, "state": "running", "ready": False, "error": "shared path '/x' is not under /y"}]))
     monkeypatch.setenv("STUB_STATUS", str(path))
-    with caplog.at_level("WARNING", logger="meeseeks.api"):
+    with caplog.at_level("WARNING", logger="darner.api"):
         await poll_once(app)
         await poll_once(app)
     warnings = [r.getMessage() for r in caplog.records if "can't read" in r.getMessage()]
@@ -614,14 +614,22 @@ async def test_stop_reaches_launcher(started, tmp_path):
     assert fetches(tmp_path)[-1] == ["stop", task_id]
 
 
+async def test_a_task_from_before_the_rename_is_still_reached(started, tmp_path):
+    app, client, _, *_ = started
+    app[STORE].claim("ms-abc23", "maubot", {"kind": "matrix", "ref": "$old"}, "@u:example.org", "{}")
+    app[STORE].mark("ms-abc23", "launched")
+    assert (await client.post("/v1/tasks/ms-abc23/stop", headers=AUTH)).status == 204
+    assert fetches(tmp_path)[-1] == ["stop", "ms-abc23"]
+
+
 async def test_stop_is_scoped_and_needs_a_running_task(started, config, tmp_path, monkeypatch):
     app, client, task_id, *_ = started
     config["tokens"]["other"] = "0ther-0123456789abcdef0123456789abcdef"
     assert (await client.post(f"/v1/tasks/{task_id}/stop", headers={"Authorization": "Bearer 0ther-0123456789abcdef0123456789abcdef"})).status == 404
     assert (await client.post(f"/v1/tasks/{task_id}/stop")).status == 401
-    monkeypatch.setenv("STUB_STOP_ERROR", "ms-x is not running")
+    monkeypatch.setenv("STUB_STOP_ERROR", "dn-x is not running")
     resp = await client.post(f"/v1/tasks/{task_id}/stop", headers=AUTH)
-    assert resp.status == 409 and (await resp.json())["error"] == "ms-x is not running"
+    assert resp.status == 409 and (await resp.json())["error"] == "dn-x is not running"
 
 
 async def test_stop_refuses_an_ended_task(started, tmp_path):
@@ -931,11 +939,11 @@ async def test_missing_config_set_file_is_refused(aiohttp_client, config, tmp_pa
 
 @pytest.fixture
 def waiting_store(tmp_path):
-    from meeseeks.api import DEFAULTS
+    from darner.api import DEFAULTS
 
     store = Store(str(tmp_path / "w.db"))
-    store.claim("ms-aaaaa", "maubot", {"kind": "matrix", "ref": "$e"}, "@u:example.org", "{}")
-    store.mark("ms-aaaaa", "launched")
+    store.claim("dn-aaaaa", "maubot", {"kind": "matrix", "ref": "$e"}, "@u:example.org", "{}")
+    store.mark("dn-aaaaa", "launched")
     return store, dict(DEFAULTS)
 
 
@@ -944,11 +952,11 @@ def waiting_events(store):
 
 
 def quiet_task(**overrides):
-    return {"id": "ms-aaaaa", "state": "running", "quiet": 400, "screen": "Do you want to continue? (y/n)", **overrides}
+    return {"id": "dn-aaaaa", "state": "running", "quiet": 400, "screen": "Do you want to continue? (y/n)", **overrides}
 
 
 def test_quiet_session_is_reported_once_with_its_screen(waiting_store):
-    from meeseeks.api import check_waiting
+    from darner.api import check_waiting
 
     store, config = waiting_store
     check_waiting(config, store, quiet_task())
@@ -958,7 +966,7 @@ def test_quiet_session_is_reported_once_with_its_screen(waiting_store):
 
 
 def test_screen_can_be_left_out(waiting_store):
-    from meeseeks.api import check_waiting
+    from darner.api import check_waiting
 
     store, config = waiting_store
     config["waiting_screen"] = False
@@ -971,7 +979,7 @@ def test_screen_can_be_left_out(waiting_store):
     {"awaiting_answer": True}, {"domain_request": 2}, {"ready": True}, {"unsignalled": True}, {"result_pending": True},
 ])
 def test_not_reported_while_waiting_on_the_requester_or_done(waiting_store, overrides):
-    from meeseeks.api import check_waiting
+    from darner.api import check_waiting
 
     store, config = waiting_store
     check_waiting(config, store, quiet_task(**overrides))
@@ -979,10 +987,10 @@ def test_not_reported_while_waiting_on_the_requester_or_done(waiting_store, over
 
 
 def test_not_reported_after_output_since_the_screen_last_changed(waiting_store):
-    from meeseeks.api import check_waiting
+    from darner.api import check_waiting
 
     store, config = waiting_store
-    store.add_event("ms-aaaaa", "output", "done")
+    store.add_event("dn-aaaaa", "output", "done")
     check_waiting(config, store, quiet_task())
     assert waiting_events(store) == []
 
@@ -990,10 +998,10 @@ def test_not_reported_after_output_since_the_screen_last_changed(waiting_store):
 def test_finished_session_is_not_reported_however_long_ago(waiting_store):
     import time
 
-    from meeseeks.api import check_waiting
+    from darner.api import check_waiting
 
     store, config = waiting_store
-    store.add_event("ms-aaaaa", "output", "done")
+    store.add_event("dn-aaaaa", "output", "done")
     store.db.execute("UPDATE events SET created = ?", (time.time() - 1000,))
     check_waiting(config, store, quiet_task())
     assert waiting_events(store) == []
@@ -1002,12 +1010,12 @@ def test_finished_session_is_not_reported_however_long_ago(waiting_store):
 def test_reported_again_after_being_told_something_since_output(waiting_store):
     import time
 
-    from meeseeks.api import check_waiting
+    from darner.api import check_waiting
 
     store, config = waiting_store
-    store.add_event("ms-aaaaa", "output", "done")
+    store.add_event("dn-aaaaa", "output", "done")
     store.db.execute("UPDATE events SET created = ?", (time.time() - 1000,))
-    store.set_typed("ms-aaaaa")
+    store.set_typed("dn-aaaaa")
     check_waiting(config, store, quiet_task())
     assert len(waiting_events(store)) == 1
 
@@ -1015,7 +1023,7 @@ def test_reported_again_after_being_told_something_since_output(waiting_store):
 def test_a_new_quiet_spell_is_reported_again(waiting_store):
     import time
 
-    from meeseeks.api import check_waiting
+    from darner.api import check_waiting
 
     store, config = waiting_store
     check_waiting(config, store, quiet_task())
@@ -1038,7 +1046,7 @@ def test_weak_tokens_are_refused(config, tokens, message):
 
 
 def test_settings_defaults_log_and_unknown_keys(config):
-    from meeseeks.api import with_defaults
+    from darner.api import with_defaults
 
     config["configz_dir"] = "/typo"
     full, lines, unknown = with_defaults(config)

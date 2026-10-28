@@ -2,7 +2,7 @@
 # Copyright (C) 2026 Brad Anderson
 import pytest
 
-from meeseeks.configsets import ConfigSetError, available, load, parse
+from darner.configsets import ConfigSetError, available, load, parse
 
 MEALIE = """# Adding a recipe to Mealie
 ctx: mealie
@@ -51,7 +51,7 @@ def test_unknown_config_set_lists_the_available_ones(tmp_path):
 
 
 def test_files_are_loaded_from_the_files_directory(tmp_path):
-    from meeseeks.configsets import load_files
+    from darner.configsets import load_files
 
     (tmp_path / "files").mkdir()
     (tmp_path / "files" / "mealie-token").write_text("secret")
@@ -67,7 +67,7 @@ def test_files_are_loaded_from_the_files_directory(tmp_path):
 
 
 def test_file_errors_name_no_host_path(tmp_path):
-    from meeseeks.configsets import load_files
+    from darner.configsets import load_files
 
     (tmp_path / "files").mkdir()
     with pytest.raises(ConfigSetError) as e:

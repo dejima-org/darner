@@ -1,4 +1,4 @@
-# Runs the meeseeks API. Lay out a deployment directory as:
+# Runs the darner API. Lay out a deployment directory as:
 #
 #   compose.yaml   this file
 #   src/           a clone of the repository, built into the image
@@ -7,11 +7,11 @@
 services:
   api:
     build: ./src
-    image: meeseeks-api
+    image: darner-api
     restart: unless-stopped
     volumes:
-      - ./config:/etc/meeseeks:ro
-      - ./data:/var/lib/meeseeks
+      - ./config:/etc/darner:ro
+      - ./data:/var/lib/darner
     # For maubot on the same host. If maubot runs in Docker too, drop this
     # and put both services on a shared network instead, with api_url set
     # to http://api:8080.

@@ -1,6 +1,6 @@
 # Security policy
 
-## What meeseeks claims
+## What darner claims
 
 It starts dejima sessions for tasks sent from chat or another frontend, and brings their output back. It doesn't make an agent safe to run, and it isn't a sandbox: the session's boundary is [dejima](https://gitbox.branderson.io/dejima/dejima)'s.
 
@@ -13,7 +13,7 @@ What it does claim is that it doesn't widen that boundary. The agent is presumed
 
 ## Every frontend holds a key to the whole system
 
-The API takes requests from frontends: today the Matrix bot, later a web interface, and possibly Slack or others. Each frontend authenticates with an API token, and the API trusts it completely. It acts on whatever requester the frontend names, so deciding who may use meeseeks is the frontend's job: the Matrix bot does it with its allowlist. The API can't check that itself, because a token holder can name any requester.
+The API takes requests from frontends: today the Matrix bot, later a web interface, and possibly Slack or others. Each frontend authenticates with an API token, and the API trusts it completely. It acts on whatever requester the frontend names, so deciding who may use darner is the frontend's job: the Matrix bot does it with its allowlist. The API can't check that itself, because a token holder can name any requester.
 
 So adding a frontend adds a way in. Each one, and anyone who can administer it or read its configuration, can do everything the API does within its policy, for every task started through that token. Before adding one, treat it as you would the ssh key below:
 
@@ -26,7 +26,7 @@ The API refuses to start with a token that's the example's placeholder or shorte
 
 ## What it holds, which is the new risk it introduces
 
-Starting sessions for other people means holding the means to start them, so meeseeks is a concentration of privilege that didn't exist before you ran it.
+Starting sessions for other people means holding the means to start them, so darner is a concentration of privilege that didn't exist before you ran it.
 
 | It holds | Taking it gets | It doesn't get |
 | --- | --- | --- |

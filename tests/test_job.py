@@ -2,7 +2,7 @@
 # Copyright (C) 2026 Brad Anderson
 import pytest
 
-from meeseeks.job import (
+from darner.job import (
     OUTPUT_INSTRUCTIONS,
     JobError,
     compose_prompt,
@@ -73,7 +73,7 @@ def test_names():
 def test_validate_job_full():
     job = validate_job(
         {
-            "id": "ms-abc23",
+            "id": "dn-abc23",
             "prompt": "do it",
             "domains": ["pypi.org"],
             "dependencies": ["pip:pytest"],
@@ -89,17 +89,17 @@ def test_validate_job_full():
     [
         [],
         {"id": "x", "prompt": "p"},
-        {"id": "ms-abc23", "prompt": " "},
-        {"id": "ms-abc23", "prompt": "p\0"},
-        {"id": "ms-abc23", "prompt": "x" * 70000},
-        {"id": "ms-abc23", "prompt": "p", "identity": "me"},
-        {"id": "ms-abc23", "prompt": "p", "domains": "pypi.org"},
-        {"id": "ms-abc23", "prompt": "p", "domains": ["localhost"]},
-        {"id": "ms-abc23", "prompt": "p", "dependencies": ["x"]},
-        {"id": "ms-abc23", "prompt": "p", "harness": "Bad Name"},
-        {"id": "ms-abc23", "prompt": "p", "session_wait": 61},
-        {"id": "ms-abc23", "prompt": "p", "session_wait": True},
-        {"id": "ms-abc23", "prompt": "p", "session_wait": "5"},
+        {"id": "dn-abc23", "prompt": " "},
+        {"id": "dn-abc23", "prompt": "p\0"},
+        {"id": "dn-abc23", "prompt": "x" * 70000},
+        {"id": "dn-abc23", "prompt": "p", "identity": "me"},
+        {"id": "dn-abc23", "prompt": "p", "domains": "pypi.org"},
+        {"id": "dn-abc23", "prompt": "p", "domains": ["localhost"]},
+        {"id": "dn-abc23", "prompt": "p", "dependencies": ["x"]},
+        {"id": "dn-abc23", "prompt": "p", "harness": "Bad Name"},
+        {"id": "dn-abc23", "prompt": "p", "session_wait": 61},
+        {"id": "dn-abc23", "prompt": "p", "session_wait": True},
+        {"id": "dn-abc23", "prompt": "p", "session_wait": "5"},
     ],
 )
 def test_validate_job_rejects(d):
@@ -121,7 +121,7 @@ def test_compose_prompt_default_output_instructions():
 
 @pytest.mark.parametrize("model", ["opus", "claude-opus-5[1m]", "z-ai/glm-5.3", "deepseek/deepseek-r1:free", "llama3:8b"])
 def test_valid_models(model):
-    assert validate_job({"id": "ms-abc23", "prompt": "p", "model": model}).model == model
+    assert validate_job({"id": "dn-abc23", "prompt": "p", "model": model}).model == model
 
 
 @pytest.mark.parametrize("job", [
@@ -131,28 +131,28 @@ def test_valid_models(model):
 ])
 def test_invalid_model_and_effort(job):
     with pytest.raises(JobError):
-        validate_job({"id": "ms-abc23", "prompt": "p", **job})
+        validate_job({"id": "dn-abc23", "prompt": "p", **job})
 
 
 def test_context_window():
-    assert validate_job({"id": "ms-abc23", "prompt": "p", "context_window": 32768}).context_window == 32768
+    assert validate_job({"id": "dn-abc23", "prompt": "p", "context_window": 32768}).context_window == 32768
 
 
 @pytest.mark.parametrize("effort", ["none", "low", "xhigh"])
 def test_valid_efforts(effort):
-    assert validate_job({"id": "ms-abc23", "prompt": "p", "effort": effort}).effort == effort
+    assert validate_job({"id": "dn-abc23", "prompt": "p", "effort": effort}).effort == effort
 
 
 def test_internal_domains_must_be_permitted():
     with pytest.raises(JobError, match="internal domains must also be permitted: recipes.example.com"):
-        validate_job({"id": "ms-abc23", "prompt": "p", "domains": ["pypi.org"], "internal_domains": ["recipes.example.com"]})
+        validate_job({"id": "dn-abc23", "prompt": "p", "domains": ["pypi.org"], "internal_domains": ["recipes.example.com"]})
 
 
 def test_files_are_validated():
     import base64
 
     good = {"name": "token", "data": base64.b64encode(b"s").decode()}
-    assert validate_job({"id": "ms-abc23", "prompt": "p", "files": [good]}).files == [("token", b"s")]
+    assert validate_job({"id": "dn-abc23", "prompt": "p", "files": [good]}).files == [("token", b"s")]
     for files in (
         [{"name": "../x", "data": ""}],
         [{"name": "token", "data": "not base64!"}],
@@ -161,8 +161,13 @@ def test_files_are_validated():
         "token",
     ):
         with pytest.raises(JobError):
-            validate_job({"id": "ms-abc23", "prompt": "p", "files": files})
+            validate_job({"id": "dn-abc23", "prompt": "p", "files": files})
 
 
 def test_prompt_lists_files():
     assert "## Files for this task\nThe requester provided these, and they may hold credentials:\n- ~/shared/uploads/token" in compose_prompt("T", [], "", "", ["token"])
+
+
+def test_new_ids_are_dn_and_old_ms_ids_are_still_valid():
+    assert new_task_id().startswith("dn-")
+    assert validate_job({"id": "ms-abc23", "prompt": "p"}).id == "ms-abc23"

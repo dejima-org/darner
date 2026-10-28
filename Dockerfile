@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 Brad Anderson
 #
-# The meeseeks API. Config is mounted at /etc/meeseeks and state, including
-# the ssh key and known_hosts, at /var/lib/meeseeks; see examples/compose.yaml.
+# The darner API. Config is mounted at /etc/darner and state, including
+# the ssh key and known_hosts, at /var/lib/darner; see examples/compose.yaml.
 FROM python:3.12-slim
 
 RUN apt-get update \
@@ -12,15 +12,15 @@ RUN apt-get update \
 # ssh refuses to run for a uid with no passwd entry, so the user is created
 # with a fixed uid and gid that host directories can be owned by. The gid is
 # explicit because --user-group alone picks one from the system range.
-RUN groupadd --system --gid 10001 meeseeks \
-    && useradd --system --uid 10001 --gid 10001 --home-dir /var/lib/meeseeks --shell /usr/sbin/nologin meeseeks
+RUN groupadd --system --gid 10001 darner \
+    && useradd --system --uid 10001 --gid 10001 --home-dir /var/lib/darner --shell /usr/sbin/nologin darner
 
 COPY pyproject.toml LICENSE /src/
-COPY meeseeks /src/meeseeks
+COPY darner /src/darner
 RUN pip install --no-cache-dir '/src[api]'
 
-USER meeseeks
-ENV HOME=/var/lib/meeseeks PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+USER darner
+ENV HOME=/var/lib/darner PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 EXPOSE 8080
-ENTRYPOINT ["meeseeks-api"]
-CMD ["--config", "/etc/meeseeks/api.toml"]
+ENTRYPOINT ["darner-api"]
+CMD ["--config", "/etc/darner/api.toml"]

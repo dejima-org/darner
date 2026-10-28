@@ -27,26 +27,31 @@ from mautrix.util.config import BaseProxyConfig, ConfigUpdateHelper
 from .markdown import render
 from .parse import MARKDOWN_LINK, ParseError, parse_reply, strip_mention
 
-TASK_ID = re.compile(r"ms-[a-z2-7]{5}")
-# Marks each of the bot's messages about a task, so a reply to any of them can name it.
-TASK_TAG = "io.meeseeks.task"
+# ms- ids are from before the rename, and are accepted until 0.1.20 for tasks started then.
+_ID = r"(?:dn|ms)-[a-z2-7]{5}"
+TASK_ID = re.compile(_ID)
+# Content keys on the bot's messages. TASK_TAG marks each message about a task, so a reply to any of them can name it.
+TAG = "io.branderson.dejima.darner"
+TASK_TAG, HELP_TAG, DOMAINS_TAG = f"{TAG}.task", f"{TAG}.help", f"{TAG}.domains"
+# Read too, until 0.1.20, so replies to messages sent before the rename still work.
+OLD_TAG = "io.meeseeks"
 PILL = re.compile(r'<a\s[^>]*href="https://matrix\.to/#/([^"?]+)[^"]*"[^>]*>(.*?)</a>', re.IGNORECASE | re.DOTALL)
-STOP = re.compile(r"stop(?:\s+(ms-[a-z2-7]{5}))?", re.IGNORECASE)
-STOP_HOW = "To stop a session, reply `stop` with a mention to one of my messages about it, or send `stop ms-xxxxx` with a mention."
-STATUS = re.compile(r"status(?:\s+(ms-[a-z2-7]{5}))?", re.IGNORECASE)
-TELL = re.compile(r"tell(?:\s+(ms-[a-z2-7]{5}))?\s+(\S.*)", re.IGNORECASE | re.DOTALL)
-UPLOAD = re.compile(r"upload\s+(ms-[a-z2-7]{5})", re.IGNORECASE)
+STOP = re.compile(rf"stop(?:\s+({_ID}))?", re.IGNORECASE)
+STOP_HOW = "To stop a session, reply `stop` with a mention to one of my messages about it, or send `stop dn-xxxxx` with a mention."
+STATUS = re.compile(rf"status(?:\s+({_ID}))?", re.IGNORECASE)
+TELL = re.compile(rf"tell(?:\s+({_ID}))?\s+(\S.*)", re.IGNORECASE | re.DOTALL)
+UPLOAD = re.compile(rf"upload\s+({_ID})", re.IGNORECASE)
 DESCRIBE = re.compile(r"describe\s+(\S.*)", re.IGNORECASE | re.DOTALL)
 MAX_DESCRIBED = 10
 # Each blurb shown is cut here, so a reply doesn't fill the room. Lines wrap,
 # so characters are capped too.
 MAX_BLURB_LINES, MAX_BLURB_CHARS = 20, 1000
-STATUS_HOW = "Send `status ms-xxxxx` with a mention, or reply `status` with a mention to one of my messages about the session."
+STATUS_HOW = "Send `status dn-xxxxx` with a mention, or reply `status` with a mention to one of my messages about the session."
 DECIDE_HOW = "To allow or deny domains, reply `allow` or `deny` with a mention to my message listing them."
 NO_TASK = "Tell me the task after the mention, or reply to a note to make it the task. Send `help` with a mention for usage."
 
 USAGE = """\
-**Meeseeks** starts an isolated dejima session for a task.
+**darner** starts an isolated dejima session for a task.
 
 **Start a task:** reply to a note with a message that mentions me. The note is the task, and the rest of your reply is extra context. Or mention me in a message that isn't a reply, and that message is the task. Keyword lines configure the session:
 
@@ -79,7 +84,7 @@ allow: pypi.org, files.pythonhosted.org
 
 **Domains:** when the agent asks to reach domains, I list every one. Reply `allow` or `deny` with a mention to that message.
 
-**Sessions:** with a mention, `sessions` lists the open ones, `status ms-xxxxx` says what one is waiting on, `tell ms-xxxxx <message>` types a message into it, `upload ms-xxxxx` in reply to a file puts the file in its `~/shared/uploads`, and `stop ms-xxxxx` ends it. Replying to any of my messages about a session works without the id.
+**Sessions:** with a mention, `sessions` lists the open ones, `status dn-xxxxx` says what one is waiting on, `tell dn-xxxxx <message>` types a message into it, `upload dn-xxxxx` in reply to a file puts the file in its `~/shared/uploads`, and `stop dn-xxxxx` ends it. Replying to any of my messages about a session works without the id.
 
 Only allowlisted users can start tasks, and the note must be from one of them too. Anything the agent writes is untrusted.
 """
@@ -97,7 +102,7 @@ class Config(BaseProxyConfig):
         helper.copy("poll_interval")
 
 
-class MeeseeksBot(Plugin):
+class Dragonlet(Plugin):
     async def start(self) -> None:
         self.config.load_and_update()
         self.sched.run_periodically(self.config["poll_interval"], self.poll_once)
@@ -314,7 +319,7 @@ class MeeseeksBot(Plugin):
         # Only the bot's own tag counts, so a user can't steer an answer into another task
         if not isinstance(replied, RawMessageEvent) or replied.sender != self.client.mxid:
             return None
-        tag = replied.content.get("io.meeseeks.help")
+        tag = _tag(replied.content, "help")
         task = tag.get("task") if isinstance(tag, dict) else None
         return task if isinstance(task, str) and TASK_ID.fullmatch(task) else None
 
@@ -322,14 +327,14 @@ class MeeseeksBot(Plugin):
         """The task one of the bot's own messages is about."""
         if not isinstance(replied, RawMessageEvent) or replied.sender != self.client.mxid:
             return None
-        task = replied.content.get(TASK_TAG)
+        task = _tag(replied.content, "task")
         return task if isinstance(task, str) and TASK_ID.fullmatch(task) else self._help_task(replied)
 
     def _domain_request(self, replied: Event | None) -> tuple[str, int] | None:
         """The task and request number of one of the bot's own domain request messages."""
         if not isinstance(replied, RawMessageEvent) or replied.sender != self.client.mxid:
             return None
-        tag = replied.content.get("io.meeseeks.domains")
+        tag = _tag(replied.content, "domains")
         if not isinstance(tag, dict):
             return None
         task, number = tag.get("task"), tag.get("request")
@@ -554,7 +559,7 @@ class MeeseeksBot(Plugin):
             footer = f"Attach to {target} to respond."
         content = _agent_notice(label, e["summary"], footer)
         if e["answerable"]:
-            content["io.meeseeks.help"] = {"task": e["id"]}
+            content[HELP_TAG] = {"task": e["id"]}
         await self._send(room, ref, content)
 
     async def _upload(self, room: str, ref: tuple[str, str], name: str, data: bytes) -> None:
@@ -621,6 +626,12 @@ def _waiting_on(session: dict) -> str:
 def _session_line(session: dict) -> str:
     where = session["link"] or session["target"]
     return f"{session['id']}: {_waiting_on(session)}, started {_age(session['started'])} ago by {session['requester']} ({where})"
+
+
+def _tag(content, name: str):
+    """One of the bot's content keys on a message, under its current or old name."""
+    value = content.get(f"{TAG}.{name}")
+    return value if value is not None else content.get(f"{OLD_TAG}.{name}")
 
 
 def _described_notice(sections: list[tuple[str, str, object]], missing: list[str]) -> TextMessageEventContent:
@@ -715,7 +726,7 @@ def _domains_notice(task: str, request: dict) -> TextMessageEventContent:
         body += f"\n\n{line}"
         html_body += f"<p>{html.escape(line)}</p>"
     content = TextMessageEventContent(msgtype=MessageType.NOTICE, body=body, format=Format.HTML, formatted_body=html_body)
-    content["io.meeseeks.domains"] = {"task": task, "request": request["request"]}
+    content[DOMAINS_TAG] = {"task": task, "request": request["request"]}
     return content
 
 

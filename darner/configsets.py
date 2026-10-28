@@ -10,7 +10,7 @@ override theirs: a single value replaces theirs, and a list adds to theirs.
 import re
 from pathlib import Path
 
-from meeseeks.job import valid_name
+from darner.job import valid_name
 
 LISTS = {"ctx": "blurbs", "allow": "domains", "internal": "internal", "deps": "dependencies", "file": "files"}
 SINGLES = ("harness", "backend", "model", "effort", "context_window")
@@ -29,8 +29,8 @@ def available(configs_dir: Path) -> list[str]:
 
 def load_files(configs_dir: Path, names: list[str]) -> list[tuple[str, bytes]]:
     """The files config sets give a session, from configs_dir/files."""
-    from meeseeks.archive import upload_name
-    from meeseeks.job import MAX_FILE_BYTES
+    from darner.archive import upload_name
+    from darner.job import MAX_FILE_BYTES
 
     files = []
     for name in names:

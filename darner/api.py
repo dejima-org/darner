@@ -17,12 +17,12 @@ from pathlib import Path
 
 from aiohttp import web
 
-from meeseeks import archive, configsets, selftest
-from meeseeks.job import OUTPUT_INSTRUCTIONS, JobError, compose_prompt, new_task_id, valid_domain, valid_name, validate_job
-from meeseeks.launch import FETCH_REJECTED
-from meeseeks.store import Store
+from darner import archive, configsets, selftest
+from darner.job import OUTPUT_INSTRUCTIONS, JobError, compose_prompt, new_task_id, valid_domain, valid_name, validate_job
+from darner.launch import FETCH_REJECTED
+from darner.store import Store
 
-log = logging.getLogger("meeseeks.api")
+log = logging.getLogger("darner.api")
 
 RUN_ID = re.compile(r"[0-9a-f]{16}")
 
@@ -256,7 +256,7 @@ async def run_remote(config: dict, args: list[str], stdin: bytes = b"") -> tuple
         proc.kill()
         await proc.wait()
         raise RuntimeError(f"launcher timed out after {timeout}s" if isinstance(e, asyncio.TimeoutError) else str(e))
-    return proc.returncode, out, archive.clean_text(err, 2048).removeprefix("meeseeks-launch: ")
+    return proc.returncode, out, archive.clean_text(err, 2048).removeprefix("darner-launch: ")
 
 
 async def run_launcher(config: dict, job: dict) -> dict:
@@ -768,23 +768,23 @@ def make_app(config: dict, poll: bool = True) -> web.Application:
     app.router.add_get("/v1/blurbs/{name}", get_blurb)
     app.router.add_get("/v1/configs", list_configs)
     app.router.add_get(r"/v1/configs/{name:[a-z0-9][a-z0-9_-]{0,63}}", describe_config)
-    app.router.add_get(r"/v1/tasks/{id:ms-[a-z2-7]{5}}/outputs/{seq:\d+}.zip", get_output)
+    app.router.add_get(r"/v1/tasks/{id:(?:dn|ms)-[a-z2-7]{5}}/outputs/{seq:\d+}.zip", get_output)
     app.router.add_post(r"/v1/events/{seq:\d+}/ack", ack_event)
-    app.router.add_post(r"/v1/tasks/{id:ms-[a-z2-7]{5}}/answer", answer_help)
-    app.router.add_post(r"/v1/tasks/{id:ms-[a-z2-7]{5}}/stop", stop_task)
-    app.router.add_post(r"/v1/tasks/{id:ms-[a-z2-7]{5}}/message", message_task)
-    app.router.add_post(r"/v1/tasks/{id:ms-[a-z2-7]{5}}/files", upload_file)
+    app.router.add_post(r"/v1/tasks/{id:(?:dn|ms)-[a-z2-7]{5}}/answer", answer_help)
+    app.router.add_post(r"/v1/tasks/{id:(?:dn|ms)-[a-z2-7]{5}}/stop", stop_task)
+    app.router.add_post(r"/v1/tasks/{id:(?:dn|ms)-[a-z2-7]{5}}/message", message_task)
+    app.router.add_post(r"/v1/tasks/{id:(?:dn|ms)-[a-z2-7]{5}}/files", upload_file)
     app.router.add_get("/v1/tasks", list_sessions)
-    app.router.add_get(r"/v1/tasks/{id:ms-[a-z2-7]{5}}", get_session)
-    app.router.add_post(r"/v1/tasks/{id:ms-[a-z2-7]{5}}/domains/{n:\d{1,9}}/{verb:allow|deny}", decide_domains)
+    app.router.add_get(r"/v1/tasks/{id:(?:dn|ms)-[a-z2-7]{5}}", get_session)
+    app.router.add_post(r"/v1/tasks/{id:(?:dn|ms)-[a-z2-7]{5}}/domains/{n:\d{1,9}}/{verb:allow|deny}", decide_domains)
     if poll:
         app.cleanup_ctx.append(poller)
     return app
 
 
 def main() -> None:
-    p = argparse.ArgumentParser(prog="meeseeks-api")
-    p.add_argument("--config", default="/etc/meeseeks/api.toml", type=Path)
+    p = argparse.ArgumentParser(prog="darner-api")
+    p.add_argument("--config", default="/etc/darner/api.toml", type=Path)
     args = p.parse_args()
     # A config mistake is reported in one line rather than a traceback, which
     # a restarting container would otherwise repeat without end.
@@ -796,11 +796,11 @@ def main() -> None:
         port = int(port)
     except tomllib.TOMLDecodeError as e:
         hint = "; text values need double quotes" if "Invalid value" in str(e) else ""
-        sys.exit(f"meeseeks-api: {args.config}: {e}{hint}")
+        sys.exit(f"darner-api: {args.config}: {e}{hint}")
     except KeyError as e:
-        sys.exit(f"meeseeks-api: {args.config}: missing setting {e}")
+        sys.exit(f"darner-api: {args.config}: missing setting {e}")
     except (OSError, ValueError) as e:
-        sys.exit(f"meeseeks-api: {args.config}: {e}")
+        sys.exit(f"darner-api: {args.config}: {e}")
     logging.basicConfig(level=logging.INFO)
     log.info("settings from %s:", args.config)
     for line in lines:

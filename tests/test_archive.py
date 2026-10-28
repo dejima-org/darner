@@ -6,8 +6,8 @@ import zipfile
 
 import pytest
 
-from meeseeks import archive
-from meeseeks.archive import ArchiveError, Limits, build, repack, safe_component
+from darner import archive
+from darner.archive import ArchiveError, Limits, build, repack, safe_component
 
 SECRET = b"host secret that must never leave"
 
