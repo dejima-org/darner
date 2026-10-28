@@ -1381,12 +1381,3 @@ def test_selftest_checks_hold_no_markup():
     for line in checks:
         assert not any(mark in line for mark in ("<", ">", "](", "`", "*", "_", "@")), line
 
-
-async def test_messages_from_before_the_rename_are_still_understood(maubot_plugin, maubot_test_bot, api):
-    maubot_test_bot.events[HELP_ID] = help_message(**{"io.meeseeks.help": {"task": "ms-7f3k2"}})
-    await send(maubot_test_bot, message("use postgres", reply_to=HELP_ID, mention=False))
-    assert api.answers == [("ms-7f3k2", {"text": "use postgres", "requester": ALICE})]
-    maubot_test_bot.events["$started"] = bot_message(**{"io.meeseeks.task": "ms-7f3k2"})
-    await send(maubot_test_bot, message("@dragonlet:example.org stop", reply_to="$started"))
-    await send(maubot_test_bot, message("@dragonlet:example.org stop ms-7f3k2", reply_to=None))
-    assert api.stops == ["ms-7f3k2", "ms-7f3k2"]

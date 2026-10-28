@@ -32,9 +32,7 @@ _MODEL = re.compile(r"[A-Za-z0-9][][A-Za-z0-9._:/-]{0,199}")
 EFFORTS = ("none", "low", "medium", "high", "xhigh")
 # dejima's range for a harness's context_window, in tokens.
 CONTEXT_WINDOW = range(512, 100_000_001)
-# ms- ids are from before the rename, and are accepted until 0.1.20 for tasks started then.
-TASK_ID = r"(?:dn|ms)-[a-z2-7]{5}"
-_ID = re.compile(TASK_ID)
+_ID = re.compile(r"dn-[a-z2-7]{5}")
 
 OUTPUT_INSTRUCTIONS = (
     "When you finish:\n"

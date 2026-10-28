@@ -614,13 +614,6 @@ async def test_stop_reaches_launcher(started, tmp_path):
     assert fetches(tmp_path)[-1] == ["stop", task_id]
 
 
-async def test_a_task_from_before_the_rename_is_still_reached(started, tmp_path):
-    app, client, _, *_ = started
-    app[STORE].claim("ms-abc23", "maubot", {"kind": "matrix", "ref": "$old"}, "@u:example.org", "{}")
-    app[STORE].mark("ms-abc23", "launched")
-    assert (await client.post("/v1/tasks/ms-abc23/stop", headers=AUTH)).status == 204
-    assert fetches(tmp_path)[-1] == ["stop", "ms-abc23"]
-
 
 async def test_stop_is_scoped_and_needs_a_running_task(started, config, tmp_path, monkeypatch):
     app, client, task_id, *_ = started

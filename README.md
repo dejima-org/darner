@@ -378,63 +378,6 @@ sudo docker compose up -d
 
 Dejima itself updates independently, but the launcher depends on the flags listed under Setup.
 
-### Moving from meeseeks
-
-This project was called meeseeks until 0.1.18. Its commands, package, plugin, paths and task ids all changed name with it, so moving across takes a few steps beyond a normal update. Keep the same order.
-
-**Before you start.** Let open sessions finish, or stop them: the launcher now keeps tasks in `~/darner/tasks` and windows in the `darner` tmux session. To keep sessions running across the move instead, add `--tasks-dir ~/meeseeks/tasks --session meeseeks` to `LAUNCHER_OPTIONS` until they've ended. New task ids start `dn-`. Until 0.1.20, `ms-` ids and replies to the bot's old messages still work.
-
-**Dejima host**, as `DEJIMA_USER`. The package is renamed, so reinstall it, then replace the `authorized_keys` line, since its command names the old launcher:
-
-```sh
-LAUNCHER_SRC=~/src/meeseeks          # your existing clone
-git -C "$LAUNCHER_SRC" remote set-url origin "$DARNER_REPO"
-git -C "$LAUNCHER_SRC" pull
-pipx uninstall meeseeks
-pipx install --editable "$LAUNCHER_SRC"
-```
-
-Delete the `meeseeks-api` line from `~/.ssh/authorized_keys` and run setup step 4 again. Once no sessions are left in `~/meeseeks/tasks`, remove it.
-
-**API host.** With systemd, the existing service user and directories keep working; only the command and unit name change:
-
-```sh
-DARNER_DIR=/opt/meeseeks             # your existing paths
-DARNER_CONFIG=/etc/meeseeks
-DARNER_STATE=/var/lib/meeseeks
-
-sudo systemctl disable --now meeseeks-api
-sudo -u meeseeks cp "$DARNER_STATE/tasks.db" "$DARNER_STATE/tasks.db.bak"
-sudo git -C "$DARNER_DIR/src" remote set-url origin "$DARNER_REPO"
-sudo git -C "$DARNER_DIR/src" pull
-sudo "$DARNER_DIR/venv/bin/pip" uninstall -y meeseeks
-sudo "$DARNER_DIR/venv/bin/pip" install --editable "$DARNER_DIR/src[api]"
-sed -e "s|/opt/darner|$DARNER_DIR|g" -e "s|/var/lib/darner|$DARNER_STATE|g" -e "s|/etc/darner|$DARNER_CONFIG|g" \
-  -e "s|=darner$|=meeseeks|" "$DARNER_DIR/src/examples/darner-api.service" \
-  | sudo tee /etc/systemd/system/darner-api.service > /dev/null
-sudo rm /etc/systemd/system/meeseeks-api.service
-sudo systemctl daemon-reload
-sudo systemctl enable --now darner-api
-```
-
-With Docker Compose, the container's paths move to `/etc/darner` and `/var/lib/darner`, so `api.toml` and `compose.yaml` change with them:
-
-```sh
-DARNER_DIR=/opt/meeseeks             # your existing deployment directory
-
-cd "$DARNER_DIR"
-sudo docker compose down
-sudo cp data/tasks.db data/tasks.db.bak
-git -C src remote set-url origin "$DARNER_REPO"
-git -C src pull
-sed -i 's|/etc/meeseeks|/etc/darner|g; s|/var/lib/meeseeks|/var/lib/darner|g' config/api.toml
-cp src/examples/compose.yaml compose.yaml     # reapply any changes you made to yours
-sudo docker compose build --pull
-sudo docker compose up -d
-```
-
-**Plugin.** Its id changed to `io.branderson.dejima.darner`, so maubot treats it as a new plugin. Upload the new `.mbp`, create an instance of it with the same client, copy the old instance's config into it, then delete the old instance and the `io.example.meeseeks` plugin.
-
 ## Using it from Element
 
 Reply to a note with a message that mentions the bot:

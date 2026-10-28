@@ -8,7 +8,6 @@ Each release names the dejima release it was released against: the one it was te
 
 Released against dejima: N/A
 
-- **Renamed from meeseeks to darner.** The commands are `darner-api` and `darner-launch`, the plugin is `io.branderson.dejima.darner`, and task ids start `dn-`. Moving an existing install takes a few steps, including recreating the bot's maubot instance: see the README's "Moving from meeseeks". Until 0.1.20, `ms-` ids and replies to the bot's old messages still work. ([#48](https://gitbox.branderson.io/dejima/darner/pulls/48))
 - **Weak API tokens refused:** the API won't start if a token in `[tokens]` is shorter than 32 characters, is `examples/api.toml`'s placeholder, or is shared by two frontends. If yours is refused, generate a new one with `openssl rand -hex 32` and set it in both `api.toml` and the bot's config. ([#46](https://gitbox.branderson.io/dejima/darner/pulls/46))
 - **Frontend self-test:** `@bot selftest`, or `POST /v1/selftest`, sends text written like a hostile agent's through the paths an agent's text takes, with each line saying what a safe frontend shows. ([#47](https://gitbox.branderson.io/dejima/darner/pulls/47))
 - **Looking things up from chat:** `list configs` and `list blurbs` name the config sets and context blurbs, and `describe <names>` shows what each config set applies and what each blurb says. ([#43](https://gitbox.branderson.io/dejima/darner/pulls/43))

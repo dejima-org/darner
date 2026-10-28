@@ -27,14 +27,11 @@ from mautrix.util.config import BaseProxyConfig, ConfigUpdateHelper
 from .markdown import render
 from .parse import MARKDOWN_LINK, ParseError, parse_reply, strip_mention
 
-# ms- ids are from before the rename, and are accepted until 0.1.20 for tasks started then.
-_ID = r"(?:dn|ms)-[a-z2-7]{5}"
+_ID = r"dn-[a-z2-7]{5}"
 TASK_ID = re.compile(_ID)
 # Content keys on the bot's messages. TASK_TAG marks each message about a task, so a reply to any of them can name it.
 TAG = "io.branderson.dejima.darner"
 TASK_TAG, HELP_TAG, DOMAINS_TAG = f"{TAG}.task", f"{TAG}.help", f"{TAG}.domains"
-# Read too, until 0.1.20, so replies to messages sent before the rename still work.
-OLD_TAG = "io.meeseeks"
 PILL = re.compile(r'<a\s[^>]*href="https://matrix\.to/#/([^"?]+)[^"]*"[^>]*>(.*?)</a>', re.IGNORECASE | re.DOTALL)
 STOP = re.compile(rf"stop(?:\s+({_ID}))?", re.IGNORECASE)
 STOP_HOW = "To stop a session, reply `stop` with a mention to one of my messages about it, or send `stop dn-xxxxx` with a mention."
@@ -319,7 +316,7 @@ class Dragonlet(Plugin):
         # Only the bot's own tag counts, so a user can't steer an answer into another task
         if not isinstance(replied, RawMessageEvent) or replied.sender != self.client.mxid:
             return None
-        tag = _tag(replied.content, "help")
+        tag = replied.content.get(HELP_TAG)
         task = tag.get("task") if isinstance(tag, dict) else None
         return task if isinstance(task, str) and TASK_ID.fullmatch(task) else None
 
@@ -327,14 +324,14 @@ class Dragonlet(Plugin):
         """The task one of the bot's own messages is about."""
         if not isinstance(replied, RawMessageEvent) or replied.sender != self.client.mxid:
             return None
-        task = _tag(replied.content, "task")
+        task = replied.content.get(TASK_TAG)
         return task if isinstance(task, str) and TASK_ID.fullmatch(task) else self._help_task(replied)
 
     def _domain_request(self, replied: Event | None) -> tuple[str, int] | None:
         """The task and request number of one of the bot's own domain request messages."""
         if not isinstance(replied, RawMessageEvent) or replied.sender != self.client.mxid:
             return None
-        tag = _tag(replied.content, "domains")
+        tag = replied.content.get(DOMAINS_TAG)
         if not isinstance(tag, dict):
             return None
         task, number = tag.get("task"), tag.get("request")
@@ -626,12 +623,6 @@ def _waiting_on(session: dict) -> str:
 def _session_line(session: dict) -> str:
     where = session["link"] or session["target"]
     return f"{session['id']}: {_waiting_on(session)}, started {_age(session['started'])} ago by {session['requester']} ({where})"
-
-
-def _tag(content, name: str):
-    """One of the bot's content keys on a message, under its current or old name."""
-    value = content.get(f"{TAG}.{name}")
-    return value if value is not None else content.get(f"{OLD_TAG}.{name}")
 
 
 def _described_notice(sections: list[tuple[str, str, object]], missing: list[str]) -> TextMessageEventContent:

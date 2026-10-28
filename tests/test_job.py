@@ -167,7 +167,3 @@ def test_files_are_validated():
 def test_prompt_lists_files():
     assert "## Files for this task\nThe requester provided these, and they may hold credentials:\n- ~/shared/uploads/token" in compose_prompt("T", [], "", "", ["token"])
 
-
-def test_new_ids_are_dn_and_old_ms_ids_are_still_valid():
-    assert new_task_id().startswith("dn-")
-    assert validate_job({"id": "ms-abc23", "prompt": "p"}).id == "ms-abc23"
