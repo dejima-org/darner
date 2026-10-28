@@ -1,3 +1,29 @@
+<!-- Fixed, not preference-aware, and that is the decision rather than an
+     oversight. `prefers-color-scheme` reports the browser's setting, never the
+     site's, and this is read on a forge that renders dark whichever way the
+     browser is set - so anything conditional shows dark ink on a dark page to
+     a reader whose browser prefers light, and does it silently.
+     The suffix names the mode a file is FOR, not the colour of its ink:
+     -darkmode is the pale wordmark that belongs on a dark page. GitHub does
+     follow its own theme setting through <picture>, so the GitHub mirror
+     replaces the tag below with one that falls back to
+     dejima-wordmark-lightmode.png; see dejima's mirror/github-mirror.sh.
+     Every &nbsp; here is spacing, and it has to be a character rather than CSS
+     or a presentation attribute. Gitea's sanitizer strips `style` from the tag
+     and from any wrapper, `hspace`/`vspace` survive sanitizing only to be
+     ignored by browsers that dropped HTML4 presentation attributes, and a bare
+     <br> ends a line nothing follows, which browsers collapse to no height.
+     &nbsp; survives as a real U+00A0: on its own line it fills a paragraph
+     that would otherwise be empty, and immediately before the tag it sits
+     inline and indents the image by one space. -->
+&nbsp;
+
+&nbsp;<img src="assets/dejima-wordmark-darkmode.png" alt="dejima" height="72">
+
+---
+
+&nbsp;
+
 # meeseeks
 
 Starts a dejima session for a task sent from chat. A task request carries the task, extra context, preconfigured context blurbs, network and dependency grants, and an optional harness and backend. Meeseeks starts `dejima --isolated` for it in a tmux window on a dejima host and hands the agent the composed prompt. When the agent signals it is done, meeseeks delivers what it left in `~/shared` back to the requester. Reaching the session itself is dejima's remote access.
@@ -5,6 +31,8 @@ Starts a dejima session for a task sent from chat. A task request carries the ta
 ```
 maubot plugin ──► meeseeks-api ──ssh──► meeseeks-launch ──► tmux new-window ── dejima --isolated
 ```
+
+[![Developed in dejima](assets/dejima-badge.svg)](https://gitbox.branderson.io/dejima/dejima)
 
 ## Setup
 
@@ -588,3 +616,5 @@ The workflow fails if the two versions disagree, or if a pushed tag doesn't matc
 ## License
 
 GPL-3.0-or-later. See [LICENSE](LICENSE).
+
+The dejima wordmark and logo are not code and are not covered by that licence. They are trademarks; who holds them and what may be done with them is stated once for the organisation, at [dejima's ATTRIBUTION.md](https://gitbox.branderson.io/dejima/dejima/src/branch/main/ATTRIBUTION.md).
