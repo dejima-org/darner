@@ -17,15 +17,17 @@ from pathlib import Path
 
 from aiohttp import web
 
-from meeseeks import archive, configsets
-from meeseeks.job import OUTPUT_INSTRUCTIONS, JobError, compose_prompt, new_task_id, valid_domain, valid_name, validate_job
-from meeseeks.launch import FETCH_REJECTED
-from meeseeks.store import Store
+from darner import archive, configsets, selftest
+from darner.job import OUTPUT_INSTRUCTIONS, JobError, compose_prompt, new_task_id, valid_domain, valid_name, validate_job
+from darner.launch import FETCH_REJECTED
+from darner.store import Store
 
-log = logging.getLogger("meeseeks.api")
+log = logging.getLogger("darner.api")
 
 RUN_ID = re.compile(r"[0-9a-f]{16}")
 
+EXAMPLE_TOKEN = "replace-with-a-long-random-token"
+MIN_TOKEN = 32
 REQUIRED = ("db_path", "blurbs_dir", "results_dir", "launch_command", "tokens")
 # Every optional setting, with what it is when api.toml leaves it out, so a
 # setting added by an update works on a config file written before it.
@@ -73,7 +75,8 @@ def session_link(config: dict, run_id: str | None) -> str | None:
     return f"{base.rstrip('/')}/?arg={run_id}" if base and run_id else None
 
 REQUEST_KEYS = {
-    "task", "context", "blurbs", "configs", "grants", "harness", "backend", "model", "effort", "requester", "source"
+    "task", "context", "blurbs", "configs", "grants", "harness", "backend", "model", "effort", "context_window",
+    "requester", "source",
 }
 MAX_TEXT = 32 * 1024
 
@@ -199,8 +202,11 @@ def build_job(config: dict, body: object) -> tuple[dict, dict, str]:
         "files": [{"name": name, "data": base64.b64encode(data).decode()} for name, data in files],
     }
     # The request's own values override its config sets'.
-    for key in ("harness", "backend", "model", "effort"):
+    for key in ("harness", "backend", "model", "effort", "context_window"):
         value = body.get(key) if body.get(key) is not None else sets[key]
+        # Chat and config sets give it as text.
+        if key == "context_window" and isinstance(value, str) and value.isascii() and value.isdecimal():
+            value = int(value)
         if value is not None:
             job[key] = value
     if config.get("remote_access_url"):
@@ -250,7 +256,7 @@ async def run_remote(config: dict, args: list[str], stdin: bytes = b"") -> tuple
         proc.kill()
         await proc.wait()
         raise RuntimeError(f"launcher timed out after {timeout}s" if isinstance(e, asyncio.TimeoutError) else str(e))
-    return proc.returncode, out, archive.clean_text(err, 2048).removeprefix("meeseeks-launch: ")
+    return proc.returncode, out, archive.clean_text(err, 2048).removeprefix("darner-launch: ")
 
 
 async def run_launcher(config: dict, job: dict) -> dict:
@@ -328,14 +334,18 @@ def check_waiting(config: dict, store: Store, task: dict) -> None:
     """Record a waiting event for a running session whose screen has gone quiet.
 
     Not for one waiting on its requester through a help or domain request,
-    one that has a result to deliver, or one that has delivered output,
-    asked or been reported since its screen last changed: those are done or
-    already said so. Each quiet spell is reported once.
+    one that has a result to deliver, one that has delivered output and been
+    sent nothing since, or one that has asked or been reported since its
+    screen last changed: those are done or already said so. Each quiet spell
+    is reported once.
     """
     quiet = task.get("quiet")
     if task.get("state") != "running" or not isinstance(quiet, (int, float)) or quiet < config["waiting_after"]:
         return
     if any(task.get(key) for key in ("awaiting_answer", "domain_request", "ready", "help", "domains", "unsignalled", "result_pending")):
+        return
+    output = store.latest_event_time(task["id"], ("output",))
+    if output is not None and output >= (store.typed(task["id"]) or 0):
         return
     latest = store.latest_event_time(task["id"], ("output", "help", "domains", "waiting"))
     if latest is not None and latest >= time.time() - quiet:
@@ -454,6 +464,35 @@ async def create_task(request: web.Request) -> web.Response:
     return web.json_response({"id": job["id"], "target": target, "link": session_link(config, run_id)}, status=201)
 
 
+async def create_selftest(request: web.Request) -> web.Response:
+    """A finished task whose output, help request and waiting screen are hostile text.
+
+    It reaches the frontend through /v1/events like any task's, so how the
+    frontend shows it is how it shows an agent's.
+    """
+    client, store = _client(request), request.app[STORE]
+    try:
+        body = await request.json()
+    except ValueError:
+        return web.json_response({"error": "body must be JSON"}, status=400)
+    try:
+        if not isinstance(body, dict) or set(body) != {"source", "requester"}:
+            raise RequestError(400, "body must have source and requester")
+        source, requester = _source(body), _text(body, "requester")
+    except RequestError as e:
+        return web.json_response({"error": str(e)}, status=e.status)
+    task, new = store.claim(new_task_id(), client, source, requester, json.dumps({"selftest": True}))
+    if not new:
+        return web.json_response({"id": task.id})
+    store.mark(task.id, "ended")
+    text = archive.clean_text(selftest.PAYLOAD.encode())
+    store.add_event(task.id, "output", text)
+    store.add_event(task.id, "help", text)
+    store.add_event(task.id, "waiting", text, data={"quiet": 300})
+    store.add_event(task.id, "ended")
+    return web.json_response({"id": task.id}, status=201)
+
+
 async def list_events(request: web.Request) -> web.Response:
     config = request.app[CONFIG]
     events = request.app[STORE].events(_client(request))
@@ -511,6 +550,8 @@ async def _type_into(request: web.Request, command: str) -> web.Response:
     except RequestError as e:
         return web.json_response({"error": str(e)}, status=e.status)
     payload = json.dumps({"text": text, "requester": requester}).encode()
+    # Before typing, since a failure can still have reached the session.
+    request.app[STORE].set_typed(task_id)
     try:
         code, _, err = await run_remote(request.app[CONFIG], [command, task_id], payload)
     except RuntimeError as e:
@@ -648,6 +689,29 @@ async def list_configs(request: web.Request) -> web.Response:
     return web.json_response(configsets.available(Path(request.app[CONFIG].get("configs_dir", ""))))
 
 
+async def get_blurb(request: web.Request) -> web.Response:
+    _client(request)
+    blurbs_dir, name = Path(request.app[CONFIG]["blurbs_dir"]), request.match_info["name"]
+    if name not in available_blurbs(blurbs_dir):
+        raise web.HTTPNotFound()
+    return web.json_response(load_blurbs(blurbs_dir, [name])[0][1])
+
+
+async def describe_config(request: web.Request) -> web.Response:
+    """What a config set applies, by keyword. Its files are named, never read."""
+    _client(request)
+    configs_dir, name = Path(request.app[CONFIG].get("configs_dir", "")), request.match_info["name"]
+    if name not in configsets.available(configs_dir):
+        raise web.HTTPNotFound()
+    try:
+        found = configsets.load(configs_dir, [name])
+    except configsets.ConfigSetError as e:
+        return web.json_response({"error": str(e)}, status=400)
+    described = {keyword: found[field] for keyword, field in configsets.LISTS.items() if found[field]}
+    described |= {key: found[key] for key in configsets.SINGLES if found[key] is not None}
+    return web.json_response(described)
+
+
 async def get_catalog(request: web.Request) -> web.Response:
     """The harnesses and backends the dejima host offers, for clients to show."""
     _client(request)
@@ -666,10 +730,25 @@ async def ack_event(request: web.Request) -> web.Response:
     return web.Response(status=204)
 
 
+def check_tokens(tokens: object) -> None:
+    """Refuse a token anyone could guess: examples/api.toml's, or a short one."""
+    if not isinstance(tokens, dict):
+        raise ValueError("tokens must be a table of frontend names and their tokens")
+    for name, token in tokens.items():
+        if not isinstance(token, str) or token == EXAMPLE_TOKEN or len(token) < MIN_TOKEN:
+            raise ValueError(
+                f"the token for {name} must be at least {MIN_TOKEN} characters and not the example's;"
+                " generate one with: openssl rand -hex 32"
+            )
+    if len(set(tokens.values())) < len(tokens):
+        raise ValueError("each frontend needs its own token, so tokens must all differ")
+
+
 def make_app(config: dict, poll: bool = True) -> web.Application:
     full, _, _ = with_defaults(config)
     for key, value in full.items():
         config.setdefault(key, value)
+    check_tokens(config["tokens"])
     if config.get("remote_access_url") and not re.match(r"https?://", config["remote_access_url"]):
         raise ValueError("remote_access_url must start with http:// or https://")
     app = web.Application(client_max_size=256 * 1024)
@@ -682,27 +761,30 @@ def make_app(config: dict, poll: bool = True) -> web.Application:
     app[STORE].fail_pending()
     app[SHARE_ERRORS] = {}
     app.router.add_post("/v1/tasks", create_task)
+    app.router.add_post("/v1/selftest", create_selftest)
     app.router.add_get("/v1/events", list_events)
     app.router.add_get("/v1/blurbs", list_blurbs)
     app.router.add_get("/v1/catalog", get_catalog)
+    app.router.add_get("/v1/blurbs/{name}", get_blurb)
     app.router.add_get("/v1/configs", list_configs)
-    app.router.add_get(r"/v1/tasks/{id:ms-[a-z2-7]{5}}/outputs/{seq:\d+}.zip", get_output)
+    app.router.add_get(r"/v1/configs/{name:[a-z0-9][a-z0-9_-]{0,63}}", describe_config)
+    app.router.add_get(r"/v1/tasks/{id:dn-[a-z2-7]{5}}/outputs/{seq:\d+}.zip", get_output)
     app.router.add_post(r"/v1/events/{seq:\d+}/ack", ack_event)
-    app.router.add_post(r"/v1/tasks/{id:ms-[a-z2-7]{5}}/answer", answer_help)
-    app.router.add_post(r"/v1/tasks/{id:ms-[a-z2-7]{5}}/stop", stop_task)
-    app.router.add_post(r"/v1/tasks/{id:ms-[a-z2-7]{5}}/message", message_task)
-    app.router.add_post(r"/v1/tasks/{id:ms-[a-z2-7]{5}}/files", upload_file)
+    app.router.add_post(r"/v1/tasks/{id:dn-[a-z2-7]{5}}/answer", answer_help)
+    app.router.add_post(r"/v1/tasks/{id:dn-[a-z2-7]{5}}/stop", stop_task)
+    app.router.add_post(r"/v1/tasks/{id:dn-[a-z2-7]{5}}/message", message_task)
+    app.router.add_post(r"/v1/tasks/{id:dn-[a-z2-7]{5}}/files", upload_file)
     app.router.add_get("/v1/tasks", list_sessions)
-    app.router.add_get(r"/v1/tasks/{id:ms-[a-z2-7]{5}}", get_session)
-    app.router.add_post(r"/v1/tasks/{id:ms-[a-z2-7]{5}}/domains/{n:\d{1,9}}/{verb:allow|deny}", decide_domains)
+    app.router.add_get(r"/v1/tasks/{id:dn-[a-z2-7]{5}}", get_session)
+    app.router.add_post(r"/v1/tasks/{id:dn-[a-z2-7]{5}}/domains/{n:\d{1,9}}/{verb:allow|deny}", decide_domains)
     if poll:
         app.cleanup_ctx.append(poller)
     return app
 
 
 def main() -> None:
-    p = argparse.ArgumentParser(prog="meeseeks-api")
-    p.add_argument("--config", default="/etc/meeseeks/api.toml", type=Path)
+    p = argparse.ArgumentParser(prog="darner-api")
+    p.add_argument("--config", default="/etc/darner/api.toml", type=Path)
     args = p.parse_args()
     # A config mistake is reported in one line rather than a traceback, which
     # a restarting container would otherwise repeat without end.
@@ -714,11 +796,11 @@ def main() -> None:
         port = int(port)
     except tomllib.TOMLDecodeError as e:
         hint = "; text values need double quotes" if "Invalid value" in str(e) else ""
-        sys.exit(f"meeseeks-api: {args.config}: {e}{hint}")
+        sys.exit(f"darner-api: {args.config}: {e}{hint}")
     except KeyError as e:
-        sys.exit(f"meeseeks-api: {args.config}: missing setting {e}")
+        sys.exit(f"darner-api: {args.config}: missing setting {e}")
     except (OSError, ValueError) as e:
-        sys.exit(f"meeseeks-api: {args.config}: {e}")
+        sys.exit(f"darner-api: {args.config}: {e}")
     logging.basicConfig(level=logging.INFO)
     log.info("settings from %s:", args.config)
     for line in lines:

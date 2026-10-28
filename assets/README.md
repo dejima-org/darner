@@ -17,3 +17,5 @@ https://gitbox.branderson.io/dejima/dejima/src/branch/main/ATTRIBUTION.md
 
 The link is absolute so that a fork resolves it to the canonical terms rather
 than to its own copy.
+
+darner's own logo, by the same artist, is still to come. It will live here too, with its terms stated beside it.

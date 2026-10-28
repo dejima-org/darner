@@ -1,9 +1,9 @@
 listen = "127.0.0.1:8080"
-db_path = "/var/lib/meeseeks/tasks.db"
-blurbs_dir = "/etc/meeseeks/blurbs"
+db_path = "/var/lib/darner/tasks.db"
+blurbs_dir = "/etc/darner/blurbs"
 # Config sets: saved keyword lines a request names with `config:`. Defaults to
 # configs beside blurbs_dir.
-# configs_dir = "/etc/meeseeks/configs"
+# configs_dir = "/etc/darner/configs"
 
 # Say a session seems to be waiting once its screen is unchanged this long, and
 # whether to include the end of its screen.
@@ -11,7 +11,7 @@ blurbs_dir = "/etc/meeseeks/blurbs"
 # waiting_screen = true
 # Blurbs added to every task, such as how the network reaches internal services.
 # default_blurbs = ["network"]
-results_dir = "/var/lib/meeseeks/results"
+results_dir = "/var/lib/darner/results"
 poll_interval = 30
 launch_command = ["ssh", "-T", "-o", "BatchMode=yes", "operator@dejima.example.com"]
 launch_timeout = 120

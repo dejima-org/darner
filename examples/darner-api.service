@@ -1,16 +1,16 @@
 [Unit]
-Description=meeseeks API
+Description=darner API
 After=network-online.target
 Wants=network-online.target
 
 [Service]
-User=meeseeks
-Group=meeseeks
-ExecStart=/opt/meeseeks/venv/bin/meeseeks-api --config /etc/meeseeks/api.toml
+User=darner
+Group=darner
+ExecStart=/opt/darner/venv/bin/darner-api --config /etc/darner/api.toml
 Restart=on-failure
 NoNewPrivileges=yes
 ProtectSystem=strict
-ReadWritePaths=/var/lib/meeseeks
+ReadWritePaths=/var/lib/darner
 PrivateTmp=yes
 
 [Install]

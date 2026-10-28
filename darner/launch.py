@@ -29,8 +29,8 @@ import sys
 import time
 from pathlib import Path
 
-from meeseeks import archive
-from meeseeks.job import (
+from darner import archive
+from darner.job import (
     JobError, valid_context_window, valid_domain, valid_effort, valid_model, valid_name, valid_task_id, validate_job,
 )
 
@@ -71,9 +71,9 @@ def _name(value: str) -> str:
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
-    p = argparse.ArgumentParser(prog="meeseeks-launch")
-    p.add_argument("--session", default="meeseeks", type=_name)
-    p.add_argument("--tasks-dir", default=Path.home() / "meeseeks" / "tasks", type=Path)
+    p = argparse.ArgumentParser(prog="darner-launch")
+    p.add_argument("--session", default="darner", type=_name)
+    p.add_argument("--tasks-dir", default=Path.home() / "darner" / "tasks", type=Path)
     p.add_argument("--dejima", default="dejima")
     p.add_argument("--tmux", default="tmux")
     p.add_argument("--identity", type=_name)
@@ -177,7 +177,7 @@ def _start_window(args: argparse.Namespace, job, task_dir: Path) -> dict:
             *tmux, "new-window", "-d", "-P", "-F", "#{session_name}:#{window_name} #{window_id} #{pane_id}",
             "-t", f"={args.session}:", "-n", job.id, "-c", str(task_dir),
             "-e", f"XDG_RUNTIME_DIR={env['XDG_RUNTIME_DIR']}",
-            "--", sys.executable, "-m", "meeseeks.launch", "--share-root", str(args.share_root), "--exec", str(task_dir),
+            "--", sys.executable, "-m", "darner.launch", "--share-root", str(args.share_root), "--exec", str(task_dir),
         ],
         env=env,
         capture_output=True,
@@ -205,7 +205,7 @@ def session_run_id(task_dir: Path) -> str | None:
     """dejima's run id for the session in this task's pane, once dejima has registered it.
 
     dejima records each session's tmux pane in its remote-access registry, so
-    the pane meeseeks created is what identifies the session there. Nothing
+    the pane darner created is what identifies the session there. Nothing
     is registered unless dejima's remote access is enabled.
     """
     try:
@@ -244,7 +244,7 @@ def _deliver_files(args: argparse.Namespace, task_dir: Path, stop: threading.Eve
     try:
         uploads = _open_uploads(args, task_dir)
     except RuntimeError as e:
-        print(f"meeseeks: couldn't give the session its files: {e}", file=sys.stderr)
+        print(f"darner: couldn't give the session its files: {e}", file=sys.stderr)
         return
     delivered = []
     try:
@@ -291,7 +291,7 @@ def run_session(args: argparse.Namespace, task_dir: Path) -> int:
         (task_dir / "pid").write_text(str(proc.pid))
         code = proc.wait()
     except OSError as e:
-        print(f"meeseeks: couldn't start {dejima[0]}: {e}", file=sys.stderr)
+        print(f"darner: couldn't start {dejima[0]}: {e}", file=sys.stderr)
         code = 127
     if code < 0:
         code = 128 - code
@@ -311,7 +311,7 @@ def run_session(args: argparse.Namespace, task_dir: Path) -> int:
         (task_dir / "typing.log").unlink(missing_ok=True)
     if code:
         # The window closes when this process exits, taking the error with it.
-        print(f"\nmeeseeks: dejima exited with status {code}. Press Enter to close this window.")
+        print(f"\ndarner: dejima exited with status {code}. Press Enter to close this window.")
         try:
             input()
         except EOFError:
@@ -539,7 +539,7 @@ def fetch(args: argparse.Namespace, task_id: str) -> int:
             # Retrying would fail the same way, so the output is consumed.
             _delivered(fd, task_dir, signal_id, result)
             reason = e if isinstance(e, archive.ArchiveError) else f"took longer than {args.fetch_timeout}s to read"
-            print(f"meeseeks-launch: {reason}", file=sys.stderr)
+            print(f"darner-launch: {reason}", file=sys.stderr)
             return FETCH_REJECTED
         finally:
             signal.alarm(0)
@@ -629,7 +629,7 @@ def _paste(args: argparse.Namespace, task_dir: Path, task_id: str, message: str)
     env = _tmux_env()
     window = task_dir / "window"
     target = window.read_text() if window.exists() else f"={args.session}:={task_id}"
-    buffer = f"meeseeks-{task_id}-{os.getpid()}"
+    buffer = f"darner-{task_id}-{os.getpid()}"
     def screen() -> str:
         result = subprocess.run([args.tmux, "capture-pane", "-p", "-J", "-t", target], env=env, capture_output=True, text=True)
         return result.stdout if result.returncode == 0 else ""
@@ -1082,7 +1082,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         words = command(args)
     except ValueError as e:
-        print(f"meeseeks-launch: {e}", file=sys.stderr)
+        print(f"darner-launch: {e}", file=sys.stderr)
         return 2
     try:
         if words == ["status"]:
@@ -1109,7 +1109,7 @@ def main(argv: list[str] | None = None) -> int:
         else:
             print(json.dumps(launch(args, json.load(sys.stdin))))
     except (JobError, json.JSONDecodeError, RuntimeError, OSError, ValueError) as e:
-        print(f"meeseeks-launch: {e}", file=sys.stderr)
+        print(f"darner-launch: {e}", file=sys.stderr)
         return 1
     return 0
 

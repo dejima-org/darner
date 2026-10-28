@@ -32,7 +32,7 @@ _MODEL = re.compile(r"[A-Za-z0-9][][A-Za-z0-9._:/-]{0,199}")
 EFFORTS = ("none", "low", "medium", "high", "xhigh")
 # dejima's range for a harness's context_window, in tokens.
 CONTEXT_WINDOW = range(512, 100_000_001)
-_ID = re.compile(r"ms-[a-z2-7]{5}")
+_ID = re.compile(r"dn-[a-z2-7]{5}")
 
 OUTPUT_INSTRUCTIONS = (
     "When you finish:\n"
@@ -74,7 +74,7 @@ class Job:
 
 
 def new_task_id() -> str:
-    return "ms-" + "".join(secrets.choice("abcdefghijklmnopqrstuvwxyz234567") for _ in range(5))
+    return "dn-" + "".join(secrets.choice("abcdefghijklmnopqrstuvwxyz234567") for _ in range(5))
 
 
 def valid_domain(s: str) -> bool:
@@ -125,7 +125,7 @@ def _optional_name(d: dict, key: str) -> str | None:
 
 def _files(d: dict) -> list[tuple[str, bytes]]:
     """Files to give the session, as name and contents; names already safe to write as they are."""
-    from meeseeks.archive import upload_name
+    from darner.archive import upload_name
 
     items = d.get("files", [])
     if not isinstance(items, list) or len(items) > MAX_FILES:
