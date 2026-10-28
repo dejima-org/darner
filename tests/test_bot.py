@@ -720,6 +720,7 @@ async def test_help_command_shows_usage(maubot_plugin, maubot_test_bot, api, bod
     [text] = replies(maubot_test_bot)
     assert text.startswith("**Meeseeks** starts an isolated dejima session")
     assert "ctx: <names>       add context blurbs (available: loki, myapp)" in text
+    assert "\n@meeseeks:example.org find out why" in text
     assert api.requests == []
     [msg] = sent(maubot_test_bot)
     assert "formatted_body" in msg

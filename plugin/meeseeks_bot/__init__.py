@@ -61,7 +61,7 @@ context_window: <tokens>  cline's context window, for a self-hosted model
 Values are separated by commas or spaces, and keywords can repeat. For example:
 
 ```
-@meeseeks find out why the import job fails since the deploy
+{bot} find out why the import job fails since the deploy
 ctx: myapp
 allow: pypi.org, files.pythonhosted.org
 ```
@@ -290,7 +290,7 @@ class MeeseeksBot(Plugin):
             self.log.warning("Couldn't list config sets", exc_info=True)
             configs = None
         configs = f" (available: {', '.join(configs) or 'none'})" if isinstance(configs, list) else ""
-        return USAGE.format(blurbs=listed, harnesses=harnesses, backends=backends, configs=configs)
+        return USAGE.format(blurbs=listed, harnesses=harnesses, backends=backends, configs=configs, bot=self.client.mxid)
 
     def _help_task(self, replied: Event | None) -> str | None:
         # Only the bot's own tag counts, so a user can't steer an answer into another task
