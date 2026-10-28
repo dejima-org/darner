@@ -20,7 +20,7 @@ So adding a frontend adds a way in. Each one, and anyone who can administer it o
 - **Give each frontend its own token**, so one can be revoked by removing its line from `[tokens]`, and its tasks stay separate from the others'.
 - **Keep the token where only the frontend can read it.** For the Matrix bot, that's the plugin's config in maubot, so a maubot admin can read it, or just edit the allowlist. maubot admin access is as good as the token.
 - **Know who the frontend lets in.** Its access control is the only access control there is.
-- **Check how it shows what the agent wrote.** The API hands summaries, help requests and screens over as the agent wrote them. Making them inert, so a link can't hide where it goes and markup can't run or ping anyone, is each frontend's job.
+- **Check how it shows what the agent wrote.** The API hands summaries, help requests and screens over as the agent wrote them. Making them inert, so a link can't hide where it goes and markup can't run or ping anyone, is each frontend's job. `POST /v1/selftest` sends text written like a hostile agent's down those paths, each line saying what a safe frontend shows; see the README's "Checking a frontend".
 
 The API refuses to start with a token that's the example's placeholder or shorter than 32 characters.
 
