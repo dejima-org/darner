@@ -875,6 +875,11 @@ async def test_config_sets_expand_and_the_request_overrides(aiohttp_client, conf
         "harness": "cline", "backend": "self-hosted", "model": "qwen3-14b", "context_window": "30000",
     }
     assert (await client.get("/v1/configs/nope", headers=AUTH)).status == 404
+    (Path(config["blurbs_dir"]) / "mealie.md").write_text("Recipes live in Mealie.\n")
+    assert await (await client.get("/v1/blurbs/mealie", headers=AUTH)).json() == "Recipes live in Mealie.\n"
+    assert (await client.get("/v1/blurbs/nope", headers=AUTH)).status == 404
+    assert (await client.get("/v1/blurbs/..%2Fapi", headers=AUTH)).status == 404
+    assert (await client.get("/v1/blurbs/mealie")).status == 401
     assert (await client.get("/v1/configs/mealie")).status == 401
     (configs / "mealie").write_text("bogus line\n")
     resp = await client.get("/v1/configs/mealie", headers=AUTH)

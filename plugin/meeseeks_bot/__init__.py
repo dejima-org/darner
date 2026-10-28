@@ -36,7 +36,10 @@ STOP_HOW = "To stop a session, reply `stop` with a mention to one of my messages
 STATUS = re.compile(r"status(?:\s+(ms-[a-z2-7]{5}))?", re.IGNORECASE)
 TELL = re.compile(r"tell(?:\s+(ms-[a-z2-7]{5}))?\s+(\S.*)", re.IGNORECASE | re.DOTALL)
 UPLOAD = re.compile(r"upload\s+(ms-[a-z2-7]{5})", re.IGNORECASE)
-DESCRIBE = re.compile(r"describe\s+(\S+)", re.IGNORECASE)
+DESCRIBE = re.compile(r"describe\s+(\S.*)", re.IGNORECASE | re.DOTALL)
+MAX_DESCRIBED = 10
+# Each blurb shown is cut here, to keep the reply inside an event.
+MAX_BLURB_SHOWN = 8000
 STATUS_HOW = "Send `status ms-xxxxx` with a mention, or reply `status` with a mention to one of my messages about the session."
 DECIDE_HOW = "To allow or deny domains, reply `allow` or `deny` with a mention to my message listing them."
 NO_TASK = "Tell me the task after the mention, or reply to a note to make it the task. Send `help` with a mention for usage."
@@ -67,7 +70,7 @@ ctx: myapp
 allow: pypi.org, files.pythonhosted.org
 ```
 
-**Config sets:** `describe <name>` with a mention shows what a config set applies.
+**Config sets and blurbs:** with a mention, `list configs` and `list blurbs` name them, and `describe <names>` shows what each config set applies and what each blurb says.
 
 **Updates:** I reply when the session starts, when it delivers output (a summary and a zip), when it needs something from you, and when it ends. When a help request says "Reply to this message to answer", reply to it and your answer is typed into the session.
 
@@ -229,9 +232,12 @@ class MeeseeksBot(Plugin):
             await self._respond(evt, self._decide_domains(evt, command.lower()))
             return
         if mentioned and (describe := DESCRIBE.fullmatch(command)):
-            await self._respond(evt, self._describe(describe[1]))
+            await self._respond(evt, self._describe(list(dict.fromkeys(re.split(r"[,\s]+", describe[1].strip())))))
             return
-        if mentioned and command.lower() in ("sessions", "list"):
+        if mentioned and command.lower() in ("list blurbs", "list configs"):
+            await self._respond(evt, self._list(command.lower().split()[1]))
+            return
+        if mentioned and command.lower() in ("sessions", "list", "list sessions"):
             await self._respond(evt, self._sessions())
             return
         if mentioned and (status := STATUS.fullmatch(command)):
@@ -377,14 +383,33 @@ class MeeseeksBot(Plugin):
             session = await resp.json()
         return _status_notice(session), True
 
-    async def _describe(self, name: str) -> tuple[str | TextMessageEventContent, bool]:
-        async with self._api("GET", f"/v1/configs/{quote(name, safe='')}") as resp:
-            if resp.status == 404:
-                return f"There's no config set called {name}. Send `help` with a mention to list them.", False
-            data = await resp.json(content_type=None)
-            if not resp.ok:
-                return f"Failed: {data.get('error') if isinstance(data, dict) else f'HTTP {resp.status}'}", False
-        return _config_notice(name, data), True
+    async def _list(self, what: str) -> tuple[str, bool]:
+        kind = {"blurbs": "context blurbs", "configs": "config sets"}[what]
+        async with self._api("GET", f"/v1/{what}", raise_for_status=True) as resp:
+            names = await resp.json()
+        if not names:
+            return f"There are no {kind}.", True
+        return f"{kind.capitalize()}: {', '.join(names)}. Send `describe <names>` with a mention to see them.", True
+
+    async def _describe(self, names: list[str]) -> tuple[str | TextMessageEventContent, bool]:
+        """Each name's config set, then its blurb, for every name that has either."""
+        if len(names) > MAX_DESCRIBED:
+            return f"I can describe up to {MAX_DESCRIBED} at once.", False
+        sections, missing = [], []
+        for name in names:
+            found = False
+            for kind, path in (("config set", "configs"), ("blurb", "blurbs")):
+                async with self._api("GET", f"/v1/{path}/{quote(name, safe='')}") as resp:
+                    if resp.status == 404:
+                        continue
+                    data = await resp.json(content_type=None)
+                    if not resp.ok:
+                        return f"Failed: {data.get('error') if isinstance(data, dict) else f'HTTP {resp.status}'}", False
+                sections.append((name, kind, data))
+                found = True
+            if not found:
+                missing.append(name)
+        return _described_notice(sections, missing), bool(sections) and not missing
 
     async def _upload_replied_file(self, evt: MessageEvent, task: str) -> tuple[str, bool]:
         file_event = None
@@ -580,19 +605,31 @@ def _session_line(session: dict) -> str:
     return f"{session['id']}: {_waiting_on(session)}, started {_age(session['started'])} ago by {session['requester']} ({where})"
 
 
-def _config_notice(name: str, described: dict) -> TextMessageEventContent:
-    """A config set's keyword lines, as it would apply them."""
-    lines = "\n".join(
-        f"{key}: {', '.join(value) if isinstance(value, list) else value}" for key, value in described.items()
-    ) or "(nothing)"
-    head = f"{name} applies:"
-    foot = "Each file: is put in the session's ~/shared/uploads; its contents aren't shown here."
-    body = f"{head}\n\n" + "\n".join(f"    {line}" for line in lines.splitlines())
-    html_body = f"<p>{html.escape(head)}</p><pre><code>{html.escape(lines)}</code></pre>"
-    if "file" in described:
-        body += f"\n\n{foot}"
-        html_body += f"<p>{html.escape(foot)}</p>"
-    return TextMessageEventContent(msgtype=MessageType.NOTICE, body=body, format=Format.HTML, formatted_body=html_body)
+def _described_notice(sections: list[tuple[str, str, object]], missing: list[str]) -> TextMessageEventContent:
+    """Config sets as the keyword lines they apply, and blurbs as their text."""
+    body, html_body = [], []
+    for name, kind, data in sections:
+        if kind == "config set":
+            text = "\n".join(
+                f"{key}: {', '.join(value) if isinstance(value, list) else value}" for key, value in data.items()
+            ) or "(nothing)"
+            note = "Each file: is put in the session's ~/shared/uploads; its contents aren't shown here." if "file" in data else ""
+        else:
+            text = data if len(data) <= MAX_BLURB_SHOWN else data[:MAX_BLURB_SHOWN]
+            note = f"Cut at {MAX_BLURB_SHOWN} of its {len(data)} characters." if len(data) > MAX_BLURB_SHOWN else ""
+        head = f"{name} ({kind})"
+        body.append(f"{head}\n\n" + "\n".join(f"    {line}" for line in text.splitlines()) + (f"\n\n{note}" if note else ""))
+        html_body.append(
+            f"<p><strong>{html.escape(name)}</strong> ({kind})</p><pre><code>{html.escape(text)}</code></pre>"
+            + (f"<p>{html.escape(note)}</p>" if note else "")
+        )
+    if missing:
+        line = f"No config set or blurb called {', '.join(missing)}. Send `help` with a mention to list them."
+        body.append(line)
+        html_body.append(f"<p>{html.escape(line)}</p>")
+    return TextMessageEventContent(
+        msgtype=MessageType.NOTICE, body="\n\n".join(body), format=Format.HTML, formatted_body="".join(html_body)
+    )
 
 
 def _status_notice(session: dict) -> TextMessageEventContent:

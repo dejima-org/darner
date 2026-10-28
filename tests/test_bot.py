@@ -64,6 +64,15 @@ class Api:
         self.stop_status = 204
         self.configs = {"recipes": {"ctx": ["myapp"], "file": ["recipes-token"], "harness": "cline", "context_window": "30000"}}
 
+    async def list_configs(self, request):
+        return web.json_response(sorted(self.configs))
+
+    async def blurb(self, request):
+        text = {"recipes": "Recipes live in Mealie.", "loki": "Logs <b>are</b> in Loki.", "long": "x" * 9000}
+        if request.match_info["name"] not in text:
+            raise web.HTTPNotFound()
+        return web.json_response(text[request.match_info["name"]])
+
     async def describe(self, request):
         if request.match_info["name"] not in self.configs:
             raise web.HTTPNotFound()
@@ -138,6 +147,8 @@ async def api(aiohttp_server):
     app.router.add_get("/v1/blurbs", api.list_blurbs)
     app.router.add_post("/v1/tasks/{id}/stop", api.stop)
     app.router.add_get("/v1/configs/{name}", api.describe)
+    app.router.add_get("/v1/blurbs/{name}", api.blurb)
+    app.router.add_get("/v1/configs", api.list_configs)
     api.server = await aiohttp_server(app)
     return api
 
@@ -993,8 +1004,9 @@ def sessions(api):
     return api
 
 
-async def test_sessions_when_none_are_open(maubot_plugin, maubot_test_bot, sessions):
-    await send(maubot_test_bot, message("@meeseeks:example.org sessions", reply_to=None))
+@pytest.mark.parametrize("command", ["sessions", "list", "list sessions"])
+async def test_sessions_when_none_are_open(maubot_plugin, maubot_test_bot, sessions, command):
+    await send(maubot_test_bot, message(f"@meeseeks:example.org {command}", reply_to=None))
     assert replies(maubot_test_bot) == ["No open sessions."]
 
 
@@ -1221,7 +1233,47 @@ async def test_describe_shows_a_config_set(maubot_plugin, maubot_test_bot, api):
     assert api.requests == []
 
 
-async def test_describe_unknown_config_set(maubot_plugin, maubot_test_bot, api):
-    await send(maubot_test_bot, message("@meeseeks:example.org describe nope", reply_to=None))
-    assert replies(maubot_test_bot) == ["There's no config set called nope. Send `help` with a mention to list them."]
+async def test_describe_shows_config_sets_then_blurbs_in_order(maubot_plugin, maubot_test_bot, api):
+    await send(maubot_test_bot, message("@meeseeks:example.org describe loki, recipes", reply_to=None))
+    [body] = replies(maubot_test_bot)
+    heads = [line for line in body.splitlines() if line.endswith(")")]
+    assert heads == ["loki (blurb)", "recipes (config set)", "recipes (blurb)"]
+    [msg] = [r for r in maubot_test_bot.responded if r.event_type == EventType.ROOM_MESSAGE]
+    assert "<pre><code>Logs &lt;b&gt;are&lt;/b&gt; in Loki.</code></pre>" in msg.content.formatted_body
+    assert reactions(maubot_test_bot) == ["⏳", "✅"]
+
+
+async def test_describe_names_what_it_did_not_find(maubot_plugin, maubot_test_bot, api):
+    await send(maubot_test_bot, message("@meeseeks:example.org describe recipes nope", reply_to=None))
+    [body] = replies(maubot_test_bot)
+    assert body.startswith("recipes (config set)")
+    assert body.endswith("No config set or blurb called nope. Send `help` with a mention to list them.")
+    assert reactions(maubot_test_bot) == ["⏳", "❌"]
+
+
+async def test_describe_cuts_a_long_blurb(maubot_plugin, maubot_test_bot, api):
+    await send(maubot_test_bot, message("@meeseeks:example.org describe long", reply_to=None))
+    [body] = replies(maubot_test_bot)
+    assert "x" * 8001 not in body and body.endswith("Cut at 8000 of its 9000 characters.")
+
+
+async def test_describe_is_limited(maubot_plugin, maubot_test_bot, api):
+    names = " ".join(f"b{i}" for i in range(11))
+    await send(maubot_test_bot, message(f"@meeseeks:example.org describe {names}", reply_to=None))
+    assert replies(maubot_test_bot) == ["I can describe up to 10 at once."]
+
+
+@pytest.mark.parametrize("command, expected", [
+    ("list blurbs", "Context blurbs: loki, myapp. Send `describe <names>` with a mention to see them."),
+    ("List Configs", "Config sets: recipes. Send `describe <names>` with a mention to see them."),
+])
+async def test_list_blurbs_and_configs(maubot_plugin, maubot_test_bot, api, command, expected):
+    await send(maubot_test_bot, message(f"@meeseeks:example.org {command}", reply_to=None))
+    assert replies(maubot_test_bot) == [expected]
     assert api.requests == []
+
+
+async def test_list_with_none(maubot_plugin, maubot_test_bot, api):
+    api.blurbs = []
+    await send(maubot_test_bot, message("@meeseeks:example.org list blurbs", reply_to=None))
+    assert replies(maubot_test_bot) == ["There are no context blurbs."]

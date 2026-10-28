@@ -658,6 +658,14 @@ async def list_configs(request: web.Request) -> web.Response:
     return web.json_response(configsets.available(Path(request.app[CONFIG].get("configs_dir", ""))))
 
 
+async def get_blurb(request: web.Request) -> web.Response:
+    _client(request)
+    blurbs_dir, name = Path(request.app[CONFIG]["blurbs_dir"]), request.match_info["name"]
+    if name not in available_blurbs(blurbs_dir):
+        raise web.HTTPNotFound()
+    return web.json_response(load_blurbs(blurbs_dir, [name])[0][1])
+
+
 async def describe_config(request: web.Request) -> web.Response:
     """What a config set applies, by keyword. Its files are named, never read."""
     _client(request)
@@ -710,6 +718,7 @@ def make_app(config: dict, poll: bool = True) -> web.Application:
     app.router.add_get("/v1/events", list_events)
     app.router.add_get("/v1/blurbs", list_blurbs)
     app.router.add_get("/v1/catalog", get_catalog)
+    app.router.add_get("/v1/blurbs/{name}", get_blurb)
     app.router.add_get("/v1/configs", list_configs)
     app.router.add_get(r"/v1/configs/{name:[a-z0-9][a-z0-9_-]{0,63}}", describe_config)
     app.router.add_get(r"/v1/tasks/{id:ms-[a-z2-7]{5}}/outputs/{seq:\d+}.zip", get_output)
