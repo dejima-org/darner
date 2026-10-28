@@ -30,6 +30,8 @@ elif command[:1] == ["upload"]:
     data = sys.stdin.buffer.read()
     open(os.environ["STUB_LOG"], "a").write(json.dumps([*command, header, len(data)]) + "\\n")
     print(json.dumps({"path": "~/shared/uploads/" + header["name"], "size": len(data), "told": False}))
+elif command[:1] == ["forget"]:
+    open(os.environ["STUB_LOG"], "a").write(json.dumps(command) + "\\n")
 elif command[:1] == ["stop"]:
     open(os.environ["STUB_LOG"], "a").write(json.dumps(command) + "\\n")
     if os.environ.get("STUB_STOP_ERROR"):
@@ -290,7 +292,7 @@ async def test_ready_output_becomes_event_and_download(started, tmp_path):
     [event] = await events(client)
     assert event["id"] == task_id and event["type"] == "output" and event["summary"] == "Found it.[0m"
     assert event["source"] == request()["source"]
-    assert fetches(tmp_path) == [["fetch", task_id]]
+    assert [f for f in fetches(tmp_path) if f[0] == "fetch"] == [["fetch", task_id]]
 
     resp = await client.get(f"/v1/tasks/{task_id}/outputs/{event['seq']}.zip", headers=AUTH)
     assert resp.status == 200
@@ -1119,3 +1121,41 @@ async def test_a_task_the_launcher_forgot_is_ended_once_old(started, tmp_path, m
     await poll_once(app)
     assert app[STORE].launched() == []
     assert [e["type"] for e in await events(client) if e["id"] == task_id] == ["ended"]
+
+
+async def test_ending_deletes_all_but_uncollected_output_then_the_rest(started, config, tmp_path):
+    app, client, task_id, status, output = started
+    status(state="exited")
+    output(zip_bytes([("RESULT.md", "done")]))
+    await poll_once(app)
+    assert ["forget", task_id] in fetches(tmp_path)
+    job, requester = app[STORE].db.execute("SELECT job_json, requester FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    assert job == "{}" and requester == ""
+    results = Path(config["results_dir"]) / task_id
+    assert len(list(results.glob("*.zip"))) == 1
+    for e in await events(client):
+        assert (await client.post(f"/v1/events/{e['seq']}/ack", headers=AUTH)).status == 204
+    assert not app[STORE].known(task_id) and not results.exists()
+
+
+async def test_uncollected_output_is_purged_after_output_retention(started, config):
+    app, client, task_id, status, output = started
+    status(state="exited")
+    output(zip_bytes([("RESULT.md", "done")]))
+    await poll_once(app)
+    app[STORE].db.execute("UPDATE tasks SET ended = ?", (time.time() - config["output_retention"] - 1,))
+    await poll_once(app)
+    assert not app[STORE].known(task_id) and await events(client) == []
+
+
+async def test_a_failed_launch_leaves_nothing(client, config, tmp_path, monkeypatch):
+    monkeypatch.setenv("STUB_FAIL", "1")
+    assert (await client.post("/v1/tasks", json=request(), headers=AUTH)).status == 502
+    assert Store(config["db_path"]).db.execute("SELECT count(*) FROM tasks").fetchone()[0] == 0
+
+
+async def test_an_ended_session_the_api_never_recorded_is_forgotten(started, tmp_path):
+    app, client, task_id, status, _ = started
+    status(state="running", ready=False)
+    await poll_once(app)
+    assert ["forget", "dn-zzzzz"] in fetches(tmp_path) and ["forget", task_id] not in fetches(tmp_path)

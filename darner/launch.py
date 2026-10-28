@@ -483,6 +483,16 @@ def _state(task_dir: Path) -> str:
     return "starting"
 
 
+def forget(args: argparse.Namespace, task_id: str) -> None:
+    """Delete an ended session's task directory, which holds its prompt in argv.json."""
+    task_dir = args.tasks_dir / task_id
+    if not task_dir.is_dir():
+        return
+    if _state(task_dir) != "exited":
+        raise RuntimeError(f"{task_id} hasn't ended")
+    shutil.rmtree(task_dir)
+
+
 def status(args: argparse.Namespace) -> list[dict]:
     tasks = []
     if not args.tasks_dir.is_dir():
@@ -1065,7 +1075,7 @@ def command(args: argparse.Namespace) -> list[str]:
     words = original.split() if original is not None else args.command
     if words in ([], ["status"], ["catalog"]) or (
         len(words) == 2
-        and words[0] in ("fetch", "help", "answer", "message", "upload", "stop", "domains")
+        and words[0] in ("fetch", "help", "answer", "message", "upload", "stop", "domains", "forget")
         and valid_task_id(words[1])
     ) or (
         len(words) == 3 and words[0] in ("allow", "deny") and valid_task_id(words[1])
@@ -1099,6 +1109,8 @@ def main(argv: list[str] | None = None) -> int:
             answer(args, words[1], json.load(sys.stdin), message=True)
         elif words and words[0] == "stop":
             stop(args, words[1])
+        elif words and words[0] == "forget":
+            forget(args, words[1])
         elif words and words[0] == "domains":
             print(json.dumps(domain_request(args, words[1])))
         elif words and words[0] in ("allow", "deny"):

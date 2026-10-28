@@ -484,7 +484,9 @@ Before pasting, the launcher strips control characters, ESC above all, so the te
 
 The bot only treats a reply as an answer when the replied-to message is its own help request, so a forged tag on someone else's message is ignored.
 
-The files are still agent-written: treat what is in the zip as untrusted. Neither the API's `results_dir` nor dejima's `isolated/` share directories are pruned.
+The files are still agent-written: treat what is in the zip as untrusted.
+
+**Nothing about a session outlives it.** When a session ends, the API deletes everything it kept about it except output its frontend hasn't collected: the prompt and context, who asked, help requests, terminal screens and domain requests. The launcher deletes the session's task directory on the dejima host. Once the frontend acknowledges the output, the bot doing so as soon as it has posted it, the API deletes the rest, zips included. Output nobody collects is deleted after `output_retention`. Your frontend's own copy, such as the room's messages, is yours, and dejima keeps a session's `~/shared` on the dejima host if it isn't empty.
 
 ## Reference
 
@@ -524,15 +526,16 @@ Grants use `dejima --domains FILE` and `--dependencies FILE`, and output collect
 | key | meaning |
 |---|---|
 | `listen` | `host:port` to listen on |
-| `db_path` | SQLite database of tasks and events |
+| `db_path` | SQLite database of open tasks and their events; see "Nothing about a session outlives it" |
 | `blurbs_dir` | context blurbs, as `<name>.md`; read per request, so an edit needs no restart |
 | `max_upload` | largest upload in bytes, default 50 MiB; keep it at or under the launcher's `--max-upload` |
 | `waiting_after` | seconds a running session's screen can stay unchanged before the bot says it seems to be waiting (default 300) |
+| `output_retention` | seconds an ended session's output is kept for a frontend that hasn't collected it (default 604800, 7 days; 0 deletes it when the session ends) |
 | `max_session_age` | seconds a session may run before it's stopped, so none is left running forgotten (default 86400, a day; 0 never stops one). A task the launcher no longer knows about is marked ended at the same age |
 | `waiting_screen` | whether that notice includes the end of the session's screen (default true) |
 | `configs_dir` | config sets, by default `configs` beside `blurbs_dir`; one file per set named as it's used, holding keyword lines (see [`examples/configs`](examples/configs)); read per request. A set's `file: <name>` lines give each of its sessions `configs_dir/files/<name>` (up to 1 MiB) in `~/shared/uploads` |
 | `default_blurbs` | blurb names added to every task's prompt, before any it names with `ctx:`; each must exist |
-| `results_dir` | collected output archives |
+| `results_dir` | collected output archives, until their frontend collects them |
 | `poll_interval` | seconds between checks on the dejima host |
 | `launch_command` | how to reach the launcher; the command is appended, and over ssh arrives as `SSH_ORIGINAL_COMMAND` |
 | `launch_timeout` | seconds a launcher call may take |

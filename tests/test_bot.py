@@ -1396,3 +1396,10 @@ async def test_something_like_a_task_id_is_not_taken_as_a_task(maubot_plugin, ma
     [reply] = replies(maubot_test_bot)
     assert reply.endswith("isn't one of my task ids, which look like dn-xxxxx.")
     assert api.requests == [] and api.stops == []
+
+
+@pytest.mark.parametrize("command", ["help", "stop ab-12345", "describe nope", "sessions"])
+async def test_replies_mention_no_one(maubot_plugin, maubot_test_bot, api, sessions, command):
+    await send(maubot_test_bot, message(f"@dragonlet:example.org {command}", reply_to=None))
+    replied = [m for m in sent(maubot_test_bot) if m.get("msgtype") in ("m.notice", "m.text")]
+    assert replied and all(m["m.mentions"] == {} for m in replied)

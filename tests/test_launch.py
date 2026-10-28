@@ -1335,3 +1335,14 @@ def test_result_pending_until_delivered(env, share):
     quiet(shared)
     run(a, "fetch", "dn-abc23")
     assert status(a)[0]["result_pending"] is False
+
+
+def test_forget_deletes_an_ended_task_and_refuses_a_running_one(env, share):
+    a, _ = share
+    task_dir = env / "tasks" / "dn-abc23"
+    code, _, err = run(a, "forget", "dn-abc23")
+    assert code == 1 and "hasn't ended" in err and task_dir.is_dir()
+    (task_dir / "exit").write_text("0\n")
+    assert run(a, "forget", "dn-abc23")[0] == 0
+    assert not task_dir.exists()
+    assert run(a, "forget", "dn-abc23")[0] == 0

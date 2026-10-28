@@ -71,6 +71,7 @@ class Store:
             ("events", "signalled", "INTEGER NOT NULL DEFAULT 1"),
             ("events", "data", "TEXT"),
             ("tasks", "typed", "REAL"),
+            ("tasks", "ended", "REAL"),
         ):
             if column not in {row[1] for row in self.db.execute(f"PRAGMA table_info({table})")}:
                 self.db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
@@ -78,7 +79,7 @@ class Store:
     def claim(self, task_id: str, client: str, source: dict, requester: str, job_json: str) -> tuple[Task, bool]:
         """Record a task for a source, or return the one already recorded.
 
-        A task whose launch failed is claimed again, so resending retries it.
+        A failed launch is deleted when it fails, so resending retries it.
         """
         with self.db:
             self.db.execute("BEGIN IMMEDIATE")
@@ -86,10 +87,8 @@ class Store:
                 "SELECT id, status, target, error, run_id FROM tasks WHERE client = ? AND source_kind = ? AND source_ref = ?",
                 (client, source["kind"], source["ref"]),
             ).fetchone()
-            if row and row[1] != "failed":
-                return Task(*row), False
             if row:
-                self.db.execute("DELETE FROM tasks WHERE id = ?", (row[0],))
+                return Task(*row), False
             self.db.execute(
                 "INSERT INTO tasks (id, client, source_kind, source_ref, source_json, requester, job_json, status, created)"
                 " VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)",
@@ -98,8 +97,47 @@ class Store:
         return Task(task_id, "pending", None, None), True
 
     def fail_pending(self) -> None:
-        """Release tasks left pending by a previous run, so a resend retries them."""
-        self.db.execute("UPDATE tasks SET status = 'failed', error = 'interrupted' WHERE status = 'pending'")
+        """Delete tasks left pending by a previous run, so a resend retries them."""
+        for (task_id,) in self.db.execute("SELECT id FROM tasks WHERE status IN ('pending', 'failed')").fetchall():
+            self.delete(task_id)
+
+    def end(self, task_id: str) -> None:
+        """Keep only what the task's frontend has yet to collect: its unacknowledged output.
+
+        The prompt, requester, run id, and every other event go now. An ended
+        event follows, for the frontend to say so.
+        """
+        with self.db:
+            self.db.execute("BEGIN IMMEDIATE")
+            self.db.execute(
+                "UPDATE tasks SET status = 'ended', ended = ?, job_json = '{}', requester = '', target = NULL,"
+                " run_id = NULL, error = NULL, typed = NULL WHERE id = ?",
+                (time.time(), task_id),
+            )
+            self.db.execute("DELETE FROM events WHERE task_id = ? AND (acked = 1 OR type != 'output')", (task_id,))
+            self.db.execute("INSERT INTO events (task_id, type, created) VALUES (?, 'ended', ?)", (task_id, time.time()))
+
+    def delete(self, task_id: str) -> None:
+        with self.db:
+            self.db.execute("BEGIN IMMEDIATE")
+            self.db.execute("DELETE FROM events WHERE task_id = ?", (task_id,))
+            self.db.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
+
+    def kept_outputs(self, task_id: str) -> set[int]:
+        rows = self.db.execute("SELECT seq FROM events WHERE task_id = ? AND type = 'output' AND acked = 0", (task_id,))
+        return {r[0] for r in rows}
+
+    def purgeable(self, retention: float) -> list[str]:
+        """Ended tasks whose frontend has collected everything, or that have waited longer than retention."""
+        rows = self.db.execute(
+            "SELECT id FROM tasks t WHERE status = 'ended' AND (ended < ? OR NOT EXISTS"
+            " (SELECT 1 FROM events e WHERE e.task_id = t.id AND e.acked = 0))",
+            (time.time() - retention,),
+        )
+        return [r[0] for r in rows]
+
+    def known(self, task_id: str) -> bool:
+        return self.db.execute("SELECT 1 FROM tasks WHERE id = ?", (task_id,)).fetchone() is not None
 
     def set_run_id(self, task_id: str, run_id: str) -> None:
         self.db.execute("UPDATE tasks SET run_id = ? WHERE id = ?", (run_id, task_id))
@@ -111,10 +149,11 @@ class Store:
         row = self.db.execute("SELECT typed FROM tasks WHERE id = ?", (task_id,)).fetchone()
         return row[0] if row else None
 
-    def mark(self, task_id: str, status: str, target: str | None = None, error: str | None = None) -> None:
+    def mark(self, task_id: str, status: str, target: str | None = None) -> None:
+        ended = time.time() if status == "ended" else None
         self.db.execute(
-            "UPDATE tasks SET status = ?, target = coalesce(?, target), error = ? WHERE id = ?",
-            (status, target, error, task_id),
+            "UPDATE tasks SET status = ?, target = coalesce(?, target), ended = coalesce(?, ended) WHERE id = ?",
+            (status, target, ended, task_id),
         )
 
     def created(self, task_id: str) -> float:
