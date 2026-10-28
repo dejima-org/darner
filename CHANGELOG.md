@@ -8,6 +8,7 @@ Each release names the dejima release it was released against: the one it was te
 
 Released against dejima: N/A
 
+- **Looking things up from chat:** `list configs` and `list blurbs` name the config sets and context blurbs, and `describe <names>` shows what each config set applies and what each blurb says. ([#43](https://gitbox.branderson.io/dejima/meeseeks/pulls/43))
 - **Waiting notices:** the bot says when a session's screen has stopped changing, with the end of its screen, so a question asked at the agent's own prompt isn't missed. ([#36](https://gitbox.branderson.io/dejima/meeseeks/pulls/36))
 - **Settings defaults:** every optional API setting has a default, and the API logs the settings it uses and warns about unknown keys. `configs_dir` defaults to `configs` beside `blurbs_dir`. ([#36](https://gitbox.branderson.io/dejima/meeseeks/pulls/36))
 - **Config sets:** `config: <name>` applies a named set of keyword lines, which can also give each session files such as an API token. ([#34](https://gitbox.branderson.io/dejima/meeseeks/pulls/34), [#35](https://gitbox.branderson.io/dejima/meeseeks/pulls/35))
