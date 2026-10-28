@@ -3,6 +3,7 @@
 import io
 import json
 import sys
+import time
 import zipfile
 from pathlib import Path
 
@@ -1067,3 +1068,54 @@ async def test_selftest_sends_hostile_text_as_a_finished_task(client):
     assert again.status == 200 and (await again.json())["id"] == task_id
     assert (await client.post("/v1/selftest", json=body)).status == 401
     assert (await client.post("/v1/selftest", json={"requester": "x"}, headers=AUTH)).status == 400
+
+
+def age_task(app, task_id, seconds):
+    app[STORE].db.execute("UPDATE tasks SET created = ? WHERE id = ?", (time.time() - seconds, task_id))
+
+
+async def test_old_sessions_are_stopped_once(started, tmp_path):
+    app, client, task_id, status, _ = started
+    status(ready=False)
+    await poll_once(app)
+    assert ["stop", task_id] not in fetches(tmp_path)
+    age_task(app, task_id, 86401)
+    await poll_once(app)
+    await poll_once(app)
+    assert fetches(tmp_path).count(["stop", task_id]) == 1
+    [expired] = [e for e in await events(client) if e["type"] == "expired"]
+    assert expired["id"] == task_id and expired["data"]["age"] >= 86400
+
+
+async def test_session_age_limit_can_be_turned_off(started, config, tmp_path):
+    app, client, task_id, status, _ = started
+    config["max_session_age"] = 0
+    status(ready=False)
+    age_task(app, task_id, 10**7)
+    await poll_once(app)
+    assert ["stop", task_id] not in fetches(tmp_path)
+
+
+async def test_a_failed_stop_is_retried_and_logged_once(started, tmp_path, monkeypatch, caplog):
+    app, client, task_id, status, _ = started
+    status(ready=False)
+    age_task(app, task_id, 86401)
+    monkeypatch.setenv("STUB_STOP_ERROR", "docker isn't answering")
+    await poll_once(app)
+    await poll_once(app)
+    assert fetches(tmp_path).count(["stop", task_id]) == 2
+    assert caplog.text.count("couldn't stop") == 1
+    assert not [e for e in await events(client) if e["type"] == "expired"]
+
+
+async def test_a_task_the_launcher_forgot_is_ended_once_old(started, tmp_path, monkeypatch):
+    app, client, task_id, status, _ = started
+    path = tmp_path / "status.json"
+    path.write_text("[]")
+    monkeypatch.setenv("STUB_STATUS", str(path))
+    await poll_once(app)
+    assert app[STORE].launched() == [task_id]
+    age_task(app, task_id, 86401)
+    await poll_once(app)
+    assert app[STORE].launched() == []
+    assert [e["type"] for e in await events(client) if e["id"] == task_id] == ["ended"]

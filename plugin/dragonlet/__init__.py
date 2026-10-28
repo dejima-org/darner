@@ -37,6 +37,9 @@ STOP = re.compile(rf"stop(?:\s+({_ID}))?", re.IGNORECASE)
 STOP_HOW = "To stop a session, reply `stop` with a mention to one of my messages about it, or send `stop dn-xxxxx` with a mention."
 STATUS = re.compile(rf"status(?:\s+({_ID}))?", re.IGNORECASE)
 TELL = re.compile(rf"tell(?:\s+({_ID}))?\s+(\S.*)", re.IGNORECASE | re.DOTALL)
+# A session command naming something shaped like a task id that isn't one, so
+# a mistyped or foreign id is refused rather than taken as a new task.
+NOT_AN_ID = re.compile(r"(?:stop|status|tell|upload)\s+([a-z0-9]{2}-[a-z0-9]{5})\b.*", re.IGNORECASE | re.DOTALL)
 UPLOAD = re.compile(rf"upload\s+({_ID})", re.IGNORECASE)
 DESCRIBE = re.compile(r"describe\s+(\S.*)", re.IGNORECASE | re.DOTALL)
 MAX_DESCRIBED = 10
@@ -229,6 +232,9 @@ class Dragonlet(Plugin):
         command = strip_mention(content.body, names).strip()
         if mentioned and command.lower() == "help":
             await evt.reply(await self._usage())
+            return
+        if mentioned and (wrong := NOT_AN_ID.fullmatch(command)) and not TASK_ID.fullmatch(wrong[1].lower()):
+            await evt.reply(f"{wrong[1]} isn't one of my task ids, which look like dn-xxxxx.", markdown=False)
             return
         if mentioned and (stop := STOP.fullmatch(command)):
             await self._respond(evt, self._stop(evt, stop[1] and stop[1].lower()))
@@ -521,6 +527,10 @@ class Dragonlet(Plugin):
 
     async def _deliver(self, e: dict) -> None:
         room, ref = e["source"]["channel"], (e["source"]["ref"], e["id"])
+        if e["type"] == "expired":
+            age = _age(time.time() - (e.get("data") or {}).get("age", 0))
+            await self._notice(room, ref, f"{e['id']} has run for {age}, longer than sessions may run here, so it was stopped.")
+            return
         if e["type"] == "ended":
             await self._notice(room, ref, f"{e['id']} ended.")
             return
