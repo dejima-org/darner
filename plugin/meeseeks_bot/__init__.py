@@ -73,6 +73,8 @@ allow: pypi.org, files.pythonhosted.org
 
 **Config sets and blurbs:** with a mention, `list configs` and `list blurbs` name them, and `describe <names>` shows what each config set applies and what each blurb says.
 
+**Self-test:** `selftest` with a mention sends hostile text through the paths an agent's text takes, to check I show it safely.
+
 **Updates:** I reply when the session starts, when it delivers output (a summary and a zip), when it needs something from you, and when it ends. When a help request says "Reply to this message to answer", reply to it and your answer is typed into the session.
 
 **Domains:** when the agent asks to reach domains, I list every one. Reply `allow` or `deny` with a mention to that message.
@@ -235,6 +237,9 @@ class MeeseeksBot(Plugin):
         if mentioned and (describe := DESCRIBE.fullmatch(command)):
             await self._respond(evt, self._describe(list(dict.fromkeys(re.split(r"[,\s]+", describe[1].strip())))))
             return
+        if mentioned and command.lower() == "selftest":
+            await self._respond(evt, self._selftest(evt))
+            return
         if mentioned and command.lower() in ("list blurbs", "list configs"):
             await self._respond(evt, self._list(command.lower().split()[1]))
             return
@@ -383,6 +388,18 @@ class MeeseeksBot(Plugin):
             resp.raise_for_status()
             session = await resp.json()
         return _status_notice(session), True
+
+    async def _selftest(self, evt: MessageEvent) -> tuple[str, bool]:
+        payload = {"requester": evt.sender, "source": {"kind": "matrix", "ref": evt.event_id, "channel": evt.room_id}}
+        async with self._api("POST", "/v1/selftest", json=payload) as resp:
+            data = await resp.json(content_type=None)
+        if not resp.ok:
+            return f"Failed: {data.get('error') if isinstance(data, dict) else f'HTTP {resp.status}'}", False
+        return (
+            f"Self-test {data['id']}: its output, help request and waiting notice follow, written like a hostile"
+            " agent's. Each numbered line says what you should see.",
+            True,
+        )
 
     async def _list(self, what: str) -> tuple[str, bool]:
         kind = {"blurbs": "context blurbs", "configs": "config sets"}[what]

@@ -1048,3 +1048,21 @@ def test_settings_defaults_log_and_unknown_keys(config):
     assert "waiting_after = 300 (default)" in lines and "tokens = 'for maubot'" in lines
     assert not any("s3cret-0123456789abcdef0123456789abcdef" in line for line in lines)
     assert any(line.startswith("blurbs_dir = ") and not line.endswith("(default)") for line in lines)
+
+
+async def test_selftest_sends_hostile_text_as_a_finished_task(client):
+    body = {"requester": "@u:example.org", "source": {"kind": "matrix", "ref": "$st", "channel": "!r:example.org"}}
+    resp = await client.post("/v1/selftest", json=body, headers=AUTH)
+    assert resp.status == 201
+    task_id = (await resp.json())["id"]
+    events = [e for e in await (await client.get("/v1/events", headers=AUTH)).json() if e["id"] == task_id]
+    assert [e["type"] for e in events] == ["output", "help", "waiting", "ended"]
+    for e in events[:3]:
+        assert "<script>" in e["summary"] and "10. The last line" in e["summary"]
+        assert "\u200b" not in e["summary"] and "\u202e" not in e["summary"] and "\x07" not in e["summary"]
+    assert events[0]["size"] == 0 and events[1]["answerable"] is False
+    assert await (await client.get("/v1/tasks", headers=AUTH)).json() == []
+    again = await client.post("/v1/selftest", json=body, headers=AUTH)
+    assert again.status == 200 and (await again.json())["id"] == task_id
+    assert (await client.post("/v1/selftest", json=body)).status == 401
+    assert (await client.post("/v1/selftest", json={"requester": "x"}, headers=AUTH)).status == 400

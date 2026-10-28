@@ -569,6 +569,7 @@ Every `poll_interval` seconds the API asks the dejima host for the status of lau
 | `POST /v1/events/<seq>/ack` | mark an event delivered |
 | `GET /v1/blurbs` | names of the available context blurbs |
 | `GET /v1/configs` | names of the available config sets |
+| `POST /v1/selftest` | `{requester, source}`: a finished task whose output, help request and waiting screen are hostile text, delivered through `/v1/events` like any task's; see [Checking a frontend](#checking-a-frontend) |
 | `GET /v1/blurbs/{name}` | a context blurb's text |
 | `GET /v1/configs/{name}` | what a config set applies, by keyword; `file` lists names only, never contents |
 | `GET /v1/catalog` | the dejima host's harnesses and backends, and the launcher's default harness |
@@ -612,6 +613,14 @@ Pull requests target `development`, which merges to `main` when it's ready to re
 - **A push to `main`** whose version has no `v<version>` tag yet creates the stable release, and with it the tag at that commit. Its notes are the version's `CHANGELOG.md` entry, which must name a dejima release. A push that doesn't change the version releases nothing. Pushing a `v<version>` tag by hand releases that tag the same way.
 
 The workflow fails if the two versions disagree, or if a pushed tag doesn't match them. It uses the job's automatic `GITEA_TOKEN`, so Actions must be enabled for the repository, and the token must be allowed to create releases.
+
+## Checking a frontend
+
+The API passes on what the agent wrote with control and invisible characters removed, and nothing more: making it safe to show is each frontend's job. `POST /v1/selftest`, or `@bot selftest` in Matrix, sends text written like a hostile agent's ([`meeseeks/selftest.py`](meeseeks/selftest.py)) as a finished task's output, help request and waiting screen. It arrives through `/v1/events` like any task's, so it goes down the same paths an agent's text does.
+
+Each numbered line says what a safe frontend shows: raw HTML, scripts and HTML links as plain text; a markdown link or image showing where it really points; no notifications from `@room` and the like, in Matrix or Slack syntax; and the last line, so a cut-off message shows. Anything else is a failure of that frontend.
+
+For the Matrix bot, `assert_shown_safely` in `tests/test_bot.py` checks those lines on each message it sends for the self-test, and is shown to fail on unescaped HTML, plain markdown and missing `m.mentions`. A new frontend should get a test like it.
 
 ## Security
 
