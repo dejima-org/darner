@@ -537,7 +537,7 @@ Grants use `dejima --domains FILE` and `--dependencies FILE`, and output collect
 | `output_instructions` | replaces the prompt's last section |
 | `remote_access_url` | dejima's web remote access `base_url`, to link each session from chat; unset means no links |
 | `session_wait` | with `remote_access_url`, seconds a launch waits for dejima to register the session (default 20) |
-| `[tokens]` | one bearer token per client, by name |
+| `[tokens]` | one bearer token per frontend, by name. Each must be at least 32 characters, differ from the others and from `examples/api.toml`'s placeholder, or the API won't start; `openssl rand -hex 32` makes one. A token can do everything its frontend can, so see [SECURITY.md](SECURITY.md) before adding one |
 | `[policy]` | `deny_domains` (a denied domain's parents are denied too), `max_domains`, which also caps the domains a session gains through requests |
 | `[limits]` | `max_bytes`, `max_files`: should match the launcher's `--max-output` |
 

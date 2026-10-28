@@ -55,7 +55,7 @@ else:
     print(json.dumps(result))
 """
 
-AUTH = {"Authorization": "Bearer s3cret"}
+AUTH = {"Authorization": "Bearer s3cret-0123456789abcdef0123456789abcdef"}
 
 
 def request(**overrides):
@@ -84,7 +84,7 @@ def config(tmp_path, monkeypatch):
         "results_dir": str(tmp_path / "results"),
         "output_instructions": "Leave it in ~/shared.",
         "blurbs_dir": str(blurbs),
-        "tokens": {"maubot": "s3cret"},
+        "tokens": {"maubot": "s3cret-0123456789abcdef0123456789abcdef"},
         "launch_command": [sys.executable, str(stub)],
         "policy": {"deny_domains": ["example.net"], "max_domains": 3},
     }
@@ -123,7 +123,7 @@ async def test_launches_task(client, tmp_path):
     assert job["harness"] == "cline" and "backend" not in job
 
 
-@pytest.mark.parametrize("headers", [{}, {"Authorization": "Bearer wrong"}, {"Authorization": "s3cret"}])
+@pytest.mark.parametrize("headers", [{}, {"Authorization": "Bearer wrong"}, {"Authorization": "s3cret-0123456789abcdef0123456789abcdef"}])
 async def test_rejects_bad_auth(client, headers):
     resp = await client.post("/v1/tasks", json=request(), headers=headers)
     assert resp.status == 401
@@ -355,8 +355,8 @@ async def test_ack_and_client_scoping(started, config):
     await poll_once(app)
     [event] = await events(client)
 
-    config["tokens"]["other"] = "0ther"
-    other = {"Authorization": "Bearer 0ther"}
+    config["tokens"]["other"] = "0ther-0123456789abcdef0123456789abcdef"
+    other = {"Authorization": "Bearer 0ther-0123456789abcdef0123456789abcdef"}
     assert await events(client, other) == []
     assert (await client.post(f"/v1/events/{event['seq']}/ack", headers=other)).status == 404
     assert (await client.post(f"/v1/events/{event['seq']}/ack", headers=AUTH)).status == 204
@@ -370,8 +370,8 @@ async def test_other_clients_output_is_not_downloadable(started, config):
     output(zip_bytes([("RESULT.md", "ok")]))
     await poll_once(app)
     [event] = await events(client)
-    config["tokens"]["other"] = "0ther"
-    resp = await client.get(f"/v1/tasks/{task_id}/outputs/{event['seq']}.zip", headers={"Authorization": "Bearer 0ther"})
+    config["tokens"]["other"] = "0ther-0123456789abcdef0123456789abcdef"
+    resp = await client.get(f"/v1/tasks/{task_id}/outputs/{event['seq']}.zip", headers={"Authorization": "Bearer 0ther-0123456789abcdef0123456789abcdef"})
     assert resp.status == 404
     resp = await client.get(f"/v1/tasks/ms-zzzzz/outputs/{event['seq']}.zip", headers=AUTH)
     assert resp.status == 404
@@ -444,9 +444,9 @@ async def test_answer_refusal_is_relayed(started, monkeypatch):
 
 async def test_answer_is_scoped_to_client(started, config, tmp_path):
     app, client, task_id, *_ = started
-    config["tokens"]["other"] = "0ther"
+    config["tokens"]["other"] = "0ther-0123456789abcdef0123456789abcdef"
     body = {"text": "x", "requester": "@a:example.org"}
-    resp = await client.post(f"/v1/tasks/{task_id}/answer", json=body, headers={"Authorization": "Bearer 0ther"})
+    resp = await client.post(f"/v1/tasks/{task_id}/answer", json=body, headers={"Authorization": "Bearer 0ther-0123456789abcdef0123456789abcdef"})
     assert resp.status == 404
     assert (await client.post(f"/v1/tasks/{task_id}/answer", json=body)).status == 401
     assert all(f[0] != "answer" for f in fetches(tmp_path))
@@ -616,8 +616,8 @@ async def test_stop_reaches_launcher(started, tmp_path):
 
 async def test_stop_is_scoped_and_needs_a_running_task(started, config, tmp_path, monkeypatch):
     app, client, task_id, *_ = started
-    config["tokens"]["other"] = "0ther"
-    assert (await client.post(f"/v1/tasks/{task_id}/stop", headers={"Authorization": "Bearer 0ther"})).status == 404
+    config["tokens"]["other"] = "0ther-0123456789abcdef0123456789abcdef"
+    assert (await client.post(f"/v1/tasks/{task_id}/stop", headers={"Authorization": "Bearer 0ther-0123456789abcdef0123456789abcdef"})).status == 404
     assert (await client.post(f"/v1/tasks/{task_id}/stop")).status == 401
     monkeypatch.setenv("STUB_STOP_ERROR", "ms-x is not running")
     resp = await client.post(f"/v1/tasks/{task_id}/stop", headers=AUTH)
@@ -689,8 +689,8 @@ async def test_deny_reaches_launcher(requested, tmp_path):
 
 async def test_domain_decisions_are_scoped(requested, config, tmp_path):
     app, client, task_id = requested
-    config["tokens"]["other"] = "0ther"
-    other = {"Authorization": "Bearer 0ther"}
+    config["tokens"]["other"] = "0ther-0123456789abcdef0123456789abcdef"
+    other = {"Authorization": "Bearer 0ther-0123456789abcdef0123456789abcdef"}
     body = {"requester": "@a:example.org"}
     assert (await client.post(f"/v1/tasks/{task_id}/domains/3/allow", json=body, headers=other)).status == 404
     assert (await client.post(f"/v1/tasks/{task_id}/domains/9/allow", json=body, headers=AUTH)).status == 404
@@ -734,9 +734,9 @@ async def test_session_waiting_on_domains(requested, tmp_path, monkeypatch):
 async def test_sessions_are_scoped_and_open_only(started, config, tmp_path, monkeypatch):
 
     app, client, task_id, *_ = started
-    config["tokens"]["other"] = "0ther"
-    assert await (await client.get("/v1/tasks", headers={"Authorization": "Bearer 0ther"})).json() == []
-    assert (await client.get(f"/v1/tasks/{task_id}", headers={"Authorization": "Bearer 0ther"})).status == 404
+    config["tokens"]["other"] = "0ther-0123456789abcdef0123456789abcdef"
+    assert await (await client.get("/v1/tasks", headers={"Authorization": "Bearer 0ther-0123456789abcdef0123456789abcdef"})).json() == []
+    assert (await client.get(f"/v1/tasks/{task_id}", headers={"Authorization": "Bearer 0ther-0123456789abcdef0123456789abcdef"})).status == 404
     app[STORE].mark(task_id, "ended")
     assert await (await client.get("/v1/tasks", headers=AUTH)).json() == []
     assert (await client.get("/v1/tasks")).status == 401
@@ -790,8 +790,8 @@ async def test_upload_limit_and_scoping(started, config, tmp_path):
     config["max_upload"] = 10
     params = {"name": "big.bin", "requester": "@a:example.org"}
     assert (await client.post(f"/v1/tasks/{task_id}/files", params=params, data=b"x" * 11, headers=AUTH)).status == 413
-    config["tokens"]["other"] = "0ther"
-    other = {"Authorization": "Bearer 0ther"}
+    config["tokens"]["other"] = "0ther-0123456789abcdef0123456789abcdef"
+    other = {"Authorization": "Bearer 0ther-0123456789abcdef0123456789abcdef"}
     assert (await client.post(f"/v1/tasks/{task_id}/files", params=params, data=b"x", headers=other)).status == 404
     assert (await client.post(f"/v1/tasks/{task_id}/files", params={"name": "x"}, data=b"x", headers=AUTH)).status == 400
     assert not any(f[0] == "upload" for f in fetches(tmp_path))
@@ -867,7 +867,7 @@ async def test_config_sets_expand_and_the_request_overrides(aiohttp_client, conf
     assert "## Context: myapp" in job["prompt"]
     assert await (await client.get("/v1/configs", headers=AUTH)).json() == ["mealie"]
     (configs / "files").mkdir()
-    (configs / "files" / "token").write_text("s3cret")
+    (configs / "files" / "token").write_text("s3cret-0123456789abcdef0123456789abcdef")
     (configs / "mealie").write_text((configs / "mealie").read_text() + "file: token\ncontext_window: 30000\n")
     described = await (await client.get("/v1/configs/mealie", headers=AUTH)).json()
     assert described == {
@@ -906,17 +906,17 @@ async def test_config_set_files_reach_the_job_but_not_the_database(aiohttp_clien
 
     configs = tmp_path / "configs"
     (configs / "files").mkdir(parents=True)
-    (configs / "files" / "mealie-token").write_text("s3cret-token")
+    (configs / "files" / "mealie-token").write_text("s3cret-0123456789abcdef0123456789abcdef-token")
     (configs / "mealie").write_text("file: mealie-token\n")
     config["configs_dir"] = str(configs)
     client = await aiohttp_client(make_app(config, poll=False))
     resp = await client.post("/v1/tasks", json=request(configs=["mealie"]), headers=AUTH)
     assert resp.status == 201, await resp.text()
     job = launched(tmp_path)[0]
-    assert job["files"] == [{"name": "mealie-token", "data": base64.b64encode(b"s3cret-token").decode()}]
+    assert job["files"] == [{"name": "mealie-token", "data": base64.b64encode(b"s3cret-0123456789abcdef0123456789abcdef-token").decode()}]
     assert "- ~/shared/uploads/mealie-token" in job["prompt"]
     stored = sqlite3.connect(config["db_path"]).execute("SELECT job_json FROM tasks").fetchone()[0]
-    assert json.loads(stored)["files"] == ["mealie-token"] and "s3cret" not in stored and base64.b64encode(b"s3cret-token").decode() not in stored
+    assert json.loads(stored)["files"] == ["mealie-token"] and "s3cret-0123456789abcdef0123456789abcdef" not in stored and base64.b64encode(b"s3cret-0123456789abcdef0123456789abcdef-token").decode() not in stored
 
 
 async def test_missing_config_set_file_is_refused(aiohttp_client, config, tmp_path):
@@ -1024,6 +1024,19 @@ def test_a_new_quiet_spell_is_reported_again(waiting_store):
     assert len(waiting_events(store)) == 2
 
 
+@pytest.mark.parametrize("tokens, message", [
+    ({"maubot": "replace-with-a-long-random-token"}, "the token for maubot must be at least 32 characters"),
+    ({"maubot": "short"}, "openssl rand -hex 32"),
+    ({"maubot": 12345678901234567890123456789012345}, "the token for maubot"),
+    ({"maubot": "a" * 32, "web": "a" * 32}, "each frontend needs its own token"),
+    (["a" * 32], "tokens must be a table"),
+])
+def test_weak_tokens_are_refused(config, tokens, message):
+    config["tokens"] = tokens
+    with pytest.raises(ValueError, match=message):
+        make_app(config, poll=False)
+
+
 def test_settings_defaults_log_and_unknown_keys(config):
     from meeseeks.api import with_defaults
 
@@ -1033,5 +1046,5 @@ def test_settings_defaults_log_and_unknown_keys(config):
     assert full["waiting_after"] == 300 and full["waiting_screen"] is True
     assert unknown == ["configz_dir"]
     assert "waiting_after = 300 (default)" in lines and "tokens = 'for maubot'" in lines
-    assert not any("s3cret" in line for line in lines)
+    assert not any("s3cret-0123456789abcdef0123456789abcdef" in line for line in lines)
     assert any(line.startswith("blurbs_dir = ") and not line.endswith("(default)") for line in lines)
