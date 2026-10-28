@@ -126,7 +126,7 @@ def test_valid_models(model):
 
 @pytest.mark.parametrize("job", [
     {"model": "-opus"}, {"model": "op us"}, {"model": "opus\n"}, {"model": "a" * 201},
-    {"effort": "max"}, {"effort": "HIGH"}, {"effort": 3},
+    {"effort": "max"}, {"effort": "HIGH"}, {"effort": 3}, {"effort": "None"},
     {"context_window": 511}, {"context_window": 100_000_001}, {"context_window": "32768"}, {"context_window": True},
 ])
 def test_invalid_model_and_effort(job):
@@ -136,6 +136,11 @@ def test_invalid_model_and_effort(job):
 
 def test_context_window():
     assert validate_job({"id": "ms-abc23", "prompt": "p", "context_window": 32768}).context_window == 32768
+
+
+@pytest.mark.parametrize("effort", ["none", "low", "xhigh"])
+def test_valid_efforts(effort):
+    assert validate_job({"id": "ms-abc23", "prompt": "p", "effort": effort}).effort == effort
 
 
 def test_internal_domains_must_be_permitted():

@@ -54,7 +54,7 @@ deps: <specs>      install dependencies (apt:, pip:, cargo:, npm:, tarball:)
 harness: <name>    use this harness instead of the default{harnesses}
 backend: <name>    use this backend instead of the harness's default{backends}
 model: <name>      use this model instead of the harness's default
-effort: <level>    Claude Code's effort level: low, medium, high or xhigh
+effort: <level>    effort level: low, medium, high or xhigh, or none for cline
 context_window: <tokens>  cline's context window, for a self-hosted model
 ```
 
