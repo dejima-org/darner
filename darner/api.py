@@ -150,21 +150,58 @@ def load_blurbs(blurbs_dir: Path, names: list) -> list[tuple[str, str]]:
     return blurbs
 
 
-def denied_domain(policy: dict, domain: str) -> bool:
+DEPENDENCY_KINDS = ("apt", "cargo", "npm", "pip", "tarball")
+# tarball: has the dejima host fetch any URL, on its own network, so it's off unless listed.
+DEFAULT_DEPENDENCY_KINDS = ("apt", "cargo", "npm", "pip")
+POLICY_KEYS = {
+    "deny_domains": list, "allow_domains": list, "max_domains": int, "max_internal_domains": int,
+    "allow_internal": bool, "allow_dependency_kinds": list,
+}
+
+
+def check_policy_config(policy: object) -> None:
+    """Refuse a [policy] that wouldn't do what it says, such as a misspelled key."""
+    if not isinstance(policy, dict):
+        raise ValueError("policy must be a table")
+    for key, value in policy.items():
+        if key not in POLICY_KEYS:
+            raise ValueError(f"unknown policy setting {key!r}; known: {', '.join(POLICY_KEYS)}")
+        if type(value) is not POLICY_KEYS[key] or (isinstance(value, list) and not all(isinstance(v, str) for v in value)):
+            raise ValueError(f"policy setting {key} has the wrong type")
+    unknown = set(policy.get("allow_dependency_kinds", ())) - set(DEPENDENCY_KINDS)
+    if unknown:
+        raise ValueError(f"unknown dependency kinds in allow_dependency_kinds: {', '.join(sorted(unknown))}")
+
+
+def _covers(parent: str, domain: str) -> bool:
+    return domain == parent or domain.endswith("." + parent)
+
+
+def denied_domain(policy: dict, domain: str, internal: bool = False) -> bool:
     # A grant covers its subdomains, so a parent of a denied domain is denied too.
-    return any(
-        domain == denied or domain.endswith("." + denied) or denied.endswith("." + domain)
-        for denied in (d.lower() for d in policy.get("deny_domains", []))
-    )
+    deny = [d.lower() for d in policy.get("deny_domains", [])]
+    if any(_covers(denied, domain) or _covers(domain, denied) for denied in deny):
+        return True
+    allow = policy.get("allow_domains")
+    if allow is not None and not any(_covers(allowed.lower(), domain) for allowed in allow):
+        return True
+    return internal and not policy.get("allow_internal", True)
 
 
-def check_policy(policy: dict, domains: list[str]) -> None:
+def check_policy(policy: dict, domains: list[str], internal: list[str] = (), dependencies: list[str] = ()) -> None:
     max_domains = policy.get("max_domains")
     if max_domains is not None and len(domains) > max_domains:
         raise RequestError(403, f"at most {max_domains} domains may be granted")
+    max_internal = policy.get("max_internal_domains")
+    if max_internal is not None and len(internal) > max_internal:
+        raise RequestError(403, f"at most {max_internal} internal domains may be granted")
     for domain in domains:
-        if denied_domain(policy, domain):
-            raise RequestError(403, f"domain not permitted: {domain}")
+        if denied_domain(policy, domain, domain in internal):
+            raise RequestError(403, f"domain not permitted: {domain}" + (" (internal)" if domain in internal else ""))
+    kinds = policy.get("allow_dependency_kinds", DEFAULT_DEPENDENCY_KINDS)
+    for dependency in dependencies:
+        if dependency.split(":", 1)[0] not in kinds:
+            raise RequestError(403, f"dependency kind not permitted: {dependency.split(':', 1)[0]} (allow_dependency_kinds)")
 
 
 def _unique(items) -> list:
@@ -231,7 +268,7 @@ def build_job(config: dict, body: object) -> tuple[dict, dict, str]:
         validate_job(job)
     except JobError as e:
         raise RequestError(400, str(e))
-    check_policy(config.get("policy", {}), job["domains"])
+    check_policy(config.get("policy", {}), job["domains"], job["internal_domains"], job["dependencies"])
     return job, source, requester
 
 
@@ -337,7 +374,7 @@ async def collect_domains(app: web.Application, task: dict) -> None:
             "domain": d["domain"],
             "internal": bool(d["internal"]),
             "port": d["port"] if type(d.get("port")) is int and 0 < d["port"] < 65536 else None,
-            "denied": denied_domain(policy, d["domain"]),
+            "denied": denied_domain(policy, d["domain"], bool(d["internal"])),
         }
         for d in request["domains"]
         if valid_domain(d.get("domain"))
@@ -770,7 +807,7 @@ async def decide_domains(request: web.Request) -> web.Response:
     if verb == "allow":
         # Checked again here, in case the policy changed since the request was shown.
         policy = config.get("policy", {})
-        payload["domains"] = [d["domain"] for d in shown["domains"] if not denied_domain(policy, d["domain"])]
+        payload["domains"] = [d["domain"] for d in shown["domains"] if not denied_domain(policy, d["domain"], d["internal"])]
         payload["max_domains"] = policy.get("max_domains")
     try:
         code, out, err = await run_remote(config, [verb, task_id, str(number)], json.dumps(payload).encode())
@@ -852,6 +889,7 @@ def make_app(config: dict, poll: bool = True) -> web.Application:
     for key, value in full.items():
         config.setdefault(key, value)
     check_tokens(config["tokens"])
+    check_policy_config(config.get("policy", {}))
     if config.get("remote_access_url") and not re.match(r"https?://", config["remote_access_url"]):
         raise ValueError("remote_access_url must start with http:// or https://")
     app = web.Application(client_max_size=256 * 1024)

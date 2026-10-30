@@ -37,7 +37,7 @@ Starting sessions for other people means holding the means to start them, so dar
 | The API's log | Who started, typed into, uploaded to, stopped or decided domains for each session, and what was granted; never what was typed or uploaded | The text or files themselves |
 | The API's database | Every open session's prompt and context, and who asked; an ended session's output until its frontend collects it, at most `output_retention` | Ended sessions, which are deleted. Output zips, which are kept in `results_dir` for the same time |
 
-The policy (`deny_domains`, `max_domains`) is the API's. The launcher re-validates every job and request, but it doesn't apply the policy itself, so whoever holds the ssh key isn't bound by it. The key is restricted at the dejima host end, with `command=`, `restrict` and `from=` in `authorized_keys`, rather than trusted on the API's side.
+The policy (`[policy]`: which domains, whether internal ones, and which dependency kinds) is the API's. The launcher re-validates every job and request, but it doesn't apply the policy itself, so whoever holds the ssh key isn't bound by it. The key is restricted at the dejima host end, with `command=`, `restrict` and `from=` in `authorized_keys`, rather than trusted on the API's side.
 
 ## What it deliberately does not do
 
