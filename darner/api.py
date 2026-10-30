@@ -116,7 +116,8 @@ async def launcher_status(app: web.Application, max_age: float) -> tuple[int, st
     cache = app[STATUS_CACHE]
     if "at" in cache and time.monotonic() - cache["at"] < max_age:
         if "error" in cache:
-            raise cache["error"]
+            # A fresh exception each time, so one cached failure doesn't grow a traceback per caller.
+            raise RuntimeError(cache["error"])
         return cache["result"]
     if cache.get("inflight") is None:
         cache["inflight"] = asyncio.ensure_future(_fetch_status(app))
@@ -129,10 +130,13 @@ async def _fetch_status(app: web.Application) -> tuple[int, str, str]:
     try:
         result = await run_remote(app[CONFIG], ["status"])
     except Exception as e:
-        cache.update(at=time.monotonic(), error=e, inflight=None)
+        cache.update(at=time.monotonic(), error=str(e))
         cache.pop("result", None)
         raise
-    cache.update(at=time.monotonic(), result=result, inflight=None)
+    finally:
+        # Whatever ends it, cancellation included, the next caller starts afresh.
+        cache["inflight"] = None
+    cache.update(at=time.monotonic(), result=result)
     cache.pop("error", None)
     return result
 

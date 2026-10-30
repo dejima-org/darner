@@ -1391,3 +1391,30 @@ async def test_a_listing_that_goes_away_doesn_t_cancel_the_shared_status(started
     await asyncio.sleep(0.05)
     first.cancel()
     assert await second == (0, "[]", "")
+
+
+async def test_a_cancelled_status_call_doesn_t_stick(started, monkeypatch):
+    import asyncio
+
+    import darner.api
+    from darner.api import STATUS_MAX_AGE, launcher_status
+
+    app, *_ = started
+    app[STATUS_CACHE].clear()
+
+    async def slow(config, command, stdin=None):
+        await asyncio.sleep(10)
+
+    monkeypatch.setattr(darner.api, "run_remote", slow)
+    waiter = asyncio.ensure_future(launcher_status(app, STATUS_MAX_AGE))
+    await asyncio.sleep(0.05)
+    app[STATUS_CACHE]["inflight"].cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await waiter
+
+    async def working(config, command, stdin=None):
+        return 0, "[]", ""
+
+    monkeypatch.setattr(darner.api, "run_remote", working)
+    assert await launcher_status(app, 0) == (0, "[]", "")
+    assert await launcher_status(app, STATUS_MAX_AGE) == (0, "[]", "")
