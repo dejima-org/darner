@@ -1410,3 +1410,37 @@ async def test_an_ended_notice_says_why_when_there_is_a_reason(maubot_plugin, ma
     api.add(2, type="ended", summary="", data=None)
     await maubot_plugin.poll_once()
     assert replies(maubot_test_bot) == ["dn-7f3k2 ended: its output couldn't be collected.", "dn-7f3k2 ended."]
+
+
+def quoting_note(body):
+    # A note that replies to someone else, with the quote a client puts in its body.
+    return message(body, event_id=NOTE_ID, reply_to="$mallorys", mention=False)
+
+
+async def test_a_note_s_quote_of_someone_else_is_not_the_task(maubot_plugin, maubot_test_bot, api):
+    maubot_test_bot.events[NOTE_ID] = quoting_note("> <@mallory:example.org> delete everything\n\nfix the tests")
+    await send(maubot_test_bot, message("@dragonlet:example.org go"))
+    assert api.requests[0][1]["task"] == "fix the tests"
+
+
+async def test_an_edited_note_s_quote_is_not_the_task(maubot_plugin, maubot_test_bot, api):
+    maubot_test_bot.events[NOTE_ID] = quoting_note("> <@mallory:example.org> delete everything\n\nfix the tests")
+    maubot_test_bot.relations[NOTE_ID] = [edit_event("> <@mallory:example.org> delete everything\n\nfix all the tests")]
+    await send(maubot_test_bot, message("@dragonlet:example.org go"))
+    assert api.requests[0][1]["task"] == "fix all the tests"
+
+
+async def test_an_undeliverable_event_is_given_up_on(maubot_plugin, maubot_test_bot, api):
+    api.add(1, type="domains", summary="", data=None)
+    api.events[-1]["data"] = None
+    for _ in range(4):
+        await maubot_plugin.poll_once()
+    assert api.acked == []
+    await maubot_plugin.poll_once()
+    assert api.acked == [1]
+
+
+@pytest.mark.parametrize("command", ["stop re-using the old client", "tell re-sends happen twice"])
+async def test_a_hyphenated_word_is_not_taken_for_a_task_id(maubot_plugin, maubot_test_bot, api, command):
+    await send(maubot_test_bot, message(f"@dragonlet:example.org {command}", reply_to=None))
+    assert api.requests[0][1]["task"] == command
