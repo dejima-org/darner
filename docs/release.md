@@ -35,7 +35,7 @@ The same bar as dejima's, for the same reason: one maintainer, so a gate has to 
 
 ## 4. The suites
 
-`pytest` runs everywhere. Its darner-web browser test, `tests/test_web_browser.py`, needs Node with Playwright and its Chromium, so CI skips it: run it from a dejima sandbox, where they're installed, and say in the release pull request that it passed. If darner-web or its proxy runs on a dejima host, also run `tests/containment.sh` from a session there (see `docs/web.md`), and say so. The API's and darner-web's images are built only by CI's privileged job, so read the release pull request's checks: green means it built. Yellow or grey means that job hasn't run, and the release pull request says so.
+`pytest` runs everywhere. Its darner-web browser test, `tests/test_web_browser.py`, needs Node with Playwright and its Chromium, so CI skips it: run it from a dejima sandbox, where they're installed, and say in the release pull request that it passed. If darner-web or its proxy runs on a dejima host, also check its bind there with `ss -ltnp` and `tests/containment.sh --gateway-control`, from a session launched with `EGRESS_HOST_PORTS` as `docs/web.md` describes, and say so. The API's and darner-web's images are built only by CI's privileged job, so read the release pull request's checks: green means it built. Yellow or grey means that job hasn't run, and the release pull request says so.
 
 ## 5. The release pull request
 

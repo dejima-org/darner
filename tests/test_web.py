@@ -262,7 +262,7 @@ async def test_a_zip_downloads_as_an_attachment_within_the_cap(client, fake):
 async def test_a_zip_over_the_cap_is_refused_before_anything_is_sent(aiohttp_client, fake):
     client = await aiohttp_client(make_app(config_for(fake, max_download=10)))
     resp, text = await get(client, "/sessions/dn-aaaaa/outputs/1.zip")
-    assert resp.status == 413 and "over this darner-web's max_download" in text
+    assert resp.status == 502 and "over this darner-web's max_download" in text
     assert resp.headers["Content-Security-Policy"] == HEADERS["Content-Security-Policy"]
 
 
@@ -275,6 +275,30 @@ async def test_a_zip_that_passes_the_cap_mid_stream_fails_rather_than_truncating
     assert resp.status == 200
     with pytest.raises(aiohttp.ClientPayloadError):
         await resp.read()
+
+
+async def test_the_api_dropping_mid_download_fails_the_download_rather_than_hanging(aiohttp_server, aiohttp_client):
+    import asyncio
+
+    import aiohttp
+
+    async def dropping(request):
+        resp = web.StreamResponse(headers={"Content-Type": "application/zip"})
+        resp.enable_chunked_encoding()
+        await resp.prepare(request)
+        await resp.write(b"PK" + b"x" * 50)
+        await asyncio.sleep(0.1)
+        request.transport.close()
+        return resp
+
+    api = web.Application()
+    api.router.add_get("/v1/tasks/{id}/outputs/{seq}.zip", dropping)
+    server = await aiohttp_server(api)
+    client = await aiohttp_client(make_app({"api_url": str(server.make_url("/")), "api_token": TOKEN, "public_origin": ORIGIN}))
+    resp = await client.get("/sessions/dn-aaaaa/outputs/1.zip", headers=HOST, timeout=aiohttp.ClientTimeout(total=5))
+    assert resp.status == 200
+    with pytest.raises(aiohttp.ClientPayloadError):
+        await asyncio.wait_for(resp.read(), 3)
 
 
 async def test_a_download_with_the_api_down_is_an_error_page_with_the_headers(aiohttp_client, fake):

@@ -43,6 +43,9 @@ CSP = (
     "object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'; "
     "require-trusted-types-for 'script'; trusted-types 'none'"
 )
+# Set on a request once its response has started, after which a failure can
+# only cut the connection: a fresh error page can't follow a started body.
+STARTED = web.RequestKey("started", bool)
 HEADERS = {
     "Content-Security-Policy": CSP,
     "Referrer-Policy": "no-referrer",
@@ -105,8 +108,11 @@ async def guard(request: web.Request, handler):
         e.headers.update(HEADERS)
         raise
     except Exception:
-        # Anything unexpected still goes out with the headers, never as aiohttp's bare 500.
         log.exception("%s %s failed", request.method, request.path)
+        if request.get(STARTED):
+            _cut(request)
+            raise
+        # Anything unexpected still goes out with the headers, never as aiohttp's bare 500.
         return web.Response(status=500, text="Something went wrong.", headers=HEADERS)
     if not response.prepared:  # a streamed download set its own before sending them
         response.headers.update(HEADERS)
@@ -130,6 +136,12 @@ def _refusal(request: web.Request) -> str | None:
         if request.headers.get("Sec-Fetch-Site", "same-origin") != "same-origin":
             return "Cross-site request."
     return None
+
+
+def _cut(request: web.Request) -> None:
+    """End a started response so the browser sees it fail, rather than waiting on a body that never ends."""
+    if request.transport is not None:
+        request.transport.close()
 
 
 class ApiError(Exception):
@@ -212,40 +224,42 @@ async def state(request: web.Request) -> web.Response:
 async def download(request: web.Request) -> web.StreamResponse:
     """An output's zip, streamed from the API with a size cap, always as an attachment.
 
-    Over the cap, it's refused before anything is sent, or, if that only shows
-    mid-stream, the connection is cut, so a browser marks the download failed
-    rather than saving a truncated zip.
+    Over the cap, it's refused before anything is sent. Once sending has
+    started, anything going wrong, the cap passed mid-stream or the API
+    dropping, cuts the connection, so a browser marks the download failed
+    rather than saving a truncated zip or waiting forever.
     """
     config = request.app[CONFIG]
     task_id, seq = request.match_info["id"], request.match_info["seq"]
     url = f"{config['api_url'].rstrip('/')}/v1/tasks/{task_id}/outputs/{seq}.zip"
     try:
-        async with request.app[API].get(url, headers={"Authorization": f"Bearer {config['api_token']}"}) as upstream:
-            if upstream.status != 200:
-                raise web.HTTPNotFound(text="That output isn't available.")
-            if upstream.content_length is not None and upstream.content_length > config["max_download"]:
-                raise web.HTTPRequestEntityTooLarge(
-                    max_size=config["max_download"], actual_size=upstream.content_length,
-                    text=f"That zip is {upstream.content_length} bytes, over this darner-web's max_download.",
-                )
-            response = web.StreamResponse(headers={
-                "Content-Type": "application/zip",
-                "Content-Disposition": f'attachment; filename="{task_id}-{seq}.zip"',
-            })
-            response.headers.update(HEADERS)
-            await response.prepare(request)
-            sent = 0
+        upstream = await request.app[API].get(url, headers={"Authorization": f"Bearer {config['api_token']}"})
+    except aiohttp.ClientError as e:
+        raise ApiError(502, f"couldn't reach darner-api: {type(e).__name__}")
+    async with upstream:
+        if upstream.status != 200:
+            raise web.HTTPNotFound(text="That output isn't available.")
+        if upstream.content_length is not None and upstream.content_length > config["max_download"]:
+            raise web.HTTPBadGateway(text=f"That zip is {upstream.content_length} bytes, over this darner-web's max_download.")
+        response = web.StreamResponse(headers={
+            "Content-Type": "application/zip",
+            "Content-Disposition": f'attachment; filename="{task_id}-{seq}.zip"',
+        })
+        response.headers.update(HEADERS)
+        await response.prepare(request)
+        request[STARTED] = True
+        sent = 0
+        try:
             async for chunk in upstream.content.iter_chunked(64 * 1024):
                 sent += len(chunk)
                 if sent > config["max_download"]:
-                    log.warning("download of %s output %s cut off at max_download", task_id, seq)
-                    request.transport.close()
-                    return response
+                    raise ValueError("max_download passed mid-stream")
                 await response.write(chunk)
             await response.write_eof()
-            return response
-    except aiohttp.ClientError as e:
-        raise ApiError(502, f"couldn't reach darner-api: {type(e).__name__}")
+        except Exception as e:
+            log.warning("download of %s output %s cut off: %s", task_id, seq, e)
+            _cut(request)
+        return response
 
 
 async def blurbs_page(request: web.Request) -> web.Response:
@@ -297,6 +311,9 @@ async def api_errors(request: web.Request, handler):
         return await handler(request)
     except ApiError as e:
         log.warning("%s %s: %s", request.method, request.path, e)
+        if request.get(STARTED):
+            _cut(request)
+            raise
         return page(request, "error.html", status=e.status if e.status < 500 else 502, message=str(e))
 
 

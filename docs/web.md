@@ -24,13 +24,26 @@ darner-web must have its own scheme, host and port, never a path on the host tha
 
 - darner-web listens on loopback by default. Its container listens on `0.0.0.0:8081` inside itself, and the compose example publishes that as `127.0.0.1:8081:8081`. A bare `8081:8081` publishes on every interface, the Docker bridges included.
 - Your proxy must bind one specific address on the LAN interface: never a bare `listen 443`, never `0.0.0.0`, never a Docker bridge. `ip -br addr show type bridge` lists the addresses to avoid.
-- **On the dejima host**, a sandbox can route to the host's bridge address, so a front door bound there opens inward. Verify it from inside a running dejima session with [`tests/containment.sh`](../tests/containment.sh). It checks that neither darner-web's port nor your proxy's answers on the gateway. Its first argument is a positive control: somewhere the session may reach, such as its model's API, so "nothing answered" can't come from a dead network.
+- **Check the bind on the host,** which needs no session. `ss -ltnp` should show darner-web on `127.0.0.1:8081` only, and your proxy on the one LAN address you chose, never `*` or `0.0.0.0`. This is the direct check, and the one that matters most.
+- **On the dejima host**, a sandbox can route to the host's bridge address, so a front door bound there opens inward. [`tests/containment.sh`](../tests/containment.sh) checks it from inside a session, but only when the session lets the bind decide. dejima's egress clamp refuses every gateway port unless the session is launched with `EGRESS_HOST_PORTS` naming it, so in an ordinary session every probe fails whatever the bind. Run that way, the check proves only the clamp, which dejima's docs call the second layer.
+
+  To check the bind itself, from the darner clone the launcher was installed from:
 
   ```sh
-  bash containment.sh api.anthropic.com:443 8081 443
+  # On the host: something that does answer on the gateway, for the check's control.
+  # It's on every interface while the check runs, so it serves an empty directory.
+  python3 -m http.server 9999 --bind 0.0.0.0 --directory "$(mktemp -d)" &
+  # A shell in a session that can reach the control and the checked ports on the gateway.
+  # Not --isolated: the clone is mounted, so the script is in it.
+  cd ~/src/darner
+  EGRESS_HOST_PORTS=9999,8081,443 dejima --cmd bash .
+  # Inside the session:
+  bash tests/containment.sh --gateway-control 9999 8081 443
+  # Back on the host, afterwards:
+  kill %1
   ```
 
-  `BAD` on any line means stop and fix the bind first. Running darner-web on the API host instead of the dejima host avoids the question.
+  The control answering proves the session reaches the gateway on opened ports, so 8081 and 443 not answering is down to their bind. `BAD` on any line means stop and fix the bind first. `--control <host:port>`, somewhere outside the session may reach, is the fallback when you can't run a listener. It only rules out a dead network, and the script says so. Running darner-web on the API host instead of the dejima host avoids the question.
 
 ## Authenticating and authorizing the front door
 
@@ -68,4 +81,4 @@ Nothing. It has no database and writes no files: every page is read from the API
 
 ## Checking it
 
-`tests/test_web.py` covers every page, each refusal and header, autoescaping and the renderer's rules, and runs the self-test's checks over the session page's HTML. `tests/test_web_browser.py` loads that page in Chromium and asserts that the self-test's text opens no dialog, loads nothing from its addresses and breaks no CSP rule. It also proves the check can fail, against a page that doesn't escape. It needs Node with Playwright and its Chromium, so it's skipped in CI and is on the release checklist. `tests/test_containment.py` checks `tests/containment.sh` itself, against listeners standing in for the gateway, including that a failed positive control fails the check.
+`tests/test_web.py` covers every page, each refusal and header, autoescaping and the renderer's rules, and runs the self-test's checks over the session page's HTML. `tests/test_web_browser.py` loads that page in Chromium and asserts that the self-test's text opens no dialog, loads nothing from its addresses and breaks no CSP rule. It also proves the check can fail, against a page that doesn't escape. It needs Node with Playwright and its Chromium, so it's skipped in CI and is on the release checklist. `tests/test_containment.py` checks `tests/containment.sh` itself, against listeners standing in for the gateway: that it catches a port that answers, that a gateway control that doesn't answer fails the check, and that an outside control is reported as proving only the clamp.
