@@ -36,6 +36,7 @@ from darner.job import (
 )
 
 FETCH_REJECTED = 3
+SHA256 = re.compile(r"[0-9a-f]{64}")
 RUN_ID = re.compile(r"[0-9a-f]{16}")
 MAX_HELP = 16 * 1024
 SIGNALS = {
@@ -97,6 +98,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--max-upload", default=50 * 1024 * 1024, type=int, help="largest file a requester can upload, in bytes")
     p.add_argument("--docker", default="docker")
     p.add_argument("--dejima-allow", default="dejima-allow")
+    p.add_argument("--dejima-share", default="dejima-share")
+    p.add_argument("--keep-shared", action="store_true", help="keep an ended session's ~/shared rather than pruning it")
     p.add_argument("--stop-timeout", default=60, type=int, help="seconds to wait for a stopped session to exit")
     p.add_argument("--exec", dest="exec_dir", type=Path, help=argparse.SUPPRESS)
     p.add_argument("command", nargs="*", help=argparse.SUPPRESS)
@@ -310,8 +313,7 @@ def run_session(args: argparse.Namespace, task_dir: Path) -> int:
     os.replace(tmp, task_dir / "exit")
     # An isolated session keeps no records unless asked to, and the typing
     # log holds screens from it.
-    keep_records = "--" in dejima and "--keep-records" in dejima[: dejima.index("--")]
-    if not keep_records:
+    if not _keeps_records(dejima):
         (task_dir / "typing.log").unlink(missing_ok=True)
     if code:
         # The window closes when this process exits, taking the error with it.
@@ -323,8 +325,8 @@ def run_session(args: argparse.Namespace, task_dir: Path) -> int:
     return code
 
 
-def open_share(args: argparse.Namespace, task_dir: Path) -> int:
-    """Open a task's ~/shared, which must be a directory directly under the share root."""
+def _share_path(args: argparse.Namespace, task_dir: Path) -> tuple[str, str]:
+    """A task's ~/shared as the share root and a leaf directly under it, or ValueError."""
     raw = (task_dir / "shared-path").read_text()
     path = raw.removesuffix("\n")
     parent, leaf = os.path.split(path)
@@ -333,6 +335,16 @@ def open_share(args: argparse.Namespace, task_dir: Path) -> int:
     root = os.path.realpath(args.share_root)
     if os.path.realpath(parent) != root:
         raise ValueError(f"shared path {path!r} is not under {root}")
+    return root, leaf
+
+
+def _keeps_records(dejima: list[str]) -> bool:
+    return "--" in dejima and "--keep-records" in dejima[: dejima.index("--")]
+
+
+def open_share(args: argparse.Namespace, task_dir: Path) -> int:
+    """Open a task's ~/shared, which must be a directory directly under the share root."""
+    root, leaf = _share_path(args, task_dir)
     parent_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
     try:
         return os.open(leaf, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=parent_fd)
@@ -487,14 +499,94 @@ def _state(task_dir: Path) -> str:
     return "starting"
 
 
-def forget(args: argparse.Namespace, task_id: str) -> None:
-    """Delete an ended session's task directory, which holds its prompt in argv.json."""
+def forget(args: argparse.Namespace, task_id: str, delivered: str | None = None) -> None:
+    """Delete what's left of an ended session: its task directory, and with delivered, its ~/shared.
+
+    The task directory holds its prompt in argv.json. The share goes only when
+    the API names the zip it stored (forget-delivered <id> <sha256>), that's
+    the zip this last sent, and the share still holds exactly what it carried. Otherwise
+    it's kept, as dejima keeps a non-empty share, for an operator to recover or
+    prune by hand. The share is checked first, since its path is recorded in
+    the task directory, which goes either way.
+    """
     task_dir = args.tasks_dir / task_id
     if not task_dir.is_dir():
         return
     if _state(task_dir) != "exited":
         raise RuntimeError(f"{task_id} hasn't ended")
+    problem = _prune_share(args, task_dir, delivered) if delivered else None
     shutil.rmtree(task_dir)
+    if problem:
+        raise RuntimeError(f"forgot {task_id}, but kept its ~/shared for dejima-share prune --isolated by hand: {problem}")
+
+
+def _prune_share(args: argparse.Namespace, task_dir: Path, stored: str) -> str | None:
+    """Have dejima remove an ended session's delivered share. Why it couldn't, or None."""
+    if args.keep_shared:
+        return None
+    try:
+        root, leaf = _share_path(args, task_dir)
+    except FileNotFoundError:
+        return None  # the session never got as far as a share
+    except ValueError as e:
+        return str(e)
+    share = os.path.join(root, leaf)
+    if not os.path.lexists(share):
+        return None  # dejima removes an empty one itself
+    if problem := _changed_since_delivery(args, task_dir, stored):
+        return problem
+    tool = shutil.which(args.dejima_share)
+    if tool is None:
+        return f"{args.dejima_share} not found on PATH; pass --dejima-share with its full path"
+    try:
+        # An older dejima-share's prune ignores the name and sweeps every ended
+        # share, so the named form is required, as is --yes.
+        usage = subprocess.run([tool, "--help"], stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=30)
+        if "prune --isolated [share]" not in usage.stdout or "--yes" not in usage.stdout:
+            return "this dejima-share can't prune one share by name; it needs a dejima release with `prune --isolated [share]` and `--yes`"
+        # dejima refuses anything that isn't a direct child of its isolated root,
+        # or a share still mounted or held by a launch.
+        result = subprocess.run(
+            [tool, "prune", "--isolated", "--yes", share], stdin=subprocess.DEVNULL, capture_output=True, timeout=60,
+        )
+    except subprocess.TimeoutExpired:
+        return "dejima-share timed out"
+    except OSError as e:
+        return f"couldn't run {args.dejima_share}: {e.strerror or type(e).__name__}"
+    if result.returncode:
+        return archive.clean_text(result.stderr, 500) or f"dejima-share prune exited {result.returncode}"
+    if os.path.lexists(share):
+        said = archive.clean_text(result.stdout + result.stderr, 500)
+        return "dejima-share exited 0 but the share is still there" + (f": {said}" if said else "")
+    return None
+
+
+def _changed_since_delivery(args: argparse.Namespace, task_dir: Path, stored: str) -> str | None:
+    """Why the share isn't exactly the zip the API stored, which must be the one last sent, or None."""
+    try:
+        delivery = json.loads((task_dir / "delivered-share").read_text())
+    except (OSError, ValueError):
+        return "no complete delivery of its output was recorded"
+    if delivery.get("zip") != stored:
+        return "its last delivery isn't the output the API stored, so that output is only in the share"
+    if delivery.get("skipped"):
+        return f"its delivery left out {len(delivery['skipped'])} entries, which are only in the share"
+    try:
+        fd = open_share(args, task_dir)
+    except OSError as e:
+        return f"couldn't open it to compare with its delivery: {e.strerror or type(e).__name__}"
+    signal.signal(signal.SIGALRM, _timeout)
+    signal.alarm(args.fetch_timeout)
+    try:
+        data, _ = archive.build(fd, archive.Limits(max_bytes=args.max_output))
+    except (archive.ArchiveError, _Timeout) as e:
+        return f"couldn't read it to compare with its delivery: {e or 'timed out'}"
+    finally:
+        signal.alarm(0)
+        os.close(fd)
+    if hashlib.sha256(data).hexdigest() != stored:
+        return "it changed after its output was delivered"
+    return None
 
 
 def status(args: argparse.Namespace) -> list[dict]:
@@ -548,10 +640,11 @@ def fetch(args: argparse.Namespace, task_id: str) -> int:
         signal.signal(signal.SIGALRM, _timeout)
         signal.alarm(args.fetch_timeout)
         try:
-            data, _ = archive.build(fd, archive.Limits(max_bytes=args.max_output))
+            data, manifest = archive.build(fd, archive.Limits(max_bytes=args.max_output))
         except (archive.ArchiveError, _Timeout) as e:
             # Retrying would fail the same way, so the output is consumed.
             _delivered(fd, task_dir, signal_id, result)
+            (task_dir / "delivered-share").unlink(missing_ok=True)
             reason = e if isinstance(e, archive.ArchiveError) else f"took longer than {args.fetch_timeout}s to read"
             print(f"darner-launch: {reason}", file=sys.stderr)
             return FETCH_REJECTED
@@ -560,6 +653,12 @@ def fetch(args: argparse.Namespace, task_id: str) -> int:
         sys.stdout.buffer.write(data)
         sys.stdout.buffer.flush()
         _delivered(fd, task_dir, signal_id, result)
+        # What this delivery carried, so the share is only ever pruned while it
+        # still holds exactly that: the zip is reproducible, sorted with fixed dates.
+        _write_atomic(task_dir / "delivered-share", json.dumps({
+            "zip": hashlib.sha256(data).hexdigest(),
+            "skipped": [path for path, _ in manifest.skipped if path != repr(archive.UPLOADS)],
+        }))
     finally:
         os.close(fd)
     return 0
@@ -1091,6 +1190,8 @@ def command(args: argparse.Namespace) -> list[str]:
     ) or (
         len(words) == 3 and words[0] in ("allow", "deny") and valid_task_id(words[1])
         and words[2].isascii() and words[2].isdigit() and len(words[2]) <= 9
+    ) or (
+        len(words) == 3 and words[0] == "forget-delivered" and valid_task_id(words[1]) and SHA256.fullmatch(words[2])
     ):
         return words
     raise ValueError("unknown command")
@@ -1122,6 +1223,8 @@ def main(argv: list[str] | None = None) -> int:
             stop(args, words[1])
         elif words and words[0] == "forget":
             forget(args, words[1])
+        elif words and words[0] == "forget-delivered":
+            forget(args, words[1], delivered=words[2])
         elif words and words[0] == "domains":
             print(json.dumps(domain_request(args, words[1])))
         elif words and words[0] in ("allow", "deny"):

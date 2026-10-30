@@ -32,7 +32,7 @@ elif command[:1] == ["upload"]:
     data = sys.stdin.buffer.read()
     open(os.environ["STUB_LOG"], "a").write(json.dumps([*command, header, len(data)]) + "\\n")
     print(json.dumps({"path": "~/shared/uploads/" + header["name"], "size": len(data), "told": False}))
-elif command[:1] == ["forget"]:
+elif command[:1] in (["forget"], ["forget-delivered"]):
     open(os.environ["STUB_LOG"], "a").write(json.dumps(command) + "\\n")
 elif command[:1] == ["stop"]:
     open(os.environ["STUB_LOG"], "a").write(json.dumps(command) + "\\n")
@@ -1132,7 +1132,7 @@ async def test_ending_deletes_all_but_uncollected_output_then_the_rest(started, 
     status(state="exited")
     output(zip_bytes([("RESULT.md", "done")]))
     await poll_once(app)
-    assert ["forget", task_id] in fetches(tmp_path)
+    assert ["forget-delivered", task_id] in [f[:2] for f in fetches(tmp_path)]
     job, requester = app[STORE].db.execute("SELECT job_json, requester FROM tasks WHERE id = ?", (task_id,)).fetchone()
     assert job == "{}" and requester == ""
     results = Path(config["results_dir"]) / task_id
@@ -1418,3 +1418,102 @@ async def test_a_cancelled_status_call_doesn_t_stick(started, monkeypatch):
     monkeypatch.setattr(darner.api, "run_remote", working)
     assert await launcher_status(app, 0) == (0, "[]", "")
     assert await launcher_status(app, STATUS_MAX_AGE) == (0, "[]", "")
+
+
+def forgets(tmp_path, task_id):
+    return [f[0] for f in fetches(tmp_path) if f[0] in ("forget", "forget-delivered") and f[1] == task_id]
+
+
+async def test_a_clean_delivery_asks_for_the_share_to_be_pruned(started, tmp_path):
+    app, client, task_id, status, output = started
+    status(state="exited")
+    output(zip_bytes([("RESULT.md", "done")]))
+    await poll_once(app)
+    assert forgets(tmp_path, task_id) == ["forget-delivered"]
+
+
+async def test_a_delivery_before_the_session_exited_still_counts(started, tmp_path):
+    app, client, task_id, status, output = started
+    status(state="running")
+    output(zip_bytes([("RESULT.md", "done")]))
+    await poll_once(app)
+    status(state="exited", ready=False)
+    await poll_once(app)
+    assert forgets(tmp_path, task_id) == ["forget-delivered"]
+
+
+async def test_no_output_keeps_the_share(started, tmp_path):
+    app, client, task_id, status, _ = started
+    status(state="exited", ready=False)
+    await poll_once(app)
+    assert forgets(tmp_path, task_id) == ["forget"]
+
+
+async def test_output_the_launcher_rejected_keeps_the_share(started, tmp_path, monkeypatch):
+    app, client, task_id, status, _ = started
+    status(state="exited")
+    monkeypatch.setenv("STUB_FETCH_CODE", "3")
+    await poll_once(app)
+    assert forgets(tmp_path, task_id) == ["forget"]
+
+
+async def test_output_the_api_rejected_keeps_the_share(started, tmp_path):
+    app, client, task_id, status, output = started
+    status(state="exited")
+    output(b"not a zip at all")
+    await poll_once(app)
+    [event] = [e for e in await events(client) if e["type"] == "output"]
+    assert event["size"] == 0 and forgets(tmp_path, task_id) == ["forget"]
+
+
+async def test_an_unreadable_share_keeps_the_share(started, tmp_path, monkeypatch):
+    app, client, task_id, *_ = started
+    path = tmp_path / "status.json"
+    path.write_text(json.dumps([{"id": task_id, "state": "exited", "ready": False, "error": "permission denied"}]))
+    monkeypatch.setenv("STUB_STATUS", str(path))
+    await poll_once(app)
+    assert forgets(tmp_path, task_id) == ["forget"]
+
+
+async def test_output_that_could_never_be_fetched_keeps_the_share(started, tmp_path, monkeypatch):
+    app, client, task_id, status, _ = started
+    status(state="exited")
+    monkeypatch.setenv("STUB_FETCH_CODE", "1")
+    age_task(app, task_id, 86401)
+    await poll_once(app)
+    assert forgets(tmp_path, task_id) == ["forget"]
+
+
+async def test_a_session_this_api_never_recorded_keeps_its_share(started, tmp_path):
+    app, client, task_id, status, _ = started
+    status(state="running", ready=False)
+    await poll_once(app)
+    assert forgets(tmp_path, "dn-zzzzz") == ["forget"]
+
+
+async def test_forget_delivered_names_the_zip_the_api_stored(started, tmp_path):
+    import hashlib
+
+    app, client, task_id, status, output = started
+    sent = zip_bytes([("RESULT.md", "done")])
+    status(state="exited")
+    output(sent)
+    await poll_once(app)
+    assert ["forget-delivered", task_id, hashlib.sha256(sent).hexdigest()] in fetches(tmp_path)
+
+
+async def test_a_later_fetch_the_api_lost_doesn_t_change_which_zip_it_names(started, tmp_path, monkeypatch):
+    import hashlib
+
+    app, client, task_id, status, output = started
+    first = zip_bytes([("RESULT.md", "first")])
+    status(state="running")
+    output(first)
+    await poll_once(app)
+    # The launcher sent a second zip, but the API never stored it.
+    monkeypatch.setenv("STUB_FETCH_CODE", "1")
+    await poll_once(app)
+    monkeypatch.delenv("STUB_FETCH_CODE")
+    status(state="exited", ready=False)
+    await poll_once(app)
+    assert ["forget-delivered", task_id, hashlib.sha256(first).hexdigest()] in fetches(tmp_path)
