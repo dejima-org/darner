@@ -6,7 +6,12 @@
 # pre-release of <version>.dev<run>, which the forge's latest release skips
 # and maubot orders before <version>, so a stable release supersedes it. Creating the tag from here is not left to a
 # second workflow, because Gitea doesn't start workflows from events caused by a
-# job's own token. Pushing a v* tag by hand releases that tag the same way.
+# job's own token.
+#
+# A pushed tag releases nothing. It used to, checked only against the version
+# in the tagged commit, which whoever pushed it wrote, so any ref that could be
+# pushed could ship a plugin no one reviewed. Only main and development, which
+# the forge must protect, publish anything (docs/release.md).
 #
 # A .mbp is a zip of maubot.yaml, the plugin's modules and its extra files,
 # which is all `mbc build` writes. The stdlib's zipfile CLI builds the same
@@ -19,8 +24,6 @@ on:
     branches:
       - main
       - development
-    tags:
-      - "v*"
 
 jobs:
   plugin:
@@ -45,11 +48,6 @@ jobs:
           version="$plugin"
           prerelease=false
           case "$GITHUB_REF" in
-            refs/tags/*)
-              if [ "$GITHUB_REF_NAME" != "v$version" ]; then
-                echo "tag $GITHUB_REF_NAME does not match the version in the repository ($plugin)" >&2
-                exit 1
-              fi ;;
             refs/heads/development)
               version="$plugin.dev$GITHUB_RUN_NUMBER"
               prerelease=true ;;
