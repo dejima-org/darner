@@ -12,6 +12,23 @@ NoNewPrivileges=yes
 ProtectSystem=strict
 ReadWritePaths=/var/lib/darner
 PrivateTmp=yes
+# As confined as the container: no capabilities, devices, home directories
+# or kernel settings, and only the address families ssh and HTTP use.
+CapabilityBoundingSet=
+ProtectHome=yes
+PrivateDevices=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+SystemCallArchitectures=native
+LockPersonality=yes
 
 [Install]
 WantedBy=multi-user.target

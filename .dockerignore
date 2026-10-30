@@ -2,4 +2,5 @@
 !pyproject.toml
 !LICENSE
 !darner/
+!requirements/api.txt
 **/__pycache__

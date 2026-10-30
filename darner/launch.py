@@ -3,10 +3,10 @@
 """Start dejima sessions and collect their output.
 
 Meant to be the forced command of the API's key in authorized_keys, so the
-only command a client can send is SSH_ORIGINAL_COMMAND, and only three forms
-of it are accepted: none (launch the job on stdin), `status`, `fetch <id>`,
-`catalog`, `help <id>`, `answer <id>`, `message <id>`, `upload <id>`, `stop <id>`, `domains <id>`, and `allow <id> <n>` and
-`deny <id> <n>` for domain request n.
+only command a client can send is SSH_ORIGINAL_COMMAND, and command() accepts
+only a fixed set of forms: none (launch the job on stdin), `status`, `catalog`,
+a command naming a task id, such as `fetch <id>` or `stop <id>`, and
+`allow <id> <n>` and `deny <id> <n>` for domain request n.
 
 The dejima argv is written to the task directory and the tmux window re-invokes
 this module with --exec to run it, since tmux limits the size of a command

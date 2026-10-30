@@ -45,8 +45,8 @@ darner has three parts, which can share a machine or not:
 
 You need:
 
-- dejima, working on the dejima host, with `--isolated`, `--domains`, `--dependencies` and `--shared-path-file`
-- tmux, pipx, git and Python 3.11 or newer on the dejima host
+- dejima, working on the dejima host, at a release with every flag and tool the launcher uses; [docs/release.md](docs/release.md) lists them, and `CHANGELOG.md` names the release each version was released against
+- tmux 3.2 or newer, pipx, git and Python 3.11 or newer on the dejima host
 - git on the API host, plus either Python 3.11 or newer (to run the API under systemd) or Docker with Compose
 - a maubot server, and a Matrix account for the bot
 
@@ -134,7 +134,8 @@ DARNER_STATE=/var/lib/darner
 sudo useradd --system --create-home --home-dir "$DARNER_STATE" --shell /usr/sbin/nologin darner
 sudo git clone "$DARNER_REPO" "$DARNER_DIR/src"
 sudo python3 -m venv "$DARNER_DIR/venv"
-sudo "$DARNER_DIR/venv/bin/pip" install --editable "$DARNER_DIR/src[api]"
+sudo "$DARNER_DIR/venv/bin/pip" install --require-hashes -r "$DARNER_DIR/src/requirements/api.txt"
+sudo "$DARNER_DIR/venv/bin/pip" install --no-deps --no-build-isolation --editable "$DARNER_DIR/src"
 ```
 
 **With Docker Compose:** lay out a deployment directory around a clone, and build the image. The container runs as uid 10001, so its data directory belongs to that uid:
@@ -357,7 +358,8 @@ DARNER_STATE=/var/lib/darner
 sudo systemctl stop darner-api
 sudo -u darner cp "$DARNER_STATE/tasks.db" "$DARNER_STATE/tasks.db.bak"
 sudo git -C "$DARNER_DIR/src" pull
-sudo "$DARNER_DIR/venv/bin/pip" install --editable "$DARNER_DIR/src[api]"   # picks up new dependencies
+sudo "$DARNER_DIR/venv/bin/pip" install --require-hashes -r "$DARNER_DIR/src/requirements/api.txt"   # pinned dependencies
+sudo "$DARNER_DIR/venv/bin/pip" install --no-deps --no-build-isolation --editable "$DARNER_DIR/src"
 sudo systemctl start darner-api
 ```
 
@@ -494,6 +496,8 @@ The files are still agent-written: treat what is in the zip as untrusted.
 
 | option | default | meaning |
 |---|---|---|
+| `--dejima PATH` | `dejima` | the dejima executable; a full path, since a forced command's `PATH` is minimal |
+| `--tmux PATH` | `tmux` | the tmux executable |
 | `--identity NAME` | dejima's | `[identity.<name>]` every session acts as; a task cannot choose it |
 | `--harness NAME` | dejima's | default harness |
 | `--backend HARNESS=NAME` | dejima's | default backend for a harness; repeatable |
@@ -605,6 +609,8 @@ python3 -m venv .venv && .venv/bin/pip install -e '.[test]'
 ```
 
 To build the plugin locally, run `mbc build` in `plugin/`.
+
+What the API image and CI install is pinned, with hashes, in `requirements/api.txt` and `requirements/test.txt`. To change a dependency, edit the matching `.in` file, and `pyproject.toml`'s extra if it's there, then regenerate the `.txt` with the `pip-compile` command at the top of the `.in`.
 
 [`.gitea/workflows/tests.yml`](.gitea/workflows/tests.yml) runs the tests on every pull request on a `dejima-confined` runner, and builds the API's image on a `dejima-privileged` one. What the jobs reach is declared in [`.dejima/allowed-domains`](.dejima/allowed-domains), which the runners' egress allowlist reads from `main`.
 
