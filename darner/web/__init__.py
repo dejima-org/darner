@@ -65,9 +65,20 @@ def check_config(config: dict) -> dict:
         raise ValueError(f"unknown setting {', '.join(sorted(unknown))}")
     full = {**DEFAULTS, **config}
     origin = urlsplit(full["public_origin"])
-    if origin.scheme not in ("http", "https") or not origin.netloc or origin.path not in ("", "/") or origin.query:
-        raise ValueError("public_origin must be a scheme and host, such as https://darner.example.com, with no path")
-    full["public_origin"] = f"{origin.scheme}://{origin.netloc}".lower()
+    try:
+        port = origin.port
+    except ValueError:
+        port = -1
+    if (
+        origin.scheme not in ("http", "https") or not origin.hostname or origin.path not in ("", "/")
+        or origin.query or origin.fragment or "@" in origin.netloc or port == -1
+    ):
+        raise ValueError("public_origin must be a scheme, host and optional port, such as https://darner.example.com")
+    host = f"[{origin.hostname}]" if ":" in origin.hostname else origin.hostname
+    # A browser leaves a default port out of Host and Origin, so it's left out here too.
+    if port is not None and port != {"http": 80, "https": 443}[origin.scheme]:
+        host += f":{port}"
+    full["public_origin"] = f"{origin.scheme}://{host}".lower()
     if not urlsplit(full["api_url"]).scheme in ("http", "https"):
         raise ValueError("api_url must start with http:// or https://")
     if not isinstance(full["api_token"], str) or len(full["api_token"]) < 32 or full["api_token"].startswith("replace-with"):
@@ -93,6 +104,10 @@ async def guard(request: web.Request, handler):
     except web.HTTPException as e:
         e.headers.update(HEADERS)
         raise
+    except Exception:
+        # Anything unexpected still goes out with the headers, never as aiohttp's bare 500.
+        log.exception("%s %s failed", request.method, request.path)
+        return web.Response(status=500, text="Something went wrong.", headers=HEADERS)
     if not response.prepared:  # a streamed download set its own before sending them
         response.headers.update(HEADERS)
     return response
@@ -195,28 +210,42 @@ async def state(request: web.Request) -> web.Response:
 
 
 async def download(request: web.Request) -> web.StreamResponse:
-    """An output's zip, streamed from the API with a size cap, always as an attachment."""
+    """An output's zip, streamed from the API with a size cap, always as an attachment.
+
+    Over the cap, it's refused before anything is sent, or, if that only shows
+    mid-stream, the connection is cut, so a browser marks the download failed
+    rather than saving a truncated zip.
+    """
     config = request.app[CONFIG]
     task_id, seq = request.match_info["id"], request.match_info["seq"]
     url = f"{config['api_url'].rstrip('/')}/v1/tasks/{task_id}/outputs/{seq}.zip"
-    async with request.app[API].get(url, headers={"Authorization": f"Bearer {config['api_token']}"}) as upstream:
-        if upstream.status != 200:
-            raise web.HTTPNotFound(text="That output isn't available.")
-        response = web.StreamResponse(headers={
-            "Content-Type": "application/zip",
-            "Content-Disposition": f'attachment; filename="{task_id}-{seq}.zip"',
-        })
-        response.headers.update(HEADERS)
-        await response.prepare(request)
-        sent = 0
-        async for chunk in upstream.content.iter_chunked(64 * 1024):
-            sent += len(chunk)
-            if sent > config["max_download"]:
-                log.warning("download of %s output %s stopped at max_download", task_id, seq)
-                break
-            await response.write(chunk)
-        await response.write_eof()
-        return response
+    try:
+        async with request.app[API].get(url, headers={"Authorization": f"Bearer {config['api_token']}"}) as upstream:
+            if upstream.status != 200:
+                raise web.HTTPNotFound(text="That output isn't available.")
+            if upstream.content_length is not None and upstream.content_length > config["max_download"]:
+                raise web.HTTPRequestEntityTooLarge(
+                    max_size=config["max_download"], actual_size=upstream.content_length,
+                    text=f"That zip is {upstream.content_length} bytes, over this darner-web's max_download.",
+                )
+            response = web.StreamResponse(headers={
+                "Content-Type": "application/zip",
+                "Content-Disposition": f'attachment; filename="{task_id}-{seq}.zip"',
+            })
+            response.headers.update(HEADERS)
+            await response.prepare(request)
+            sent = 0
+            async for chunk in upstream.content.iter_chunked(64 * 1024):
+                sent += len(chunk)
+                if sent > config["max_download"]:
+                    log.warning("download of %s output %s cut off at max_download", task_id, seq)
+                    request.transport.close()
+                    return response
+                await response.write(chunk)
+            await response.write_eof()
+            return response
+    except aiohttp.ClientError as e:
+        raise ApiError(502, f"couldn't reach darner-api: {type(e).__name__}")
 
 
 async def blurbs_page(request: web.Request) -> web.Response:

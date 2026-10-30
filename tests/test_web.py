@@ -37,6 +37,7 @@ class FakeApi:
                          {"seq": 6, "id": "dn-bbbbb", "type": "ended", "summary": "", "size": 0, "data": None}],
         }
         self.zip = b"PK" + b"z" * 100
+        self.chunked = False
 
     def app(self):
         async def record(request, result, status=200):
@@ -61,7 +62,16 @@ class FakeApi:
 
         async def output(request):
             self.calls.append((request.method, request.path, None))
-            return web.Response(body=self.zip, content_type="application/zip")
+            if not self.chunked:
+                return web.Response(body=self.zip, content_type="application/zip")
+            # No Content-Length, so the cap only shows mid-stream.
+            response = web.StreamResponse(headers={"Content-Type": "application/zip"})
+            response.enable_chunked_encoding()
+            await response.prepare(request)
+            for i in range(0, len(self.zip), 16):
+                await response.write(self.zip[i:i + 16])
+            await response.write_eof()
+            return response
 
         async def blurbs(request):
             return await record(request, ["mealie"])
@@ -242,15 +252,60 @@ async def test_state_changes_when_the_page_would(client, fake):
     assert (await (await client.get("/state/", headers=HOST)).json())["version"] != first["version"]
 
 
-async def test_a_zip_downloads_as_an_attachment_within_the_cap(aiohttp_client, fake):
-    client = await aiohttp_client(make_app(config_for(fake)))
+async def test_a_zip_downloads_as_an_attachment_within_the_cap(client, fake):
     resp = await client.get("/sessions/dn-aaaaa/outputs/1.zip", headers=HOST)
     assert resp.status == 200 and await resp.read() == fake.zip
     assert resp.headers["Content-Disposition"] == 'attachment; filename="dn-aaaaa-1.zip"'
     assert resp.headers["X-Content-Type-Options"] == "nosniff"
-    capped = await aiohttp_client(make_app(config_for(fake, max_download=10)))
-    resp = await capped.get("/sessions/dn-aaaaa/outputs/1.zip", headers=HOST)
-    assert len(await resp.read()) <= 10
+
+
+async def test_a_zip_over_the_cap_is_refused_before_anything_is_sent(aiohttp_client, fake):
+    client = await aiohttp_client(make_app(config_for(fake, max_download=10)))
+    resp, text = await get(client, "/sessions/dn-aaaaa/outputs/1.zip")
+    assert resp.status == 413 and "over this darner-web's max_download" in text
+    assert resp.headers["Content-Security-Policy"] == HEADERS["Content-Security-Policy"]
+
+
+async def test_a_zip_that_passes_the_cap_mid_stream_fails_rather_than_truncating(aiohttp_client, fake):
+    import aiohttp
+
+    fake.chunked = True
+    client = await aiohttp_client(make_app(config_for(fake, max_download=40)))
+    resp = await client.get("/sessions/dn-aaaaa/outputs/1.zip", headers=HOST)
+    assert resp.status == 200
+    with pytest.raises(aiohttp.ClientPayloadError):
+        await resp.read()
+
+
+async def test_a_download_with_the_api_down_is_an_error_page_with_the_headers(aiohttp_client, fake):
+    client = await aiohttp_client(make_app(config_for(fake, api_url="http://127.0.0.1:1")))
+    resp, html = await get(client, "/sessions/dn-aaaaa/outputs/1.zip")
+    assert resp.status == 502 and "couldn&#39;t reach darner-api" in html
+    for name, value in HEADERS.items():
+        assert resp.headers.get(name) == value
+
+
+async def test_an_unexpected_error_still_carries_the_headers(aiohttp_client, fake):
+    app = make_app(config_for(fake))
+
+    async def broken(request):
+        raise KeyError("a template's data wasn't what it expected")
+
+    app.router.add_get("/broken", broken)
+    client = await aiohttp_client(app)
+    resp, text = await get(client, "/broken")
+    assert resp.status == 500 and text == "Something went wrong." and "KeyError" not in text
+    for name, value in HEADERS.items():
+        assert resp.headers.get(name) == value
+
+
+@pytest.mark.parametrize("origin, host", [("https://darner.example.com:443", "darner.example.com"), ("http://darner.example.com:80", "darner.example.com"), ("https://darner.example.com:8443", "darner.example.com:8443")])
+async def test_a_default_port_in_public_origin_matches_what_browsers_send(aiohttp_client, fake, origin, host):
+    client = await aiohttp_client(make_app(config_for(fake, public_origin=origin)))
+    browser_origin = origin.rsplit(":", 1)[0] if host == "darner.example.com" else origin
+    assert (await client.get("/", headers={"Host": host})).status == 200
+    resp = await client.post("/selftest", headers={**POST, "Host": host, "Origin": browser_origin}, json={})
+    assert resp.status == 200
 
 
 async def test_the_api_being_down_is_an_error_page(aiohttp_client, fake):
@@ -278,6 +333,8 @@ def test_agent_markdown_rules(markdown, html):
     ({"api_url": "ftp://x"}, "api_url"),
     ({"listne": "x"}, "unknown setting listne"),
     ({"user_header": ""}, "user_header"),
+    ({"public_origin": "https://user@darner.example.com"}, "public_origin"),
+    ({"public_origin": "https://darner.example.com:notaport"}, "public_origin"),
 ])
 def test_a_config_that_wouldn_t_work_is_refused(change, message):
     config = {"api_url": "http://127.0.0.1:8080", "api_token": TOKEN, "public_origin": ORIGIN, **change}

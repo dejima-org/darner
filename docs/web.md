@@ -24,17 +24,13 @@ darner-web must have its own scheme, host and port, never a path on the host tha
 
 - darner-web listens on loopback by default. Its container listens on `0.0.0.0:8081` inside itself, and the compose example publishes that as `127.0.0.1:8081:8081`. A bare `8081:8081` publishes on every interface, the Docker bridges included.
 - Your proxy must bind one specific address on the LAN interface: never a bare `listen 443`, never `0.0.0.0`, never a Docker bridge. `ip -br addr show type bridge` lists the addresses to avoid.
-- **On the dejima host**, a sandbox can route to the host's bridge address, so a front door bound there opens inward. Verify from inside a running session that neither darner-web nor your proxy answers:
+- **On the dejima host**, a sandbox can route to the host's bridge address, so a front door bound there opens inward. Verify it from inside a running dejima session with [`tests/containment.sh`](../tests/containment.sh). It checks that neither darner-web's port nor your proxy's answers on the gateway. Its first argument is a positive control: somewhere the session may reach, such as its model's API, so "nothing answered" can't come from a dead network.
 
   ```sh
-  # the bridge gateway: the only host address this container can route to
-  gw=$(ip route | grep default | cut -d' ' -f3)
-  # both should fail: darner-web's port, and the proxy's
-  timeout 5 bash -c "cat < /dev/null > /dev/tcp/$gw/8081" && echo BAD || echo ok
-  timeout 5 bash -c "cat < /dev/null > /dev/tcp/$gw/443"  && echo BAD || echo ok
+  bash containment.sh api.anthropic.com:443 8081 443
   ```
 
-  `BAD` on either line means stop and fix the bind first. Running darner-web on the API host instead of the dejima host avoids the question.
+  `BAD` on any line means stop and fix the bind first. Running darner-web on the API host instead of the dejima host avoids the question.
 
 ## Authenticating and authorizing the front door
 
@@ -72,4 +68,4 @@ Nothing. It has no database and writes no files: every page is read from the API
 
 ## Checking it
 
-`tests/test_web.py` covers every page, each refusal and header, autoescaping and the renderer's rules, and runs the self-test's checks over the session page's HTML. `tests/test_web_browser.py` loads that page in Chromium and asserts that the self-test's text opens no dialog, loads nothing from its addresses and breaks no CSP rule. It also proves the check can fail, against a page that doesn't escape. It needs Node with Playwright and its Chromium, so it's skipped in CI and is on the release checklist.
+`tests/test_web.py` covers every page, each refusal and header, autoescaping and the renderer's rules, and runs the self-test's checks over the session page's HTML. `tests/test_web_browser.py` loads that page in Chromium and asserts that the self-test's text opens no dialog, loads nothing from its addresses and breaks no CSP rule. It also proves the check can fail, against a page that doesn't escape. It needs Node with Playwright and its Chromium, so it's skipped in CI and is on the release checklist. `tests/test_containment.py` checks `tests/containment.sh` itself, against listeners standing in for the gateway, including that a failed positive control fails the check.
