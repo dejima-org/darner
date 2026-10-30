@@ -364,3 +364,49 @@ def test_a_config_that_wouldn_t_work_is_refused(change, message):
     config = {"api_url": "http://127.0.0.1:8080", "api_token": TOKEN, "public_origin": ORIGIN, **change}
     with pytest.raises(ValueError, match=message):
         check_config(config)
+
+
+def streaming_api(gaps):
+    """An API whose zip arrives in chunks, with these pauses before each."""
+    import asyncio
+
+    async def out(request):
+        resp = web.StreamResponse(headers={"Content-Type": "application/zip"})
+        resp.enable_chunked_encoding()
+        await resp.prepare(request)
+        for gap in gaps:
+            await asyncio.sleep(gap)
+            await resp.write(b"z" * 1000)
+        await resp.write_eof()
+        return resp
+
+    api = web.Application()
+    api.router.add_get("/v1/tasks/{id}/outputs/{seq}.zip", out)
+    return api
+
+
+async def test_a_slow_download_isn_t_held_to_the_api_calls_time_limit(aiohttp_server, aiohttp_client, monkeypatch):
+    import darner.web
+
+    monkeypatch.setattr(darner.web, "API_TIMEOUT", 1)
+    monkeypatch.setattr(darner.web, "DOWNLOAD_READ_TIMEOUT", 0.6)
+    server = await aiohttp_server(streaming_api([0.3] * 6))
+    client = await aiohttp_client(make_app({"api_url": str(server.make_url("/")), "api_token": TOKEN, "public_origin": ORIGIN}))
+    resp = await client.get("/sessions/dn-aaaaa/outputs/1.zip", headers=HOST)
+    assert resp.status == 200 and len(await resp.read()) == 6000
+
+
+async def test_a_stalled_api_still_cuts_a_download_off(aiohttp_server, aiohttp_client, monkeypatch, caplog):
+    import asyncio
+
+    import aiohttp
+
+    import darner.web
+
+    monkeypatch.setattr(darner.web, "DOWNLOAD_READ_TIMEOUT", 0.3)
+    server = await aiohttp_server(streaming_api([0, 2]))
+    client = await aiohttp_client(make_app({"api_url": str(server.make_url("/")), "api_token": TOKEN, "public_origin": ORIGIN}))
+    resp = await client.get("/sessions/dn-aaaaa/outputs/1.zip", headers=HOST)
+    with pytest.raises(aiohttp.ClientPayloadError):
+        await asyncio.wait_for(resp.read(), 3)
+    assert "Timeout" in caplog.text

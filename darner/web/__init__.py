@@ -32,6 +32,11 @@ CONFIG = web.AppKey("config", dict)
 API = web.AppKey("api", aiohttp.ClientSession)
 TEMPLATES = web.AppKey("templates", jinja2.Environment)
 HERE = Path(__file__).parent
+# A JSON call to the API has two minutes in all. A download has no total,
+# since it goes at the browser's pace, but the API going quiet for longer
+# than DOWNLOAD_READ_TIMEOUT between reads still ends it.
+API_TIMEOUT = 120
+DOWNLOAD_READ_TIMEOUT = 60
 
 DEFAULTS = {"listen": "127.0.0.1:8081", "user_header": None, "max_download": 100 * 1024 * 1024}
 REQUIRED = ("api_url", "api_token", "public_origin")
@@ -233,7 +238,10 @@ async def download(request: web.Request) -> web.StreamResponse:
     task_id, seq = request.match_info["id"], request.match_info["seq"]
     url = f"{config['api_url'].rstrip('/')}/v1/tasks/{task_id}/outputs/{seq}.zip"
     try:
-        upstream = await request.app[API].get(url, headers={"Authorization": f"Bearer {config['api_token']}"})
+        upstream = await request.app[API].get(
+            url, headers={"Authorization": f"Bearer {config['api_token']}"},
+            timeout=aiohttp.ClientTimeout(total=None, sock_connect=10, sock_read=DOWNLOAD_READ_TIMEOUT),
+        )
     except aiohttp.ClientError as e:
         raise ApiError(502, f"couldn't reach darner-api: {type(e).__name__}")
     async with upstream:
@@ -257,7 +265,7 @@ async def download(request: web.Request) -> web.StreamResponse:
                 await response.write(chunk)
             await response.write_eof()
         except Exception as e:
-            log.warning("download of %s output %s cut off: %s", task_id, seq, e)
+            log.warning("download of %s output %s cut off: %r", task_id, seq, e)
             _cut(request)
         return response
 
@@ -337,7 +345,7 @@ def make_app(config: dict) -> web.Application:
     app[TEMPLATES] = templates
 
     async def client(app: web.Application):
-        app[API] = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=120))
+        app[API] = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=API_TIMEOUT))
         yield
         await app[API].close()
 

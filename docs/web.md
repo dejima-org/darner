@@ -27,21 +27,22 @@ darner-web must have its own scheme, host and port, never a path on the host tha
 - **Check the bind on the host,** which needs no session. `ss -ltnp` should show darner-web on `127.0.0.1:8081` only, and your proxy on the one LAN address you chose, never `*` or `0.0.0.0`. This is the direct check, and the one that matters most.
 - **On the dejima host**, a sandbox can route to the host's bridge address, so a front door bound there opens inward. [`tests/containment.sh`](../tests/containment.sh) checks it from inside a session, but only when the session lets the bind decide. dejima's egress clamp refuses every gateway port unless the session is launched with `EGRESS_HOST_PORTS` naming it, so in an ordinary session every probe fails whatever the bind. Run that way, the check proves only the clamp, which dejima's docs call the second layer.
 
-  To check the bind itself, from the darner clone the launcher was installed from:
+  To check the bind itself, use two terminals on the host. In the first, start something that does answer on the gateway, for the check's control. It's on every interface while it runs, so it serves an empty directory:
 
   ```sh
-  # On the host: something that does answer on the gateway, for the check's control.
-  # It's on every interface while the check runs, so it serves an empty directory.
-  python3 -m http.server 9999 --bind 0.0.0.0 --directory "$(mktemp -d)" &
-  # A shell in a session that can reach the control and the checked ports on the gateway.
-  # Not --isolated: the clone is mounted, so the script is in it.
-  cd ~/src/darner
+  python3 -m http.server 9999 --bind 0.0.0.0 --directory "$(mktemp -d)"
+  ```
+
+  In the second, open a shell in a session that can reach the control and the checked ports on the gateway. Run it from a scratch directory holding only a copy of the script, not from the launcher's clone, since that's the code `darner-launch` runs on the host and a session's project is mounted writable:
+
+  ```sh
+  d=$(mktemp -d) && cp ~/src/darner/tests/containment.sh "$d"/ && cd "$d"
   EGRESS_HOST_PORTS=9999,8081,443 dejima --cmd bash .
   # Inside the session:
-  bash tests/containment.sh --gateway-control 9999 8081 443
-  # Back on the host, afterwards:
-  kill %1
+  bash containment.sh --gateway-control 9999 8081 443
   ```
+
+  As soon as the check has run, stop the control with Ctrl-C in the first terminal, so it isn't left serving on the LAN. Then leave the session and delete the scratch directory with `rm -r "$d"`.
 
   The control answering proves the session reaches the gateway on opened ports, so 8081 and 443 not answering is down to their bind. `BAD` on any line means stop and fix the bind first. `--control <host:port>`, somewhere outside the session may reach, is the fallback when you can't run a listener. It only rules out a dead network, and the script says so. Running darner-web on the API host instead of the dejima host avoids the question.
 
