@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+{% block title %}{{ name }} · darner{% endblock %}
+{% block main %}
+<h1>{{ name }} <span class="kind">config set</span></h1>
+<p class="quiet">What a task naming it applies. Read-only here: config sets are edited on the API host.</p>
+<pre>{% for key, value in described.items() %}{{ key }}: {% if value is string %}{{ value }}{% else %}{{ value | join(", ") }}{% endif %}
+{% endfor %}</pre>
+{% if described.file %}<p class="quiet">Each file is put in the session's ~/shared/uploads. Its contents aren't shown here.</p>{% endif %}
+{% endblock %}

@@ -43,6 +43,8 @@ darner has three parts, which can share a machine or not:
 - **API host:** runs `darner-api`, which the bot talks to.
 - **Maubot:** runs the bot plugin, logged in as a Matrix account for the bot.
 
+Optionally, **darner-web** gives a browser the same: its sessions at a glance, each one's events so far, and the full text of blurbs and config sets. It runs as its own container with its own token, behind a proxy you configure to authenticate and authorize. [docs/web.md](docs/web.md) sets it up and says what reaching it means.
+
 You need:
 
 - dejima, working on the dejima host, at a release with every flag and tool the launcher uses; [docs/release.md](docs/release.md) lists them, and `CHANGELOG.md` names the release each version was released against

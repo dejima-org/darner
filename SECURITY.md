@@ -13,7 +13,7 @@ What it does claim is that it doesn't widen that boundary. The agent is presumed
 
 ## Every frontend holds a key to the whole system
 
-The API takes requests from frontends: today the Matrix bot, later a web interface, and possibly Slack or others. Each frontend authenticates with an API token, and the API trusts it completely. It acts on whatever requester the frontend names, so deciding who may use darner is the frontend's job: the Matrix bot does it with its allowlist. The API can't check that itself, because a token holder can name any requester.
+The API takes requests from frontends: the Matrix bot, darner-web ([docs/web.md](docs/web.md)), and possibly Slack or others later. Each frontend authenticates with an API token, and the API trusts it completely. It acts on whatever requester the frontend names, so deciding who may use darner is the frontend's job: the Matrix bot does it with its allowlist. The API can't check that itself, because a token holder can name any requester.
 
 So adding a frontend adds a way in. Each one, and anyone who can administer it or read its configuration, can do everything the API does within its policy, for every task started through that token. Before adding one, treat it as you would the ssh key below:
 

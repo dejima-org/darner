@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>{% block title %}darner{% endblock %}</title>
+<link rel="stylesheet" href="/static/app.css">
+<script src="/static/app.js" defer></script>
+</head>
+<body{% if state %} data-state="{{ state }}" data-version="{{ version }}"{% endif %}>
+<header>
+<nav>
+<a href="/" class="name">darner</a>
+<a href="/">Sessions</a>
+<a href="/blurbs">Blurbs</a>
+<a href="/configs">Config sets</a>
+<a href="/selftest">Self-test</a>
+</nav>
+</header>
+<main>
+{% block main %}{% endblock %}
+</main>
+</body>
+</html>
