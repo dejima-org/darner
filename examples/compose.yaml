@@ -1,8 +1,9 @@
-# Runs the darner API. Lay out a deployment directory as:
+# Runs the darner API, and darner-web if you start it with --profile web.
+# Lay out a deployment directory as:
 #
 #   compose.yaml   this file
-#   src/           a clone of the repository, built into the image
-#   config/        api.toml and blurbs/, mounted read-only
+#   src/           a clone of the repository, built into the images
+#   config/        api.toml, blurbs/, and web.toml for darner-web, mounted read-only
 #   data/          database, results and .ssh/, owned by uid 10001
 services:
   api:
@@ -17,6 +18,32 @@ services:
     # to http://api:8080.
     ports:
       - "127.0.0.1:8080:8080"
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+  # The browser frontend: `docker compose --profile web up -d`. It reaches the
+  # API over this compose network, so web.toml's api_url is http://api:8080 and
+  # api.toml's listen is 0.0.0.0:8080. Put your authenticating proxy in front
+  # of the published port, and read docs/web.md first.
+  web:
+    profiles: ["web"]
+    build:
+      context: ./src
+      dockerfile: Dockerfile.web
+    image: darner-web
+    restart: unless-stopped
+    depends_on: [api]
+    volumes:
+      - ./config/web.toml:/etc/darner/web.toml:ro
+    # The host's loopback only. A bare "8081:8081" publishes on every
+    # interface, the Docker bridges included, which a sandbox can reach.
+    ports:
+      - "127.0.0.1:8081:8081"
     read_only: true
     tmpfs:
       - /tmp

@@ -12,14 +12,19 @@ license-files = ["LICENSE"]
 
 [project.optional-dependencies]
 api = ["aiohttp>=3.9"]
-test = ["aiohttp>=3.9", "pytest", "pytest-aiohttp", "maubot"]
+web = ["aiohttp>=3.9", "jinja2>=3.1", "markdown-it-py>=3"]
+test = ["aiohttp>=3.9", "pytest", "pytest-aiohttp", "maubot", "jinja2>=3.1", "markdown-it-py>=3"]
 
 [project.scripts]
 darner-api = "darner.api:main"
 darner-launch = "darner.launch:main"
+darner-web = "darner.web:main"
 
 [tool.setuptools]
-packages = ["darner"]
+packages = ["darner", "darner.web"]
+
+[tool.setuptools.package-data]
+"darner.web" = ["templates/*.html", "static/*"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

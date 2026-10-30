@@ -35,7 +35,7 @@ The same bar as dejima's, for the same reason: one maintainer, so a gate has to 
 
 ## 4. The suites
 
-`pytest` runs everywhere. The API's image is built only by CI's privileged job, so read the release pull request's checks: green means it built. Yellow or grey means that job hasn't run, and the release pull request says so.
+`pytest` runs everywhere. Its darner-web browser test, `tests/test_web_browser.py`, needs Node with Playwright and its Chromium, so CI skips it: run it from a dejima sandbox, where they're installed, and say in the release pull request that it passed. The API's and darner-web's images are built only by CI's privileged job, so read the release pull request's checks: green means it built. Yellow or grey means that job hasn't run, and the release pull request says so.
 
 ## 5. The release pull request
 

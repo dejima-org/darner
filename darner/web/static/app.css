@@ -1,0 +1,18 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+:root { color-scheme: light dark; --rule: #8884; --quiet: #888; --warn: #c60; }
+body { font: 15px/1.5 system-ui, sans-serif; margin: 0; }
+header { border-bottom: 1px solid var(--rule); }
+nav { display: flex; gap: 1.2em; padding: .7em 1em; flex-wrap: wrap; }
+nav .name { font-weight: 600; }
+main { max-width: 60em; padding: 1em; }
+a { color: inherit; }
+.quiet, .by, .kind { color: var(--quiet); }
+.by, .kind { font-size: .8em; font-weight: normal; }
+.untrusted, .error { color: var(--warn); }
+table { border-collapse: collapse; width: 100%; }
+th, td { text-align: left; padding: .35em .6em; border-bottom: 1px solid var(--rule); }
+pre { white-space: pre-wrap; overflow-wrap: anywhere; background: #8881; padding: .6em; }
+.timeline { list-style: none; padding: 0; }
+.event { border-left: 3px solid var(--rule); padding: .1em 0 .1em 1em; margin: 1em 0; }
+.event h2 { font-size: 1em; margin: .3em 0; }
+.agent { overflow-wrap: anywhere; }

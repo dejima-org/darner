@@ -42,12 +42,13 @@ jobs:
 
   privileged:
     runs-on: dejima-privileged
-    name: privileged (API image)
+    name: privileged (images)
     container:
       image: node:20-bookworm@sha256:8f693eaa7e0a8e71560c9a82b55fd54c2ae920a2ba5d2cde28bac7d1c01c9ba5  # by digest, as the Dockerfile's base
     env:
       DOCKER_CLI_VERSION: 27.5.1
       IMAGE: darner-api-ci-${{ github.run_id }}
+      WEB_IMAGE: darner-web-ci-${{ github.run_id }}
     steps:
       - name: Install the Docker CLI
         run: |
@@ -57,14 +58,21 @@ jobs:
 
       - uses: actions/checkout@v4
 
-      - name: Build the image
-        run: docker build -t "$IMAGE" .
+      - name: Build the images
+        run: |
+          docker build -t "$IMAGE" .
+          docker build -t "$WEB_IMAGE" -f Dockerfile.web .
 
       - name: Check the image runs as uid and gid 10001 and starts the API
         run: |
           [ "$(docker run --rm --entrypoint id "$IMAGE")" = "uid=10001(darner) gid=10001(darner) groups=10001(darner)" ]
           docker run --rm "$IMAGE" --help
 
+      - name: Check the web image runs as uid and gid 10001 and starts darner-web
+        run: |
+          [ "$(docker run --rm --entrypoint id "$WEB_IMAGE")" = "uid=10001(darner) gid=10001(darner) groups=10001(darner)" ]
+          docker run --rm "$WEB_IMAGE" --help
+
       - name: Remove the image
         if: always()
-        run: docker rmi -f "$IMAGE" || true
+        run: docker rmi -f "$IMAGE" "$WEB_IMAGE" || true

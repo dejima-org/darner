@@ -1,0 +1,23 @@
+# darner-web's config. Read docs/web.md before exposing it: it has no login
+# of its own, so your proxy has to authenticate and authorize every request.
+
+# The darner-web container listens on 0.0.0.0:8081 inside itself (its image
+# passes --listen); outside a container this default keeps it on loopback.
+listen = "127.0.0.1:8081"
+
+# darner-api, and this frontend's own token from api.toml's [tokens]. Under
+# Docker Compose the API is http://api:8080.
+api_url = "http://127.0.0.1:8080"
+api_token = "replace-with-this-frontend's-token"
+
+# The exact scheme, host and port people reach darner-web at, through your
+# proxy. Requests for any other host are refused. Its own hostname: never a
+# path on the same host as dejima's remote access (docs/web.md says why).
+public_origin = "https://darner.example.com"
+
+# The header your proxy sets to the signed-in user, used only to label what
+# they do. Once set, a request without it is refused.
+# user_header = "X-authentik-username"
+
+# Largest output zip passed through to a browser.
+# max_download = 104857600

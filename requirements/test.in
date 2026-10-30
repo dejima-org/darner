@@ -5,5 +5,7 @@ aiohttp>=3.9
 pytest
 pytest-aiohttp
 maubot
+jinja2>=3.1
+markdown-it-py>=3
 # The build backend, for the editable install without fetching.
 setuptools>=77

@@ -3,4 +3,5 @@
 !LICENSE
 !darner/
 !requirements/api.txt
+!requirements/web.txt
 **/__pycache__

@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block main %}
+<h1>Sessions</h1>
+{% if not sessions and not ended %}
+<p class="quiet">No sessions.</p>
+{% endif %}
+{% if sessions %}
+<table class="sessions">
+<thead><tr><th>Session</th><th>Started by</th><th>Age</th><th>State</th><th>Waiting on</th><th></th></tr></thead>
+<tbody>
+{% for s in sessions %}
+<tr>
+<td><a href="/sessions/{{ s.id }}">{{ s.id }}</a></td>
+<td>{{ s.requester }}</td>
+<td>{{ s.started | age }}</td>
+<td>{{ s.state }}</td>
+<td>{% if s.waiting.answer is not none %}a help request{% elif s.waiting.domains is not none %}a domain request{% else %}<span class="quiet">nothing</span>{% endif %}</td>
+<td>{% if s.link %}<a href="{{ s.link }}" rel="noopener noreferrer">remote access</a>{% endif %}</td>
+</tr>
+{% endfor %}
+</tbody>
+</table>
+{% endif %}
+{% if ended %}
+<h2>Ended, not yet cleared</h2>
+<ul class="ended">
+{% for task_id in ended %}
+<li><a href="/sessions/{{ task_id }}">{{ task_id }}</a></li>
+{% endfor %}
+</ul>
+{% endif %}
+{% endblock %}
