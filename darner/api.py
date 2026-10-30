@@ -101,22 +101,40 @@ STORE = web.AppKey("store", Store)
 SHARE_ERRORS = web.AppKey("share_errors", dict)
 EXPIRE_FAILED = web.AppKey("expire_failed", set)
 STATUS_CACHE = web.AppKey("status_cache", dict)
-STATUS_LOCK = web.AppKey("status_lock", asyncio.Lock)
-# How old a launcher status a session listing may reuse, so tabs refreshing
-# don't each open an ssh connection to the dejima host.
+# How old a launcher status, or a failure to get one, a session listing may
+# reuse, so tabs refreshing don't each open an ssh connection to the dejima host.
 STATUS_MAX_AGE = 5
 
 
 async def launcher_status(app: web.Application, max_age: float) -> tuple[int, str, str]:
-    """The launcher's status, reused if it's younger than max_age. Callers share one request."""
-    async with app[STATUS_LOCK]:
-        cached = app[STATUS_CACHE]
-        if cached and time.monotonic() - cached["at"] < max_age:
-            return cached["result"]
+    """The launcher's status, or its failure, reused if younger than max_age.
+
+    Everyone asking while a request is in flight shares it, the poller (with
+    max_age 0) included, so a dejima host that hangs costs one ssh attempt
+    at a time rather than a queue of them.
+    """
+    cache = app[STATUS_CACHE]
+    if "at" in cache and time.monotonic() - cache["at"] < max_age:
+        if "error" in cache:
+            raise cache["error"]
+        return cache["result"]
+    if cache.get("inflight") is None:
+        cache["inflight"] = asyncio.ensure_future(_fetch_status(app))
+    # Shielded: a caller whose client went away mustn't cancel it for the others.
+    return await asyncio.shield(cache["inflight"])
+
+
+async def _fetch_status(app: web.Application) -> tuple[int, str, str]:
+    cache = app[STATUS_CACHE]
+    try:
         result = await run_remote(app[CONFIG], ["status"])
-        if result[0] == 0:
-            cached.update(at=time.monotonic(), result=result)
-        return result
+    except Exception as e:
+        cache.update(at=time.monotonic(), error=e, inflight=None)
+        cache.pop("result", None)
+        raise
+    cache.update(at=time.monotonic(), result=result, inflight=None)
+    cache.pop("error", None)
+    return result
 
 
 class RequestError(Exception):
@@ -129,7 +147,8 @@ def _requester(value: object) -> str:
     """Who acted, as a frontend names them: a label, never trusted further, so only its shape is checked."""
     if (
         not isinstance(value, str) or not value.strip() or len(value) > 255
-        or any(unicodedata.category(c) in ("Cc", "Cf") for c in value)
+        # Line and paragraph separators too, which would break a label across lines.
+        or any(unicodedata.category(c) in ("Cc", "Cf", "Zl", "Zp") for c in value)
     ):
         raise RequestError(400, "requester must be up to 255 characters, with no control or invisible characters")
     return value
@@ -942,7 +961,6 @@ def make_app(config: dict, poll: bool = True) -> web.Application:
     app[SHARE_ERRORS] = {}
     app[EXPIRE_FAILED] = set()
     app[STATUS_CACHE] = {}
-    app[STATUS_LOCK] = asyncio.Lock()
     app.router.add_post("/v1/tasks", create_task)
     app.router.add_post("/v1/selftest", create_selftest)
     app.router.add_get("/v1/events", list_events)

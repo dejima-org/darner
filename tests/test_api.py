@@ -1301,7 +1301,7 @@ async def test_an_internal_domain_request_is_marked_denied_when_internal_grants_
     assert fetches(tmp_path)[-1][3]["domains"] == ["pypi.org"]
 
 
-@pytest.mark.parametrize("requester", ["@alice:example.org\nforged line", "@room\u202e", "x" * 256, "  ", 7])
+@pytest.mark.parametrize("requester", ["@alice:example.org\nforged line", "@room\u202e", "a\u2028b", "a\u2029b", "x" * 256, "  ", 7])
 async def test_a_requester_that_isn_t_a_plain_label_is_refused(started, requester):
     app, client, task_id, *_ = started
     body = {"text": "hi", "requester": requester}
@@ -1338,3 +1338,56 @@ async def test_session_listings_share_a_recent_launcher_status(started, tmp_path
     assert count.read_text().count("status") == 1
     await poll_once(app)
     assert count.read_text().count("status") == 2
+
+
+async def test_an_outage_costs_one_status_attempt_at_a_time(started, monkeypatch):
+    import asyncio
+
+    import darner.api
+    from darner.api import STATUS_MAX_AGE, launcher_status
+
+    app, *_ = started
+    app[STATUS_CACHE].clear()
+    attempts = []
+
+    async def hanging(config, command, stdin=None):
+        attempts.append(command)
+        await asyncio.sleep(0.2)
+        raise RuntimeError("timed out")
+
+    monkeypatch.setattr(darner.api, "run_remote", hanging)
+    results = await asyncio.gather(*(launcher_status(app, STATUS_MAX_AGE) for _ in range(5)), return_exceptions=True)
+    assert len(attempts) == 1 and all(isinstance(r, RuntimeError) for r in results)
+    # A listing in the failure's window gets it again without another attempt.
+    with pytest.raises(RuntimeError):
+        await launcher_status(app, STATUS_MAX_AGE)
+    assert len(attempts) == 1
+    # The poller doesn't take a cached failure: it asks again, and a listing
+    # arriving meanwhile shares its attempt rather than queueing behind it.
+    poller = asyncio.ensure_future(launcher_status(app, 0))
+    await asyncio.sleep(0.05)
+    app[STATUS_CACHE].pop("at")
+    listing = asyncio.ensure_future(launcher_status(app, STATUS_MAX_AGE))
+    await asyncio.gather(poller, listing, return_exceptions=True)
+    assert len(attempts) == 2
+
+
+async def test_a_listing_that_goes_away_doesn_t_cancel_the_shared_status(started, monkeypatch):
+    import asyncio
+
+    import darner.api
+    from darner.api import STATUS_MAX_AGE, launcher_status
+
+    app, *_ = started
+    app[STATUS_CACHE].clear()
+
+    async def slow(config, command, stdin=None):
+        await asyncio.sleep(0.2)
+        return 0, "[]", ""
+
+    monkeypatch.setattr(darner.api, "run_remote", slow)
+    first = asyncio.ensure_future(launcher_status(app, STATUS_MAX_AGE))
+    second = asyncio.ensure_future(launcher_status(app, STATUS_MAX_AGE))
+    await asyncio.sleep(0.05)
+    first.cancel()
+    assert await second == (0, "[]", "")
