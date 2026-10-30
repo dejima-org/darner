@@ -399,7 +399,7 @@ A mention is a pill for the bot, whatever its text, or the bot's full user ID ty
 
 When the agent needs to reach domains the sandbox blocks, it lists them in `~/shared/DOMAINS` and the bot posts every one for you to check. A line can name a port, as in `internal recipes.example.com:8443`. The grant covers the domain on every port, and the port is the one dejima-allow checks it answers on. Reply `@dragonlet allow` to that message to let the running session reach them, or `@dragonlet deny`. Internal domains are marked as such, and any the API's `deny_domains` policy refuses are marked and never allowed. An agent that edits `DOMAINS` without signalling again is still asking: the changed list becomes a request once it has been left alone for 30 seconds. After you decide a request, a follow-up, such as asking again for a domain as internal, comes straight through. What gets allowed is the list as shown: the launcher keeps its own copy, so the agent can't change it afterwards. If answering from chat is on, the agent is told the outcome. Otherwise, tell it in the session.
 
-If a session's screen stops changing for `waiting_after` seconds (5 minutes by default), the bot posts that it seems to be waiting, with the end of its screen as a code block marked as agent-written. That catches an agent that asked a question at its prompt, or left its answer there without signalling, whatever the harness. It isn't posted for a session waiting on a help or domain request, one that has a result to deliver, one that has delivered output and been told nothing since, or one that has asked since its screen last changed. Each quiet spell is reported once. Reply to the notice with a mention to tell the session something. `waiting_screen = false` leaves out the screen.
+If a session's screen stops changing for `waiting_after` seconds (5 minutes by default), the bot posts that it seems to be waiting, with the end of its screen as a code block marked as agent-written. That catches an agent that asked a question at its prompt, or left its answer there without signalling, whatever the harness, and dejima stopping at a prompt of its own before the session starts. It isn't posted for a session waiting on a help or domain request, one that has a result to deliver, one that has delivered output and been told nothing since, or one that has asked since its screen last changed. Each quiet spell is reported once. Reply to the notice with a mention to tell the session something. `waiting_screen = false` leaves out the screen.
 
 To manage open sessions, mention the bot with one of these. Replying to any of the bot's messages about a session works without the id.
 
@@ -409,7 +409,7 @@ To manage open sessions, mention the bot with one of these. Replying to any of t
 | `status dn-xxxxx` | what a session is waiting on, quoting its help request or listing its requested domains |
 | `tell dn-xxxxx <message>` | types a message into the session, which also answers an outstanding help request; needs `--answers` on the launcher |
 | `upload dn-xxxxx` | in reply to a file: puts it in the session's `~/shared/uploads`; a file sent as a reply to one of the bot's messages about a session goes there too |
-| `stop dn-xxxxx` | ends the session |
+| `stop dn-xxxxx` | ends the session, including one stuck starting |
 
 Replying to one of the bot's messages about a session with anything else, with a mention, sends it to the session like `tell`.
 
@@ -531,7 +531,7 @@ Grants use `dejima --domains FILE` and `--dependencies FILE`, and output collect
 | `max_upload` | largest upload in bytes, default 50 MiB; keep it at or under the launcher's `--max-upload` |
 | `waiting_after` | seconds a running session's screen can stay unchanged before the bot says it seems to be waiting (default 300) |
 | `output_retention` | seconds an ended session's output is kept for a frontend that hasn't collected it (default 604800, 7 days; 0 deletes it when the session ends) |
-| `max_session_age` | seconds a session may run before it's stopped, so none is left running forgotten (default 86400, a day; 0 never stops one). A task the launcher no longer knows about is marked ended at the same age |
+| `max_session_age` | seconds a session may run before it's stopped, so none is left running forgotten (default 86400, a day; 0 never stops one). A task the launcher no longer knows about is marked ended at the same age. A session stuck starting counts too, and one whose output can never be fetched is ended at that age, with the reason posted |
 | `waiting_screen` | whether that notice includes the end of the session's screen (default true) |
 | `configs_dir` | config sets, by default `configs` beside `blurbs_dir`; one file per set named as it's used, holding keyword lines (see [`examples/configs`](examples/configs)); read per request. A set's `file: <name>` lines give each of its sessions `configs_dir/files/<name>` (up to 1 MiB) in `~/shared/uploads` |
 | `default_blurbs` | blurb names added to every task's prompt, before any it names with `ctx:`; each must exist |

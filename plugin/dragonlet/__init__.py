@@ -534,7 +534,7 @@ class Dragonlet(Plugin):
             await self._notice(room, ref, f"{e['id']} has run for {age}, longer than sessions may run here, so it was stopped.")
             return
         if e["type"] == "ended":
-            await self._notice(room, ref, f"{e['id']} ended.")
+            await self._notice(room, ref, f"{e['id']} ended" + (f": {e['summary']}." if e["summary"] else "."))
             return
         if e["type"] == "help":
             await self._help(room, ref, e)

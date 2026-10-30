@@ -344,7 +344,8 @@ def check_waiting(config: dict, store: Store, task: dict) -> None:
     is reported once.
     """
     quiet = task.get("quiet")
-    if task.get("state") != "running" or not isinstance(quiet, (int, float)) or quiet < config["waiting_after"]:
+    # Starting too: dejima can stop at a prompt of its own before the session runs.
+    if task.get("state") not in ("running", "starting") or not isinstance(quiet, (int, float)) or quiet < config["waiting_after"]:
         return
     if any(task.get(key) for key in ("awaiting_answer", "domain_request", "ready", "help", "domains", "unsignalled", "result_pending")):
         return
@@ -362,7 +363,7 @@ async def expire(app: web.Application, task: dict) -> None:
     """Stop a running session once it's older than max_session_age, so none is forgotten."""
     config, store = app[CONFIG], app[STORE]
     age = time.time() - store.created(task["id"])
-    if not config["max_session_age"] or age < config["max_session_age"] or task["state"] != "running":
+    if not config["max_session_age"] or age < config["max_session_age"] or task["state"] == "exited":
         return
     if store.latest_event_time(task["id"], ("expired",)) is not None:
         return
@@ -376,9 +377,9 @@ async def expire(app: web.Application, task: dict) -> None:
     store.add_event(task["id"], "expired", data={"age": int(age)})
 
 
-def end_task(app: web.Application, task_id: str) -> None:
+def end_task(app: web.Application, task_id: str, note: str = "") -> None:
     """Delete everything about an ended task but the output its frontend hasn't collected."""
-    app[STORE].end(task_id)
+    app[STORE].end(task_id, note)
     kept = app[STORE].kept_outputs(task_id)
     task_dir = Path(app[CONFIG]["results_dir"]) / task_id
     for path in task_dir.glob("*.zip"):
@@ -451,6 +452,12 @@ async def poll_once(app: web.Application) -> None:
         if task["state"] == "exited" and collected:
             end_task(app, task["id"])
             await forget(app, task["id"])
+        elif task["state"] == "exited" and config["max_session_age"] and (
+            time.time() - store.created(task["id"]) > config["max_session_age"]
+        ):
+            # Its output can't be fetched, so it would otherwise be polled forever.
+            end_task(app, task["id"], "its output couldn't be collected")
+            await forget(app, task["id"])
 
 
 async def _poll_forever(app: web.Application) -> None:
@@ -500,6 +507,9 @@ async def create_task(request: web.Request) -> web.Response:
         return web.json_response({"error": str(e)}, status=e.status)
 
     store = request.app[STORE]
+    # Ids are short enough to collide now and then.
+    while store.known(job["id"]):
+        job["id"] = new_task_id()
     # File contents may be credentials, so the stored job keeps only their names.
     recorded = {**job, "files": [f["name"] for f in job["files"]]}
     task, new = store.claim(job["id"], client, source, requester, json.dumps(recorded))
@@ -540,7 +550,10 @@ async def create_selftest(request: web.Request) -> web.Response:
         source, requester = _source(body), _text(body, "requester")
     except RequestError as e:
         return web.json_response({"error": str(e)}, status=e.status)
-    task, new = store.claim(new_task_id(), client, source, requester, json.dumps({"selftest": True}))
+    task_id = new_task_id()
+    while store.known(task_id):
+        task_id = new_task_id()
+    task, new = store.claim(task_id, client, source, requester, json.dumps({"selftest": True}))
     if not new:
         return web.json_response({"id": task.id})
     store.mark(task.id, "ended")

@@ -101,7 +101,7 @@ class Store:
         for (task_id,) in self.db.execute("SELECT id FROM tasks WHERE status IN ('pending', 'failed')").fetchall():
             self.delete(task_id)
 
-    def end(self, task_id: str) -> None:
+    def end(self, task_id: str, note: str = "") -> None:
         """Keep only what the task's frontend has yet to collect: its unacknowledged output.
 
         The prompt, requester, run id, and every other event go now. An ended
@@ -115,7 +115,9 @@ class Store:
                 (time.time(), task_id),
             )
             self.db.execute("DELETE FROM events WHERE task_id = ? AND (acked = 1 OR type != 'output')", (task_id,))
-            self.db.execute("INSERT INTO events (task_id, type, created) VALUES (?, 'ended', ?)", (task_id, time.time()))
+            self.db.execute(
+                "INSERT INTO events (task_id, type, summary, created) VALUES (?, 'ended', ?, ?)", (task_id, note, time.time())
+            )
 
     def delete(self, task_id: str) -> None:
         with self.db:

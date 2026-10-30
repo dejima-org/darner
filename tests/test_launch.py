@@ -4,6 +4,7 @@ import contextlib
 import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 import zipfile
@@ -20,7 +21,7 @@ case "$1" in
     load-buffer) cat > "$FAKE_TMUX_LOG.buffer" ;;
     capture-pane) cat "$FAKE_TMUX_LOG.screen" 2>/dev/null ;;
     paste-buffer) cut -c "$(( ${FAKE_TMUX_DROP:-0} + 1 ))-" "$FAKE_TMUX_LOG.buffer" | head -c 4000 >> "$FAKE_TMUX_LOG.screen" ;;
-    send-keys) if [ "$2" = -l ]; then printf '%s' "$5" >> "$FAKE_TMUX_LOG.screen"; elif [ "$4" = Enter ] && [ -z "$FAKE_TMUX_EAT_ENTER" ]; then echo "[submitted]" >> "$FAKE_TMUX_LOG.screen"; fi ;;
+    send-keys) if [ "$2" = -l ]; then printf '%s' "$6" >> "$FAKE_TMUX_LOG.screen"; elif [ "$4" = Enter ] && [ -z "$FAKE_TMUX_EAT_ENTER" ]; then echo "[submitted]" >> "$FAKE_TMUX_LOG.screen"; fi ;;
     new-window)
         # Every window gets its own ids, as tmux gives them: @7 %7 for the first.
         n=$(( $(cat "$FAKE_TMUX_LOG.n" 2>/dev/null || echo 6) + 1 )); echo "$n" > "$FAKE_TMUX_LOG.n"
@@ -96,7 +97,7 @@ def test_existing_session_is_reused(env, monkeypatch):
 
 def test_duplicate_id_rejected(env):
     launch(args(env), {"id": "dn-abc23", "prompt": "p"})
-    with pytest.raises(FileExistsError):
+    with pytest.raises(RuntimeError, match="dn-abc23 is already in use$"):
         launch(args(env), {"id": "dn-abc23", "prompt": "p"})
 
 
@@ -401,7 +402,8 @@ def test_answer_to_a_cline_question_is_typed(env, asked):
     text = "2 of them:\n\n" + "x" * 1500
     code, _, err = answer_run(asked, {"requester": "@alice:example.org", "text": text}, "--answers", "--paste-delay", "0")
     assert code == 0, err
-    typed = [call[4] for call in tmux_calls(env) if call[:2] == ["send-keys", "-l"]]
+    typed = [call[5] for call in tmux_calls(env) if call[:2] == ["send-keys", "-l"]]
+    assert all(call[4] == "--" for call in tmux_calls(env) if call[:2] == ["send-keys", "-l"])
     assert "".join(typed) == " 2 of them: " + "x" * 1500 and len(typed) == 2
     assert not any(call[0] in ("load-buffer", "paste-buffer") for call in tmux_calls(env))
 
@@ -489,7 +491,7 @@ def test_long_answer_is_refused_not_truncated(env, asked):
 
 def test_missing_dejima_fails_the_launch(env, monkeypatch):
     monkeypatch.setenv("PATH", "/usr/bin:/bin")
-    with pytest.raises(RuntimeError, match="dejima not found on PATH .*pass --dejima"):
+    with pytest.raises(RuntimeError, match="^dejima not found on PATH; pass --dejima"):
         launch(args(env), {"id": "dn-abc23", "prompt": "p"})
     assert not (env / "tasks" / "dn-abc23").exists()
     assert not (env / "tmux.log").exists()
@@ -1346,3 +1348,35 @@ def test_forget_deletes_an_ended_task_and_refuses_a_running_one(env, share):
     assert run(a, "forget", "dn-abc23")[0] == 0
     assert not task_dir.exists()
     assert run(a, "forget", "dn-abc23")[0] == 0
+
+
+def test_a_session_stuck_starting_reports_its_screen_and_can_be_stopped(env, share, docker):
+    a, _ = share
+    task = env / "tasks" / "dn-abc23"
+    (task / "shared-path").unlink()
+    (env / "tmux.log.screen").write_text("Acknowledge these findings? [y/N]\n")
+    entry = status(a)[0]
+    assert entry["state"] == "starting" and "Acknowledge" in entry["screen"]
+    starting = subprocess.Popen(["sleep", "30"])
+    (task / "pid").write_text(str(starting.pid))
+    code, _, err = run(a, "--docker", str(docker), "--stop-timeout", "1", "stop", "dn-abc23")
+    assert code == 0, err
+    assert starting.wait(timeout=5) == -15
+
+
+def test_a_host_path_in_an_error_isn_t_relayed(env, share, monkeypatch):
+    a, _ = share
+    (env / "tasks" / "dn-abc23" / "exit").write_text("0\n")
+
+    def fail(path):
+        raise PermissionError(13, "Permission denied", "/home/operator/secret/dn-abc23")
+
+    monkeypatch.setattr(shutil, "rmtree", fail)
+    code, _, err = run(a, "forget", "dn-abc23")
+    assert code == 1 and err == "darner-launch: Permission denied\n"
+
+
+def test_an_upload_header_at_its_longest_is_read(env, share):
+    a, shared = share
+    code, out, err = upload_run(a, "notes.txt", b"x", requester="\U0001f600" * 400)
+    assert code == 0, err

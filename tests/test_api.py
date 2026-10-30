@@ -1159,3 +1159,43 @@ async def test_an_ended_session_the_api_never_recorded_is_forgotten(started, tmp
     status(state="running", ready=False)
     await poll_once(app)
     assert ["forget", "dn-zzzzz"] in fetches(tmp_path) and ["forget", task_id] not in fetches(tmp_path)
+
+
+def test_a_session_stuck_starting_is_reported_waiting(waiting_store):
+    from darner.api import check_waiting
+
+    store, config = waiting_store
+    check_waiting(config, store, quiet_task(state="starting", screen="Acknowledge these findings? [y/N]"))
+    assert waiting_events(store)[0].summary == "Acknowledge these findings? [y/N]"
+
+
+async def test_a_session_stuck_starting_is_stopped_after_max_session_age(started, tmp_path):
+    app, client, task_id, status, _ = started
+    status(state="starting", ready=False)
+    age_task(app, task_id, 86401)
+    await poll_once(app)
+    assert ["stop", task_id] in fetches(tmp_path)
+
+
+async def test_output_that_can_never_be_fetched_ends_the_task_after_max_session_age(started, tmp_path, monkeypatch):
+    app, client, task_id, status, _ = started
+    status(state="exited")
+    monkeypatch.setenv("STUB_FETCH_CODE", "1")
+    await poll_once(app)
+    assert app[STORE].launched() == [task_id]
+    age_task(app, task_id, 86401)
+    await poll_once(app)
+    assert app[STORE].launched() == []
+    [ended] = [e for e in await events(client) if e["id"] == task_id]
+    assert ended["type"] == "ended" and ended["summary"] == "its output couldn't be collected"
+    assert ["forget", task_id] in fetches(tmp_path)
+
+
+async def test_a_task_id_in_use_is_not_reused(client, tmp_path, monkeypatch):
+    import darner.api
+
+    ids = iter(["dn-aaaaa", "dn-aaaaa", "dn-bbbbb"])
+    monkeypatch.setattr(darner.api, "new_task_id", lambda: next(ids))
+    first = await client.post("/v1/tasks", json=request(), headers=AUTH)
+    second = await client.post("/v1/tasks", json=request(source={"kind": "matrix", "ref": "$other"}), headers=AUTH)
+    assert (await first.json())["id"] == "dn-aaaaa" and (await second.json())["id"] == "dn-bbbbb"
