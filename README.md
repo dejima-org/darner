@@ -490,7 +490,7 @@ The bot only treats a reply as an answer when the replied-to message is its own 
 
 The files are still agent-written: treat what is in the zip as untrusted.
 
-**Nothing about a session outlives it.** When a session ends, the API deletes everything it kept about it except output its frontend hasn't collected: the prompt and context, who asked, help requests, terminal screens and domain requests. The launcher deletes the session's task directory on the dejima host. Once the frontend acknowledges the output, the bot doing so as soon as it has posted it, the API deletes the rest, zips included. Output nobody collects is deleted after `output_retention`. The launcher then has dejima remove the session's `~/shared` from the dejima host with `dejima-share prune --isolated --yes`, which dejima would otherwise keep if it isn't empty, unless `--keep-records` is set. If dejima refuses, the share is kept and the API logs why. Your frontend's own copy, such as the room's messages, is yours.
+**Nothing about a session outlives it.** When a session ends, the API deletes everything it kept about it except output its frontend hasn't collected: the prompt and context, who asked, help requests, terminal screens and domain requests. The launcher deletes the session's task directory on the dejima host. Once the frontend acknowledges the output, the bot doing so as soon as it has posted it, the API deletes the rest, zips included. Output nobody collects is deleted after `output_retention`. The launcher then has dejima remove the session's `~/shared` from the dejima host with `dejima-share prune --isolated --yes`, which dejima would otherwise keep if it isn't empty, unless the launcher has `--keep-shared`. If dejima refuses, the share is kept and the API logs why. Your frontend's own copy, such as the room's messages, is yours.
 
 ## Reference
 
@@ -519,6 +519,7 @@ The files are still agent-written: treat what is in the zip as untrusted.
 | `--docker PATH` | `docker` | the docker CLI, used to find and stop a session's container |
 | `--dejima-allow PATH` | `dejima-allow` | dejima's `dejima-allow`, used to grant a session the domains it requested |
 | `--dejima-share PATH` | `dejima-share` | dejima's `dejima-share`, used to remove an ended session's `~/shared` once its output is collected |
+| `--keep-shared` | off | keep an ended session's `~/shared` on the dejima host rather than having dejima prune it; separate from `--keep-records`, which keeps dejima's records |
 | `--stop-timeout SECONDS` | 60 | how long a stopped session may take to exit before dejima itself is ended |
 | `--help-interval SECONDS` | 300 | least time between a task's help requests, and between domain requests while one awaits a decision, so a session can't flood the room |
 

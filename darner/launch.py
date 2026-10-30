@@ -98,6 +98,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--docker", default="docker")
     p.add_argument("--dejima-allow", default="dejima-allow")
     p.add_argument("--dejima-share", default="dejima-share")
+    p.add_argument("--keep-shared", action="store_true", help="keep an ended session's ~/shared rather than pruning it")
     p.add_argument("--stop-timeout", default=60, type=int, help="seconds to wait for a stopped session to exit")
     p.add_argument("--exec", dest="exec_dir", type=Path, help=argparse.SUPPRESS)
     p.add_argument("command", nargs="*", help=argparse.SUPPRESS)
@@ -518,11 +519,7 @@ def forget(args: argparse.Namespace, task_id: str) -> None:
 
 def _prune_share(args: argparse.Namespace, task_dir: Path) -> str | None:
     """Have dejima remove an ended session's share. Why it couldn't, or None."""
-    try:
-        argv = json.loads((task_dir / "argv.json").read_text())
-    except (OSError, ValueError):
-        argv = []
-    if _keeps_records(argv):
+    if args.keep_shared:
         return None
     try:
         root, leaf = _share_path(args, task_dir)

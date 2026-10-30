@@ -1391,7 +1391,15 @@ def test_a_missing_dejima_share_keeps_the_share_and_says_how_to_fix_it(env, shar
     assert code == 1 and "pass --dejima-share with its full path" in err and shared.is_dir()
 
 
-def test_keep_records_keeps_the_share(env, dejima_share):
+def test_keep_shared_keeps_the_share(env, share, dejima_share):
+    a, shared = share
+    task_dir = env / "tasks" / "dn-abc23"
+    (task_dir / "exit").write_text("0\n")
+    assert run(a, "--dejima-share", str(dejima_share), "--keep-shared", "forget", "dn-abc23")[0] == 0
+    assert share_calls(env) == [] and shared.is_dir() and not task_dir.exists()
+
+
+def test_keep_records_doesn_t_keep_the_share(env, dejima_share):
     root = env / "share-root"
     shared = root / "20261025-120000-AbC123"
     shared.mkdir(parents=True)
@@ -1400,8 +1408,8 @@ def test_keep_records_keeps_the_share(env, dejima_share):
     task_dir = env / "tasks" / "dn-abc23"
     (task_dir / "shared-path").write_text(f"{shared}\n")
     (task_dir / "exit").write_text("0\n")
-    assert run(a, "--dejima-share", str(dejima_share), "forget", "dn-abc23")[0] == 0
-    assert share_calls(env) == [] and shared.is_dir() and not task_dir.exists()
+    assert run(a, "--dejima-share", str(dejima_share), "--keep-records", "forget", "dn-abc23")[0] == 0
+    assert share_calls(env) == [f"prune --isolated --yes {shared}"] and not shared.exists()
 
 
 @pytest.mark.parametrize("recorded", [None, "gone", "/etc"])
