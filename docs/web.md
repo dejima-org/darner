@@ -2,7 +2,7 @@
 
 [← darner README](../README.md)
 
-A browser frontend for darner: this frontend's sessions at a glance, each one's events so far, the full text of blurbs and config sets, and the self-test. It's optional. darner runs without it, and it runs as its own container with its own API token.
+A browser frontend for darner: everything the Matrix bot does, from a browser, and more. It shows this frontend's sessions at a glance, each one's events so far, the full text of blurbs and config sets, and the self-test. It can start tasks with every keyword the bot takes, send a session a message or answer its help request, upload a file into its `~/shared/uploads`, allow or deny its domain requests, stop it, and clear it once it has ended. It's optional. darner runs without it, and it runs as its own container with its own API token.
 
 **It has no login of its own.** Like dejima's [remote access](https://gitbox.branderson.io/dejima/dejima/src/branch/main/docs/remote-access.md), whatever proxy you put in front of it is the whole gate. Don't open it to the public internet.
 
@@ -65,8 +65,14 @@ The nginx example uses `Host $http_host`, not `$host`, because darner-web checks
 
 ## What it defends against itself
 
-- **Cross-site requests:** every request that changes anything must carry the `X-Darner-Request` header, which a cross-site page can't send without a preflight darner-web refuses. `Origin` must match `public_origin`, and `Sec-Fetch-Site` must be same-origin where the browser sends it. No GET changes anything.
+- **Cross-site requests:** every request that changes anything, every action above included, must carry the `X-Darner-Request` header, which a cross-site page can't send without a preflight darner-web refuses. `Origin` must match `public_origin`, and `Sec-Fetch-Site` must be same-origin where the browser sends it. No GET changes anything. The page's forms post, so a form sent without its script is refused for the missing header, rather than putting what was typed in a URL.
 - **Hostile agent text:** agent markdown is rendered on the server with raw HTML escaped. Every link shows where it goes, and only `http`, `https` and `mailto` links are clickable, with `rel="noopener noreferrer"`. Images are never loaded: their address is shown. The page's script inserts no HTML at all. Every response sends a CSP with no inline script or style and `require-trusted-types-for 'script'`, plus `Referrer-Policy: no-referrer`, `Cache-Control: no-store` and `nosniff`. Zips are only ever downloaded as attachments.
+
+## Sessions it started
+
+darner-web sees and acts on only the sessions it started, as each frontend does. A session started from Matrix is followed up in Matrix.
+
+An ended session stays on its page, showing its output and zips, until someone presses **Clear**. That acknowledges its last events, and the API deletes it. Uncleared output is deleted after the API's `output_retention`, 7 days by default. Files are uploaded from a running session's page, not when starting a task, since a session's `~/shared` doesn't exist until it's running.
 
 ## What it keeps
 

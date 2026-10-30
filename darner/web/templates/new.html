@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}New task · darner{% endblock %}
+{% block main %}
+<h1>New task</h1>
+<form method="post" data-action="/tasks" class="new">
+<input type="hidden" name="ref" value="{{ ref }}">
+<label for="task">Task</label>
+<textarea id="task" name="task" rows="4" required></textarea>
+<label for="context">Extra context</label>
+<textarea id="context" name="context" rows="3"></textarea>
+{% if configs %}
+<fieldset><legend>Config sets</legend>
+{% for name in configs %}<label class="choice"><input type="checkbox" name="configs" value="{{ name }}"> <a href="/configs/{{ name | urlencode }}">{{ name }}</a></label>{% endfor %}
+</fieldset>
+{% endif %}
+{% if blurbs %}
+<fieldset><legend>Context blurbs</legend>
+{% for name in blurbs %}<label class="choice"><input type="checkbox" name="blurbs" value="{{ name }}"> <a href="/blurbs/{{ name | urlencode }}">{{ name }}</a></label>{% endfor %}
+</fieldset>
+{% endif %}
+<label for="domains">Domains it may reach</label>
+<input id="domains" name="domains" placeholder="pypi.org, files.pythonhosted.org">
+<label for="internal">Domains inside your network it may reach</label>
+<input id="internal" name="internal" placeholder="recipes.example.com:8443">
+<label for="dependencies">Dependencies (apt:, pip:, cargo:, npm:, tarball:)</label>
+<input id="dependencies" name="dependencies" placeholder="apt:jq pip:pytest-xdist">
+<fieldset><legend>Agent</legend>
+<label for="harness">Harness</label>
+<select id="harness" name="harness"><option value="">the default{% if catalog.default_harness %} ({{ catalog.default_harness }}){% endif %}</option>{% for name in catalog.harnesses %}<option>{{ name }}</option>{% endfor %}</select>
+<label for="backend">Backend</label>
+<select id="backend" name="backend"><option value="">the harness's default</option>{% for name in catalog.backends %}<option>{{ name }}</option>{% endfor %}</select>
+<label for="model">Model</label>
+<input id="model" name="model" placeholder="the harness's default">
+<label for="effort">Effort</label>
+<select id="effort" name="effort"><option value="">the harness's default</option>{% for level in ("none", "low", "medium", "high", "xhigh") %}<option>{{ level }}</option>{% endfor %}</select>
+<label for="context_window">Context window, in tokens</label>
+<input id="context_window" name="context_window" inputmode="numeric" placeholder="for a self-hosted model">
+</fieldset>
+<p class="quiet">Files can be uploaded from the session's page once it's running.</p>
+<button type="submit">Start</button>
+<p class="error" role="alert" hidden></p>
+</form>
+{% endblock %}

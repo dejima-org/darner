@@ -19,5 +19,7 @@ public_origin = "https://darner.example.com"
 # they do. Once set, a request without it is refused.
 # user_header = "X-authentik-username"
 
-# Largest output zip passed through to a browser.
+# Largest output zip passed through to a browser, and largest file a browser may
+# upload into a session.
 # max_download = 104857600
+# max_upload = 52428800

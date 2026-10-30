@@ -82,3 +82,28 @@ async def test_the_browser_check_catches_a_frontend_that_doesn_t_escape(aiohttp_
     assert result["bold_test_line"] > 0 or result["images"] > 0
     # The CSP is the second layer: the injected script and image are blocked, and say so.
     assert result["violations"] and result["dialogs"] == []
+
+
+async def test_the_actions_work_under_the_csp(aiohttp_server):
+    api = FakeApi()
+    api.events["dn-ccccc"] = []
+    api.server = await aiohttp_server(api.app())
+    port = _free_port()
+    origin = f"http://127.0.0.1:{port}"
+    config = {"api_url": str(api.server.make_url("/")), "api_token": TOKEN, "public_origin": origin}
+    server = TestServer(make_app(config), host="127.0.0.1", port=port)
+    await server.start_server()
+    try:
+        script = Path(__file__).parent / "browser" / "actions.mjs"
+        proc = await asyncio.create_subprocess_exec("node", str(script), origin, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        out, err = await proc.communicate()
+        assert proc.returncode == 0, err.decode()
+        result = json.loads(out)
+    finally:
+        await server.close()
+    posted = [(path, body) for method, path, body in api.calls if method == "POST"]
+    assert ("/v1/tasks/dn-aaaaa/message", {"text": "use postgres", "requester": "web"}) in posted
+    [task] = [body for path, body in posted if path == "/v1/tasks"]
+    assert task["task"] == "add this recipe" and task["blurbs"] == ["mealie"] and task["grants"]["domains"] == ["allrecipes.example.org"]
+    assert result["landed"] == f"{origin}/sessions/dn-ccccc"
+    assert result["violations"] == [] and result["errors"] == []

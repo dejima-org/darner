@@ -38,7 +38,7 @@ HERE = Path(__file__).parent
 API_TIMEOUT = 120
 DOWNLOAD_READ_TIMEOUT = 60
 
-DEFAULTS = {"listen": "127.0.0.1:8081", "user_header": None, "max_download": 100 * 1024 * 1024}
+DEFAULTS = {"listen": "127.0.0.1:8081", "user_header": None, "max_download": 100 * 1024 * 1024, "max_upload": 50 * 1024 * 1024}
 REQUIRED = ("api_url", "api_token", "public_origin")
 # The custom header every state-changing request carries. A cross-site page
 # can't send it without a CORS preflight, which this never answers.
@@ -313,6 +313,151 @@ async def run_selftest(request: web.Request) -> web.Response:
     return web.json_response({"location": f"/sessions/{result['id']}"})
 
 
+async def _body(request: web.Request) -> dict:
+    try:
+        body = await request.json()
+    except ValueError:
+        raise web.HTTPBadRequest(text="The request must be JSON.")
+    if not isinstance(body, dict):
+        raise web.HTTPBadRequest(text="The request must be a JSON object.")
+    return body
+
+
+async def _act(request: web.Request, method: str, path: str, location: str | None = None, **kwargs) -> web.Response:
+    """An action on the API, answered as JSON the page's script reads: where to go next, or what went wrong."""
+    try:
+        result = await api(request, method, path, **kwargs)
+    except ApiError as e:
+        return web.json_response({"error": str(e)}, status=e.status if e.status < 500 else 502)
+    return web.json_response({"location": location, "result": result})
+
+
+async def send_message(request: web.Request) -> web.Response:
+    """Type a message into the session, which also answers a help request it's waiting on."""
+    task_id = request.match_info["id"]
+    text = (await _body(request)).get("text")
+    if not isinstance(text, str) or not text.strip():
+        return web.json_response({"error": "Write a message first."}, status=400)
+    return await _act(request, "POST", f"/v1/tasks/{task_id}/message", json={"text": text, "requester": _user(request)})
+
+
+async def stop_session(request: web.Request) -> web.Response:
+    task_id = request.match_info["id"]
+    return await _act(request, "POST", f"/v1/tasks/{task_id}/stop", json={"requester": _user(request)})
+
+
+async def decide_domains(request: web.Request) -> web.Response:
+    task_id, number, verb = request.match_info["id"], request.match_info["n"], request.match_info["verb"]
+    return await _act(request, "POST", f"/v1/tasks/{task_id}/domains/{number}/{verb}", json={"requester": _user(request)})
+
+
+async def clear_session(request: web.Request) -> web.Response:
+    """Acknowledge an ended session's remaining events, so the API deletes it."""
+    task_id = request.match_info["id"]
+    try:
+        await api(request, "GET", f"/v1/tasks/{task_id}")
+        return web.json_response({"error": f"{task_id} is still running. Stop it first."}, status=409)
+    except ApiError as e:
+        if e.status != 404:
+            return web.json_response({"error": str(e)}, status=e.status if e.status < 500 else 502)
+    try:
+        for event in await api(request, "GET", "/v1/events"):
+            if event["id"] == task_id:
+                await api(request, "POST", f"/v1/events/{event['seq']}/ack")
+    except ApiError as e:
+        return web.json_response({"error": str(e)}, status=e.status if e.status < 500 else 502)
+    return web.json_response({"location": "/"})
+
+
+class _TooLarge(Exception):
+    pass
+
+
+async def upload_file(request: web.Request) -> web.Response:
+    """Stream a file into the session's ~/shared/uploads, capped at max_upload."""
+    config = request.app[CONFIG]
+    task_id, name = request.match_info["id"], request.query.get("name", "")
+    if not name or len(name) > 255:
+        return web.json_response({"error": "The file needs a name of up to 255 characters."}, status=400)
+    limit = config["max_upload"]
+    if request.content_length is not None and request.content_length > limit:
+        return web.json_response({"error": f"That file is over this darner-web's max_upload of {limit} bytes."}, status=413)
+
+    async def body():
+        sent = 0
+        async for chunk in request.content.iter_chunked(64 * 1024):
+            sent += len(chunk)
+            if sent > limit:
+                raise _TooLarge()
+            yield chunk
+
+    url = f"{config['api_url'].rstrip('/')}/v1/tasks/{task_id}/files"
+    try:
+        async with request.app[API].post(
+            url, params={"name": name, "requester": _user(request)}, data=body(),
+            headers={"Authorization": f"Bearer {config['api_token']}", "Content-Type": "application/octet-stream"},
+            timeout=aiohttp.ClientTimeout(total=None, sock_connect=10, sock_read=DOWNLOAD_READ_TIMEOUT),
+        ) as resp:
+            data = await resp.json(content_type=None)
+            if resp.status >= 400:
+                error = data.get("error") if isinstance(data, dict) else None
+                return web.json_response({"error": error or f"darner-api answered {resp.status}"}, status=min(resp.status, 502))
+    except _TooLarge:
+        return web.json_response({"error": f"That file is over this darner-web's max_upload of {limit} bytes."}, status=413)
+    except aiohttp.ClientError as e:
+        if isinstance(e.__cause__, _TooLarge) or isinstance(e.__context__, _TooLarge):
+            return web.json_response({"error": f"That file is over this darner-web's max_upload of {limit} bytes."}, status=413)
+        return web.json_response({"error": f"couldn't reach darner-api: {type(e).__name__}"}, status=502)
+    return web.json_response({"location": None, "result": data})
+
+
+def _words(value: object) -> list[str]:
+    """A list from a form field, as chat keywords take them: separated by commas or spaces."""
+    if isinstance(value, list):
+        return [v for v in value if isinstance(v, str) and v]
+    if not isinstance(value, str):
+        return []
+    return [v for v in value.replace(",", " ").split() if v]
+
+
+async def new_task_page(request: web.Request) -> web.Response:
+    catalog = await api(request, "GET", "/v1/catalog")
+    blurbs = await api(request, "GET", "/v1/blurbs")
+    configs = await api(request, "GET", "/v1/configs")
+    # A fresh source per page, so sending the form twice finds the task the first send started.
+    return page(request, "new.html", catalog=catalog, blurbs=blurbs, configs=configs, ref=secrets.token_hex(16))
+
+
+async def start_task(request: web.Request) -> web.Response:
+    body = await _body(request)
+    task, ref = body.get("task"), body.get("ref")
+    if not isinstance(task, str) or not task.strip():
+        return web.json_response({"error": "Say what the task is."}, status=400)
+    if not isinstance(ref, str) or not 16 <= len(ref) <= 64 or not ref.isalnum():
+        return web.json_response({"error": "Reload the page and try again."}, status=400)
+    request_body = {
+        "task": task,
+        "context": body.get("context") if isinstance(body.get("context"), str) else "",
+        "blurbs": _words(body.get("blurbs")),
+        "configs": _words(body.get("configs")),
+        "grants": {
+            "domains": _words(body.get("domains")),
+            "internal": _words(body.get("internal")),
+            "dependencies": _words(body.get("dependencies")),
+        },
+        "requester": _user(request),
+        "source": {"kind": "web", "ref": ref},
+    }
+    for key in ("harness", "backend", "model", "effort", "context_window"):
+        if isinstance(body.get(key), str) and body[key].strip():
+            request_body[key] = body[key].strip()
+    try:
+        result = await api(request, "POST", "/v1/tasks", json=request_body)
+    except ApiError as e:
+        return web.json_response({"error": str(e)}, status=e.status if e.status < 500 else 502)
+    return web.json_response({"location": f"/sessions/{result['id']}"})
+
+
 @web.middleware
 async def api_errors(request: web.Request, handler):
     try:
@@ -361,6 +506,13 @@ def make_app(config: dict) -> web.Application:
     app.router.add_get("/configs/{name}", config_page)
     app.router.add_get("/selftest", selftest_page)
     app.router.add_post("/selftest", run_selftest)
+    app.router.add_get("/new", new_task_page)
+    app.router.add_post("/tasks", start_task)
+    app.router.add_post(f"/sessions/{TASK_ID}/message", send_message)
+    app.router.add_post(f"/sessions/{TASK_ID}/stop", stop_session)
+    app.router.add_post(f"/sessions/{TASK_ID}/clear", clear_session)
+    app.router.add_post(f"/sessions/{TASK_ID}/files", upload_file)
+    app.router.add_post(f"/sessions/{TASK_ID}/domains/{{n:\\d{{1,9}}}}/{{verb:allow|deny}}", decide_domains)
     app.router.add_static("/static", HERE / "static")
     return app
 
