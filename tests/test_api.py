@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from darner.api import STORE, make_app, poll_once
+from darner.api import STATUS_CACHE, STORE, make_app, poll_once
 from darner.archive import MANIFEST_SLACK
 from darner.store import Store
 from tests.test_launch import FAKE_TMUX
@@ -17,6 +17,8 @@ from tests.test_launch import FAKE_TMUX
 STUB = """import json, os, sys
 command = sys.argv[1:]
 if command == ["status"]:
+    if os.environ.get("STUB_STATUS_COUNT"):
+        open(os.environ["STUB_STATUS_COUNT"], "a").write("status\\n")
     sys.stdout.write(open(os.environ["STUB_STATUS"]).read())
 elif command[:1] == ["help"]:
     sys.stdout.buffer.write(os.environ.get("STUB_HELP", "").encode())
@@ -731,6 +733,7 @@ async def test_session_waiting_on_domains(requested, tmp_path, monkeypatch):
     path = tmp_path / "status.json"
     path.write_text(json.dumps([{"id": task_id, "state": "running", "domain_request": 3}]))
     monkeypatch.setenv("STUB_STATUS", str(path))
+    app[STATUS_CACHE].clear()  # the poll's status would otherwise be reused
     [session] = await (await client.get("/v1/tasks", headers=AUTH)).json()
     assert session["waiting"]["answer"] is None
     assert [d["domain"] for d in session["waiting"]["domains"]["domains"]] == ["pypi.org", "mirror.internal.example", "api.example.net"]
@@ -1208,14 +1211,14 @@ async def test_every_action_is_audited_without_its_content(started, monkeypatch,
     app, client, task_id, status, _ = started
     caplog.set_level(logging.INFO, logger="darner.audit")
     status(ready=False)
-    body = {"text": "the password is hunter2", "requester": "@alice:example.org\nforged line"}
+    body = {"text": "the password is hunter2", "requester": "@alice:example.org"}
     assert (await client.post(f"/v1/tasks/{task_id}/message", json=body, headers=AUTH)).status == 204
     resp = await client.post(f"/v1/tasks/{task_id}/files?name=notes.txt&requester=%40alice%3Aexample.org", data=b"secret", headers=AUTH)
     assert resp.status == 200
     assert (await client.post(f"/v1/tasks/{task_id}/stop", json=STOP_BODY, headers=AUTH)).status == 204
     lines = [r.getMessage() for r in caplog.records if r.name == "darner.audit"]
     assert lines == [
-        f"message {task_id} by '@alice:example.org\\nforged line' via maubot length=23",
+        f"message {task_id} by '@alice:example.org' via maubot length=23",
         f"upload {task_id} by '@alice:example.org' via maubot name='notes.txt' size=6",
         f"stop {task_id} by '@alice:example.org' via maubot",
     ]
@@ -1296,3 +1299,122 @@ async def test_an_internal_domain_request_is_marked_denied_when_internal_grants_
     assert [(d["domain"], d["denied"]) for d in event["data"]["domains"]] == [("recipes.example.com", True), ("pypi.org", False)]
     await client.post(f"/v1/tasks/{task_id}/domains/1/allow", json={"requester": "@a:example.org"}, headers=AUTH)
     assert fetches(tmp_path)[-1][3]["domains"] == ["pypi.org"]
+
+
+@pytest.mark.parametrize("requester", ["@alice:example.org\nforged line", "@room\u202e", "a\u2028b", "a\u2029b", "x" * 256, "  ", 7])
+async def test_a_requester_that_isn_t_a_plain_label_is_refused(started, requester):
+    app, client, task_id, *_ = started
+    body = {"text": "hi", "requester": requester}
+    resp = await client.post(f"/v1/tasks/{task_id}/message", json=body, headers=AUTH)
+    assert resp.status == 400 and "requester must be" in (await resp.json())["error"]
+    resp = await client.post("/v1/tasks", json=request(requester=requester, source={"kind": "matrix", "ref": "$r"}), headers=AUTH)
+    assert resp.status == 400
+
+
+async def test_a_task_s_events_so_far_are_read_without_acknowledging_them(started, config):
+    app, client, task_id, status, output = started
+    status(state="running")
+    output(zip_bytes([("RESULT.md", "partial")]))
+    await poll_once(app)
+    first = await (await client.get(f"/v1/tasks/{task_id}/events", headers=AUTH)).json()
+    assert [e["type"] for e in first] == ["output"] and first[0]["id"] == task_id
+    assert [e["seq"] for e in await events(client)] == [first[0]["seq"]]
+    await client.post(f"/v1/events/{first[0]['seq']}/ack", headers=AUTH)
+    assert [e["type"] for e in await (await client.get(f"/v1/tasks/{task_id}/events", headers=AUTH)).json()] == ["output"]
+    config["tokens"]["other"] = "0ther-0123456789abcdef0123456789abcdef"
+    other = {"Authorization": "Bearer 0ther-0123456789abcdef0123456789abcdef"}
+    assert (await client.get(f"/v1/tasks/{task_id}/events", headers=other)).status == 404
+
+
+async def test_session_listings_share_a_recent_launcher_status(started, tmp_path, monkeypatch):
+    import asyncio
+
+    app, client, task_id, status, _ = started
+    status(ready=False)
+    count = tmp_path / "status-count"
+    monkeypatch.setenv("STUB_STATUS_COUNT", str(count))
+    await asyncio.gather(*(client.get("/v1/tasks", headers=AUTH) for _ in range(3)))
+    assert (await client.get(f"/v1/tasks/{task_id}", headers=AUTH)).status == 200
+    assert count.read_text().count("status") == 1
+    await poll_once(app)
+    assert count.read_text().count("status") == 2
+
+
+async def test_an_outage_costs_one_status_attempt_at_a_time(started, monkeypatch):
+    import asyncio
+
+    import darner.api
+    from darner.api import STATUS_MAX_AGE, launcher_status
+
+    app, *_ = started
+    app[STATUS_CACHE].clear()
+    attempts = []
+
+    async def hanging(config, command, stdin=None):
+        attempts.append(command)
+        await asyncio.sleep(0.2)
+        raise RuntimeError("timed out")
+
+    monkeypatch.setattr(darner.api, "run_remote", hanging)
+    results = await asyncio.gather(*(launcher_status(app, STATUS_MAX_AGE) for _ in range(5)), return_exceptions=True)
+    assert len(attempts) == 1 and all(isinstance(r, RuntimeError) for r in results)
+    # A listing in the failure's window gets it again without another attempt.
+    with pytest.raises(RuntimeError):
+        await launcher_status(app, STATUS_MAX_AGE)
+    assert len(attempts) == 1
+    # The poller doesn't take a cached failure: it asks again, and a listing
+    # arriving meanwhile shares its attempt rather than queueing behind it.
+    poller = asyncio.ensure_future(launcher_status(app, 0))
+    await asyncio.sleep(0.05)
+    app[STATUS_CACHE].pop("at")
+    listing = asyncio.ensure_future(launcher_status(app, STATUS_MAX_AGE))
+    await asyncio.gather(poller, listing, return_exceptions=True)
+    assert len(attempts) == 2
+
+
+async def test_a_listing_that_goes_away_doesn_t_cancel_the_shared_status(started, monkeypatch):
+    import asyncio
+
+    import darner.api
+    from darner.api import STATUS_MAX_AGE, launcher_status
+
+    app, *_ = started
+    app[STATUS_CACHE].clear()
+
+    async def slow(config, command, stdin=None):
+        await asyncio.sleep(0.2)
+        return 0, "[]", ""
+
+    monkeypatch.setattr(darner.api, "run_remote", slow)
+    first = asyncio.ensure_future(launcher_status(app, STATUS_MAX_AGE))
+    second = asyncio.ensure_future(launcher_status(app, STATUS_MAX_AGE))
+    await asyncio.sleep(0.05)
+    first.cancel()
+    assert await second == (0, "[]", "")
+
+
+async def test_a_cancelled_status_call_doesn_t_stick(started, monkeypatch):
+    import asyncio
+
+    import darner.api
+    from darner.api import STATUS_MAX_AGE, launcher_status
+
+    app, *_ = started
+    app[STATUS_CACHE].clear()
+
+    async def slow(config, command, stdin=None):
+        await asyncio.sleep(10)
+
+    monkeypatch.setattr(darner.api, "run_remote", slow)
+    waiter = asyncio.ensure_future(launcher_status(app, STATUS_MAX_AGE))
+    await asyncio.sleep(0.05)
+    app[STATUS_CACHE]["inflight"].cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await waiter
+
+    async def working(config, command, stdin=None):
+        return 0, "[]", ""
+
+    monkeypatch.setattr(darner.api, "run_remote", working)
+    assert await launcher_status(app, 0) == (0, "[]", "")
+    assert await launcher_status(app, STATUS_MAX_AGE) == (0, "[]", "")

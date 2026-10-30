@@ -567,14 +567,15 @@ Grants use `dejima --domains FILE` and `--dependencies FILE`, and output collect
 }
 ```
 
-It returns `201 {"id", "target"}`. A repeat of the same `source` returns the existing task with `200`, unless its launch failed, in which case it is retried. Errors are `{"error": "..."}`.
+It returns `201 {"id", "target"}`. A repeat of the same `source` returns the existing task with `200` while it's kept. A failed launch is deleted, so repeating it retries. Errors are `{"error": "..."}`.
 
-Every `poll_interval` seconds the API asks the dejima host for the status of launched tasks, collects output that is ready, and records events. A client sees only the events of tasks it created:
+Every `poll_interval` seconds the API asks the dejima host for the status of launched tasks, collects output that is ready, and records events. A client sees only the events of tasks it created. Every `requester` is a label for who acted, up to 255 characters with no control or invisible characters; the audit log records it with the frontend's token name. `GET /v1/tasks` reuses a launcher status up to 5 seconds old, so open frontends don't each reach the dejima host:
 
 | endpoint | |
 |---|---|
 | `GET /v1/events` | unacknowledged events, oldest first: `{seq, id, type, summary, size, answerable, target, source}`, `type` is `output`, `help`, `domains`, `waiting`, `expired` or `ended`; `data` holds a domain request, a waiting session's `quiet` seconds, or a stopped session's `age` |
 | `GET /v1/tasks/<id>/outputs/<seq>.zip` | an `output` event's archive (`size` 0 means it was rejected, and `summary` says why) |
+| `GET /v1/tasks/<id>/events` | a task's events so far, collected or not, in the same form, without acknowledging any; gone once the task is purged |
 | `POST /v1/events/<seq>/ack` | mark an event delivered |
 | `GET /v1/blurbs` | names of the available context blurbs |
 | `GET /v1/configs` | names of the available config sets |

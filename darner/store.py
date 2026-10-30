@@ -226,6 +226,10 @@ class Store:
                 return event.data
         return None
 
+    def task_events(self, client: str, task_id: str) -> list[Event]:
+        """A task's events so far, collected or not, oldest first."""
+        return self._events("t.client = ? AND e.task_id = ?", (client, task_id))
+
     def events(self, client: str) -> list[Event]:
         return self._events("t.client = ? AND e.acked = 0", (client,))
 
