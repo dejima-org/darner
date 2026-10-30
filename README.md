@@ -543,7 +543,7 @@ Grants use `dejima --domains FILE` and `--dependencies FILE`, and output collect
 | `remote_access_url` | dejima's web remote access `base_url`, to link each session from chat; unset means no links |
 | `session_wait` | with `remote_access_url`, seconds a launch waits for dejima to register the session (default 20) |
 | `[tokens]` | one bearer token per frontend, by name. Each must be at least 32 characters, differ from the others and from `examples/api.toml`'s placeholder, or the API won't start; `openssl rand -hex 32` makes one. A token can do everything its frontend can, so see [SECURITY.md](SECURITY.md) before adding one |
-| `[policy]` | `deny_domains` (a denied domain's parents are denied too), `max_domains`, which also caps the domains a session gains through requests |
+| `[policy]` | applied at launch and to every domain request; a misspelled key stops the API. `deny_domains`: refused, with their subdomains and parents. `allow_domains`: if set, only these and their subdomains. `max_domains`: also caps what a session gains through requests. `allow_internal` (default true): false refuses internal grants. `max_internal_domains`. `allow_dependency_kinds` (default `apt`, `cargo`, `npm`, `pip`): `tarball` is left out unless listed, since it has the dejima host fetch any URL on its own network |
 | `[limits]` | `max_bytes`, `max_files`: should match the launcher's `--max-output` |
 
 ### API endpoints

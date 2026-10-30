@@ -31,6 +31,13 @@ maubot = "replace-with-a-long-random-token"
 [policy]
 deny_domains = []
 max_domains = 20
+# Only these domains and their subdomains, if set: deny by default, like dejima.
+# allow_domains = ["example.org"]
+# Internal grants reach your network past dejima's private-address block.
+# allow_internal = true
+# max_internal_domains = 5
+# tarball: has the dejima host fetch any URL on its own network, so it's left out.
+# allow_dependency_kinds = ["apt", "cargo", "npm", "pip"]
 
 # Should match the launcher's --max-output; a smaller value rejects output the launcher collected.
 [limits]

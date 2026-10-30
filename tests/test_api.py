@@ -1248,3 +1248,51 @@ async def test_domain_decisions_are_audited(requested, caplog):
     lines = [r.getMessage() for r in caplog.records if r.name == "darner.audit"]
     assert lines[0] == f"allow {task_id} by '@alice:example.org' via maubot request=3 granted=['pypi.org'] failed=[]"
     assert lines[1].startswith(f"deny {task_id} by '@bob:example.org' via maubot request=3 domains=[")
+
+
+@pytest.mark.parametrize("policy, grants, message", [
+    ({"allow_internal": False}, {"domains": [], "internal": ["recipes.example.com"]}, "domain not permitted: recipes.example.com (internal)"),
+    ({"max_internal_domains": 1}, {"internal": ["a.example.com", "b.example.com"]}, "at most 1 internal domains"),
+    ({"allow_domains": ["example.org"]}, {"domains": ["pypi.org"]}, "domain not permitted: pypi.org"),
+    ({}, {"dependencies": ["tarball:tool@" + "0" * 64 + ":https://example.org/t.tgz"]}, "dependency kind not permitted: tarball"),
+    ({"allow_dependency_kinds": ["apt"]}, {"dependencies": ["pip:pytest"]}, "dependency kind not permitted: pip"),
+])
+async def test_policy_covers_internal_grants_dependencies_and_an_allowlist(aiohttp_client, config, policy, grants, message):
+    config["policy"] = policy
+    client = await aiohttp_client(make_app(config, poll=False))
+    resp = await client.post("/v1/tasks", json=request(grants={"domains": [], "dependencies": [], **grants}), headers=AUTH)
+    assert resp.status == 403 and message in (await resp.json())["error"]
+
+
+async def test_an_allowlist_and_listed_dependency_kinds_permit(aiohttp_client, config):
+    config["policy"] = {"allow_domains": ["example.org"], "allow_dependency_kinds": ["pip", "tarball"]}
+    client = await aiohttp_client(make_app(config, poll=False))
+    grants = {"domains": ["docs.example.org"], "dependencies": ["tarball:tool@" + "0" * 64 + ":https://example.org/t.tgz"]}
+    assert (await client.post("/v1/tasks", json=request(grants=grants), headers=AUTH)).status == 201
+
+
+@pytest.mark.parametrize("policy, message", [
+    ({"deny_domain": ["x"]}, "unknown policy setting 'deny_domain'"),
+    ({"allow_internal": "no"}, "allow_internal has the wrong type"),
+    ({"allow_dependency_kinds": ["brew"]}, "unknown dependency kinds"),
+])
+def test_a_policy_that_wouldn_t_work_stops_the_api(config, policy, message):
+    config["policy"] = policy
+    with pytest.raises(ValueError, match=message):
+        make_app(config, poll=False)
+
+
+async def test_an_internal_domain_request_is_marked_denied_when_internal_grants_are_off(started, config, tmp_path, monkeypatch):
+    app, client, task_id, *_ = started
+    config["policy"] = {"allow_internal": False}
+    path = tmp_path / "status.json"
+    path.write_text(json.dumps([{"id": task_id, "state": "running", "ready": False, "domains": True}]))
+    monkeypatch.setenv("STUB_STATUS", str(path))
+    monkeypatch.setenv("STUB_DOMAINS", json.dumps({"request": 1, "domains": [
+        {"domain": "recipes.example.com", "internal": True}, {"domain": "pypi.org", "internal": False},
+    ]}))
+    await poll_once(app)
+    [event] = [e for e in await events(client) if e["type"] == "domains"]
+    assert [(d["domain"], d["denied"]) for d in event["data"]["domains"]] == [("recipes.example.com", True), ("pypi.org", False)]
+    await client.post(f"/v1/tasks/{task_id}/domains/1/allow", json={"requester": "@a:example.org"}, headers=AUTH)
+    assert fetches(tmp_path)[-1][3]["domains"] == ["pypi.org"]
