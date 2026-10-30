@@ -26,6 +26,7 @@ import signal
 import stat
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -135,10 +136,13 @@ def launch(args: argparse.Namespace, data: object) -> dict:
     # only close its tmux window.
     dejima = shutil.which(args.dejima)
     if dejima is None:
-        raise RuntimeError(f"{args.dejima} not found on PATH ({os.environ.get('PATH', '')}); pass --dejima with its full path")
+        raise RuntimeError(f"{args.dejima} not found on PATH; pass --dejima with its full path")
     task_dir = args.tasks_dir / job.id
     args.tasks_dir.mkdir(parents=True, exist_ok=True)
-    task_dir.mkdir(mode=0o700)
+    try:
+        task_dir.mkdir(mode=0o700)
+    except FileExistsError:
+        raise RuntimeError(f"{job.id} is already in use")
     (task_dir / "domains").write_text("".join(f"{d}\n" for d in job.domains))
     (task_dir / "dependencies").write_text("".join(f"{d}\n" for d in job.dependencies))
     (task_dir / "argv.json").write_text(json.dumps(dejima_argv(args, job, task_dir, dejima)))
@@ -505,7 +509,7 @@ def status(args: argparse.Namespace) -> list[dict]:
             # Held files a session never took, if its launcher was killed before removing them.
             shutil.rmtree(task_dir / "files", ignore_errors=True)
         signals, error = _signals(args, task_dir)
-        quiet, screen = _screen(args, task_dir) if state == "running" else (None, "")
+        quiet, screen = _screen(args, task_dir) if state != "exited" else (None, "")
         tasks.append({
             "id": task_dir.name,
             "state": state,
@@ -656,7 +660,10 @@ def _paste(args: argparse.Namespace, task_dir: Path, task_id: str, message: str)
         # would submit, so the answer is one line.
         message = " ".join(message.split())
         keys = " " + message
-        steps = [([args.tmux, "send-keys", "-l", "-t", target, keys[i:i + 1024]], None) for i in range(0, len(keys), 1024)]
+        # -- so a chunk starting with "-" isn't read as an option.
+        steps = [
+            ([args.tmux, "send-keys", "-l", "-t", target, "--", keys[i:i + 1024]], None) for i in range(0, len(keys), 1024)
+        ]
     else:
         steps = [
             ([args.tmux, "load-buffer", "-b", buffer, "-"], message),
@@ -773,8 +780,10 @@ def _domains_lock(task_dir: Path):
 
 
 def _write_atomic(path: Path, text: str) -> None:
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(text)
+    # A temporary name of its own, since the poller and an API request can run status at once.
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
+    with os.fdopen(fd, "w") as f:
+        f.write(text)
     os.replace(tmp, path)
 
 
@@ -923,7 +932,8 @@ def upload(args: argparse.Namespace, task_id: str, stream) -> dict:
     task_dir = args.tasks_dir / task_id
     if _state(task_dir) != "running":
         raise RuntimeError(f"{task_id} is not running")
-    header = json.loads(stream.readline(4096))
+    # Room for a name and requester at their longest, every character escaped.
+    header = json.loads(stream.readline(16384))
     if not isinstance(header, dict) or not isinstance(header.get("name"), str) or not isinstance(header.get("requester"), str):
         raise ValueError("upload needs a header with name and requester")
     data = stream.read(args.max_upload + 1)
@@ -1034,7 +1044,8 @@ def stop(args: argparse.Namespace, task_id: str) -> None:
     the container gone, dejima exits as usual and cleans up after it.
     """
     task_dir = args.tasks_dir / task_id
-    if _state(task_dir) != "running":
+    # A session stuck starting, such as at one of dejima's prompts, can be stopped too.
+    if not task_dir.is_dir() or _state(task_dir) == "exited":
         raise RuntimeError(f"{task_id} is not running")
     containers = _session_containers(args, task_dir)
     if containers:
@@ -1120,7 +1131,11 @@ def main(argv: list[str] | None = None) -> int:
             answer(args, words[1], json.load(sys.stdin))
         else:
             print(json.dumps(launch(args, json.load(sys.stdin))))
-    except (JobError, json.JSONDecodeError, RuntimeError, OSError, ValueError) as e:
+    except OSError as e:
+        # The message is relayed to chat, so it names no host path.
+        print(f"darner-launch: {e.strerror or type(e).__name__}", file=sys.stderr)
+        return 1
+    except (JobError, json.JSONDecodeError, RuntimeError, ValueError) as e:
         print(f"darner-launch: {e}", file=sys.stderr)
         return 1
     return 0

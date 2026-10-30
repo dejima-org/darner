@@ -1403,3 +1403,10 @@ async def test_replies_mention_no_one(maubot_plugin, maubot_test_bot, api, sessi
     await send(maubot_test_bot, message(f"@dragonlet:example.org {command}", reply_to=None))
     replied = [m for m in sent(maubot_test_bot) if m.get("msgtype") in ("m.notice", "m.text")]
     assert replied and all(m["m.mentions"] == {} for m in replied)
+
+
+async def test_an_ended_notice_says_why_when_there_is_a_reason(maubot_plugin, maubot_test_bot, api):
+    api.add(1, type="ended", summary="its output couldn't be collected", data=None)
+    api.add(2, type="ended", summary="", data=None)
+    await maubot_plugin.poll_once()
+    assert replies(maubot_test_bot) == ["dn-7f3k2 ended: its output couldn't be collected.", "dn-7f3k2 ended."]
