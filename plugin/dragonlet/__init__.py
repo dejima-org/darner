@@ -41,7 +41,14 @@ STATUS = re.compile(rf"status(?:\s+({_ID}))?", re.IGNORECASE)
 TELL = re.compile(rf"tell(?:\s+({_ID}))?\s+(\S.*)", re.IGNORECASE | re.DOTALL)
 # A session command naming something shaped like a task id that isn't one, so
 # a mistyped or foreign id is refused rather than taken as a new task.
-NOT_AN_ID = re.compile(r"(?:stop|status|tell|upload)\s+([a-z0-9]{2}-[a-z0-9]{5})\b.*", re.IGNORECASE | re.DOTALL)
+# Only as the whole argument, so "stop re-using the old client" is still a task. After
+# tell, words follow anyway, so the word must have a digit, as most ids do.
+NOT_AN_ID = re.compile(
+    r"(?:stop|status|upload)\s+([a-z0-9]{2}-[a-z0-9]{5})|tell\s+([a-z0-9]{2}-(?=[a-z]*\d)[a-z0-9]{5})\s.*",
+    re.IGNORECASE | re.DOTALL,
+)
+# Delivery attempts before an event is given up on, acknowledged and logged.
+MAX_ATTEMPTS = 5
 UPLOAD = re.compile(rf"upload\s+({_ID})", re.IGNORECASE)
 DESCRIBE = re.compile(r"describe\s+(\S.*)", re.IGNORECASE | re.DOTALL)
 MAX_DESCRIBED = 10
@@ -107,6 +114,7 @@ class Config(BaseProxyConfig):
 class Dragonlet(Plugin):
     async def start(self) -> None:
         self.config.load_and_update()
+        self._attempts: dict[int, int] = {}
         self.sched.run_periodically(self.config["poll_interval"], self.poll_once)
 
     @classmethod
@@ -153,8 +161,12 @@ class Dragonlet(Plugin):
         # The note becomes the agent's instructions, so it must come from someone trusted to give them.
         if note.sender not in self.config["allowlist"]:
             raise NoteError(f"the note is from {note.sender}, who isn't allowed to start tasks")
+        # A note that replies to someone quotes them in its body, and they needn't be allowlisted.
+        note.content.trim_reply_fallback()
         edited = await self._latest_edit(note)
-        return note.content.body if edited is None else edited
+        if edited is None:
+            return note.content.body
+        return _without_quote(edited) if note.content.get_reply_to() else edited
 
     async def _latest_edit(self, note: Event) -> str | None:
         """The text of the note's latest edit by its author, if it has one.
@@ -235,8 +247,8 @@ class Dragonlet(Plugin):
         if mentioned and command.lower() == "help":
             await evt.reply(await self._usage(), extra_content=NO_MENTIONS)
             return
-        if mentioned and (wrong := NOT_AN_ID.fullmatch(command)) and not TASK_ID.fullmatch(wrong[1].lower()):
-            await evt.reply(f"{wrong[1]} isn't one of my task ids, which look like dn-xxxxx.", markdown=False, extra_content=NO_MENTIONS)
+        if mentioned and (wrong := NOT_AN_ID.fullmatch(command)) and not TASK_ID.fullmatch((word := wrong[1] or wrong[2]).lower()):
+            await evt.reply(f"{word} isn't one of my task ids, which look like dn-xxxxx.", markdown=False, extra_content=NO_MENTIONS)
             return
         if mentioned and (stop := STOP.fullmatch(command)):
             await self._respond(evt, self._stop(evt, stop[1] and stop[1].lower()))
@@ -522,10 +534,18 @@ class Dragonlet(Plugin):
         for e in events:
             try:
                 await self._deliver(e)
+            except Exception:
+                attempts = self._attempts[e["seq"]] = self._attempts.get(e["seq"], 0) + 1
+                if attempts < MAX_ATTEMPTS:
+                    self.log.warning("Couldn't deliver event %s", e["seq"], exc_info=True)
+                    continue
+                self.log.error("Giving up on event %s for %s after %d attempts", e["seq"], e.get("id"), attempts, exc_info=True)
+            self._attempts.pop(e["seq"], None)
+            try:
                 async with self._api("POST", f"/v1/events/{e['seq']}/ack", raise_for_status=True):
                     pass
             except Exception:
-                self.log.warning("Couldn't deliver event %s", e.get("seq"), exc_info=True)
+                self.log.warning("Couldn't acknowledge event %s", e["seq"], exc_info=True)
 
     async def _deliver(self, e: dict) -> None:
         room, ref = e["source"]["channel"], (e["source"]["ref"], e["id"])
@@ -635,6 +655,17 @@ def _waiting_on(session: dict) -> str:
 def _session_line(session: dict) -> str:
     where = session["link"] or session["target"]
     return f"{session['id']}: {_waiting_on(session)}, started {_age(session['started'])} ago by {session['requester']} ({where})"
+
+
+def _without_quote(text: str) -> str:
+    """A body without the quoted lines a client puts before a reply, when it does."""
+    lines = text.split("\n")
+    quoted = 0
+    while quoted < len(lines) and lines[quoted].startswith(">"):
+        quoted += 1
+    if quoted and quoted < len(lines) and not lines[quoted].strip():
+        return "\n".join(lines[quoted + 1:])
+    return text
 
 
 def _described_notice(sections: list[tuple[str, str, object]], missing: list[str]) -> TextMessageEventContent:
