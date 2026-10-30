@@ -1,0 +1,9 @@
+# What CI installs to run the tests. Regenerate test.txt with pip-tools after
+# changing this or pyproject.toml's test extra:
+#   pip-compile --generate-hashes --allow-unsafe -o requirements/test.txt requirements/test.in
+aiohttp>=3.9
+pytest
+pytest-aiohttp
+maubot
+# The build backend, for the editable install without fetching.
+setuptools>=77
