@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import sys
 import tempfile
 import time
@@ -44,6 +45,7 @@ DEFAULTS = {
     "waiting_after": 300,
     "waiting_screen": True,
     "max_session_age": 86400,
+    "output_retention": 604800,
     "policy": {},
     "limits": {},
 }
@@ -374,8 +376,34 @@ async def expire(app: web.Application, task: dict) -> None:
     store.add_event(task["id"], "expired", data={"age": int(age)})
 
 
+def end_task(app: web.Application, task_id: str) -> None:
+    """Delete everything about an ended task but the output its frontend hasn't collected."""
+    app[STORE].end(task_id)
+    kept = app[STORE].kept_outputs(task_id)
+    task_dir = Path(app[CONFIG]["results_dir"]) / task_id
+    for path in task_dir.glob("*.zip"):
+        if not path.stem.isdigit() or int(path.stem) not in kept:
+            path.unlink(missing_ok=True)
+
+
+def purge(app: web.Application) -> None:
+    """Delete ended tasks whose frontend has collected everything, or that waited past output_retention."""
+    store = app[STORE]
+    for task_id in store.purgeable(app[CONFIG]["output_retention"]):
+        store.delete(task_id)
+        shutil.rmtree(Path(app[CONFIG]["results_dir"]) / task_id, ignore_errors=True)
+
+
+async def forget(app: web.Application, task_id: str) -> None:
+    """Have the launcher delete an ended session's task directory."""
+    code, _, err = await run_remote(app[CONFIG], ["forget", task_id])
+    if code:
+        log.warning("forget %s failed: %s", task_id, err or f"exit {code}")
+
+
 async def poll_once(app: web.Application) -> None:
     config, store = app[CONFIG], app[STORE]
+    purge(app)
     ours = set(store.launched())
     if not ours:
         return
@@ -389,10 +417,12 @@ async def poll_once(app: web.Application) -> None:
     gone = ours - {task["id"] for task in listed}
     for task_id in sorted(gone):
         if config["max_session_age"] and time.time() - store.created(task_id) > config["max_session_age"]:
-            store.add_event(task_id, "ended")
-            store.mark(task_id, "ended")
+            end_task(app, task_id)
     for task in listed:
         if task["id"] not in ours:
+            # Left behind by a forget that failed, or by a task whose launch was never recorded.
+            if task["state"] == "exited" and not store.known(task["id"]):
+                await forget(app, task["id"])
             continue
         # Logged once per change: it's repeated every poll until fixed.
         if app[SHARE_ERRORS].get(task["id"]) != task.get("error"):
@@ -419,8 +449,8 @@ async def poll_once(app: web.Application) -> None:
         check_waiting(config, store, task)
         await expire(app, task)
         if task["state"] == "exited" and collected:
-            store.add_event(task["id"], "ended")
-            store.mark(task["id"], "ended")
+            end_task(app, task["id"])
+            await forget(app, task["id"])
 
 
 async def _poll_forever(app: web.Application) -> None:
@@ -482,7 +512,7 @@ async def create_task(request: web.Request) -> web.Response:
         result = await run_launcher(config, job)
         target = result["target"]
     except (RuntimeError, OSError, ValueError, KeyError, TypeError) as e:
-        store.mark(job["id"], "failed", error=str(e))
+        store.delete(job["id"])
         return web.json_response({"error": f"launch failed: {e}"}, status=502)
     store.mark(job["id"], "launched", target=target)
     run_id = result.get("run_id")
@@ -756,6 +786,7 @@ async def get_catalog(request: web.Request) -> web.Response:
 async def ack_event(request: web.Request) -> web.Response:
     if not request.app[STORE].ack(_client(request), int(request.match_info["seq"])):
         raise web.HTTPNotFound()
+    purge(request.app)
     return web.Response(status=204)
 
 

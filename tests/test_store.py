@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 Brad Anderson
+import time
+
 from darner.store import Store
 
 E1 = {"kind": "matrix", "ref": "$e1", "channel": "!room:example.org"}
@@ -23,12 +25,48 @@ def test_claim_is_idempotent_per_source(tmp_path):
     assert new
 
 
-def test_failed_task_is_claimed_again(tmp_path):
+def test_deleted_task_is_claimed_again(tmp_path):
     store = Store(str(tmp_path / "db"))
     claim(store, "dn-aaaaa")
-    store.mark("dn-aaaaa", "failed", error="boom")
+    store.delete("dn-aaaaa")
     task, new = claim(store, "dn-bbbbb")
     assert new and task.id == "dn-bbbbb"
+
+
+def test_interrupted_launches_are_deleted(tmp_path):
+    store = Store(str(tmp_path / "db"))
+    claim(store, "dn-aaaaa")
+    store.fail_pending()
+    assert not store.known("dn-aaaaa")
+
+
+def test_ending_keeps_only_uncollected_output(tmp_path):
+    store = Store(str(tmp_path / "db"))
+    claim(store, "dn-aaaaa")
+    store.mark("dn-aaaaa", "launched")
+    for kind in ("output", "output", "help", "waiting", "domains"):
+        store.add_event("dn-aaaaa", kind, "secret")
+    first = store.events("maubot")[0].seq
+    store.ack("maubot", first)
+    store.end("dn-aaaaa")
+    assert [(e.type, e.summary) for e in store.events("maubot")] == [("output", "secret"), ("ended", "")]
+    assert store.kept_outputs("dn-aaaaa") == {first + 1}
+    job, requester = store.db.execute("SELECT job_json, requester FROM tasks WHERE id = 'dn-aaaaa'").fetchone()
+    assert job == "{}" and requester == ""
+
+
+def test_purgeable_once_collected_or_past_retention(tmp_path):
+    store = Store(str(tmp_path / "db"))
+    claim(store, "dn-aaaaa")
+    store.add_event("dn-aaaaa", "output", "x")
+    store.end("dn-aaaaa")
+    assert store.purgeable(3600) == []
+    store.db.execute("UPDATE tasks SET ended = ?", (time.time() - 3601,))
+    assert store.purgeable(3600) == ["dn-aaaaa"]
+    store.db.execute("UPDATE tasks SET ended = ?", (time.time(),))
+    for event in store.events("maubot"):
+        store.ack("maubot", event.seq)
+    assert store.purgeable(3600) == ["dn-aaaaa"]
 
 
 def test_pending_task_is_not_relaunched(tmp_path):

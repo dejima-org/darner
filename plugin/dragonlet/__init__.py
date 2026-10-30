@@ -32,6 +32,8 @@ TASK_ID = re.compile(_ID)
 # Content keys on the bot's messages. TASK_TAG marks each message about a task, so a reply to any of them can name it.
 TAG = "io.branderson.dejima.darner"
 TASK_TAG, HELP_TAG, DOMAINS_TAG = f"{TAG}.task", f"{TAG}.help", f"{TAG}.domains"
+# Every message the bot sends mentions no one, whatever text it carries.
+NO_MENTIONS = {"m.mentions": {}}
 PILL = re.compile(r'<a\s[^>]*href="https://matrix\.to/#/([^"?]+)[^"]*"[^>]*>(.*?)</a>', re.IGNORECASE | re.DOTALL)
 STOP = re.compile(rf"stop(?:\s+({_ID}))?", re.IGNORECASE)
 STOP_HOW = "To stop a session, reply `stop` with a mention to one of my messages about it, or send `stop dn-xxxxx` with a mention."
@@ -231,10 +233,10 @@ class Dragonlet(Plugin):
         mentioned = self._mentioned(evt, names)
         command = strip_mention(content.body, names).strip()
         if mentioned and command.lower() == "help":
-            await evt.reply(await self._usage())
+            await evt.reply(await self._usage(), extra_content=NO_MENTIONS)
             return
         if mentioned and (wrong := NOT_AN_ID.fullmatch(command)) and not TASK_ID.fullmatch(wrong[1].lower()):
-            await evt.reply(f"{wrong[1]} isn't one of my task ids, which look like dn-xxxxx.", markdown=False)
+            await evt.reply(f"{wrong[1]} isn't one of my task ids, which look like dn-xxxxx.", markdown=False, extra_content=NO_MENTIONS)
             return
         if mentioned and (stop := STOP.fullmatch(command)):
             await self._respond(evt, self._stop(evt, stop[1] and stop[1].lower()))
@@ -275,7 +277,7 @@ class Dragonlet(Plugin):
         except Exception as e:
             self.log.warning("Couldn't fetch the replied-to event", exc_info=True)
             if mentioned:
-                await evt.reply(_failure(e), markdown=False)
+                await evt.reply(_failure(e), markdown=False, extra_content=NO_MENTIONS)
                 await evt.react("❌")
             return
         if task := self._help_task(replied):
@@ -285,7 +287,7 @@ class Dragonlet(Plugin):
             if command:
                 await self._respond(evt, self._tell(evt, task, command))
             else:
-                await evt.reply(f"Say what to tell {task} after the mention.", markdown=False)
+                await evt.reply(f"Say what to tell {task} after the mention.", markdown=False, extra_content=NO_MENTIONS)
         elif mentioned:
             await self._respond(evt, self._submit(evt, replied))
 
@@ -510,7 +512,7 @@ class Dragonlet(Plugin):
             self.log.warning("Request failed", exc_info=True)
             text, ok = _failure(e), False
         if text:
-            await evt.reply(text, markdown=False)
+            await evt.reply(text, markdown=False, extra_content=NO_MENTIONS)
         await evt.react("✅" if ok else "❌")
         await self.client.redact(evt.room_id, pending)
 
