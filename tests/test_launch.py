@@ -1339,15 +1339,88 @@ def test_result_pending_until_delivered(env, share):
     assert status(a)[0]["result_pending"] is False
 
 
-def test_forget_deletes_an_ended_task_and_refuses_a_running_one(env, share):
-    a, _ = share
+FAKE_DEJIMA_SHARE = """#!/bin/sh
+printf '%s\\n' "$*" >> "$FAKE_SHARE_LOG"
+[ -n "$FAKE_SHARE_REFUSE" ] && { echo "dejima-share: $FAKE_SHARE_REFUSE" >&2; exit 1; }
+rm -r "$4"
+"""
+
+
+@pytest.fixture
+def dejima_share(env, monkeypatch):
+    tool = env / "bin" / "dejima-share"
+    tool.parent.mkdir(exist_ok=True)
+    tool.write_text(FAKE_DEJIMA_SHARE)
+    tool.chmod(0o755)
+    monkeypatch.setenv("FAKE_SHARE_LOG", str(env / "share.log"))
+    return tool
+
+
+def share_calls(env):
+    log = env / "share.log"
+    return log.read_text().splitlines() if log.exists() else []
+
+
+def test_forget_prunes_the_share_then_deletes_the_task_and_refuses_a_running_one(env, share, dejima_share):
+    a, shared = share
     task_dir = env / "tasks" / "dn-abc23"
-    code, _, err = run(a, "forget", "dn-abc23")
-    assert code == 1 and "hasn't ended" in err and task_dir.is_dir()
+    code, _, err = run(a, "--dejima-share", str(dejima_share), "forget", "dn-abc23")
+    assert code == 1 and "hasn't ended" in err and task_dir.is_dir() and shared.is_dir()
     (task_dir / "exit").write_text("0\n")
-    assert run(a, "forget", "dn-abc23")[0] == 0
-    assert not task_dir.exists()
-    assert run(a, "forget", "dn-abc23")[0] == 0
+    code, _, err = run(a, "--dejima-share", str(dejima_share), "forget", "dn-abc23")
+    assert code == 0, err
+    assert share_calls(env) == [f"prune --isolated --yes {shared}"]
+    assert not task_dir.exists() and not shared.exists()
+    assert run(a, "--dejima-share", str(dejima_share), "forget", "dn-abc23")[0] == 0
+
+
+def test_a_share_dejima_refuses_is_kept_but_the_task_still_goes(env, share, dejima_share, monkeypatch):
+    a, shared = share
+    task_dir = env / "tasks" / "dn-abc23"
+    (task_dir / "exit").write_text("0\n")
+    monkeypatch.setenv("FAKE_SHARE_REFUSE", "a container still mounts it")
+    code, _, err = run(a, "--dejima-share", str(dejima_share), "forget", "dn-abc23")
+    assert code == 1 and "kept its ~/shared: dejima-share: a container still mounts it" in err
+    assert not task_dir.exists() and shared.is_dir()
+
+
+def test_a_missing_dejima_share_keeps_the_share_and_says_how_to_fix_it(env, share):
+    a, shared = share
+    (env / "tasks" / "dn-abc23" / "exit").write_text("0\n")
+    code, _, err = run(a, "--dejima-share", "no-such-dejima-share", "forget", "dn-abc23")
+    assert code == 1 and "pass --dejima-share with its full path" in err and shared.is_dir()
+
+
+def test_keep_records_keeps_the_share(env, dejima_share):
+    root = env / "share-root"
+    shared = root / "20261025-120000-AbC123"
+    shared.mkdir(parents=True)
+    a = args(env, "--share-root", str(root), "--keep-records")
+    launch(a, {"id": "dn-abc23", "prompt": "p"})
+    task_dir = env / "tasks" / "dn-abc23"
+    (task_dir / "shared-path").write_text(f"{shared}\n")
+    (task_dir / "exit").write_text("0\n")
+    assert run(a, "--dejima-share", str(dejima_share), "forget", "dn-abc23")[0] == 0
+    assert share_calls(env) == [] and shared.is_dir() and not task_dir.exists()
+
+
+@pytest.mark.parametrize("recorded", [None, "gone", "/etc"])
+def test_a_share_that_isn_t_there_or_isn_t_under_the_root_isn_t_pruned(env, share, dejima_share, recorded):
+    a, shared = share
+    task_dir = env / "tasks" / "dn-abc23"
+    (task_dir / "exit").write_text("0\n")
+    if recorded is None:
+        (task_dir / "shared-path").unlink()
+    elif recorded == "gone":
+        shared.rmdir()
+    else:
+        (task_dir / "shared-path").write_text(f"{recorded}\n")
+    code, _, err = run(a, "--dejima-share", str(dejima_share), "forget", "dn-abc23")
+    assert share_calls(env) == [] and not task_dir.exists()
+    if recorded == "/etc":
+        assert code == 1 and "is not under" in err
+    else:
+        assert code == 0, err
 
 
 def test_a_session_stuck_starting_reports_its_screen_and_can_be_stopped(env, share, docker):

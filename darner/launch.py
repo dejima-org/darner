@@ -97,6 +97,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--max-upload", default=50 * 1024 * 1024, type=int, help="largest file a requester can upload, in bytes")
     p.add_argument("--docker", default="docker")
     p.add_argument("--dejima-allow", default="dejima-allow")
+    p.add_argument("--dejima-share", default="dejima-share")
     p.add_argument("--stop-timeout", default=60, type=int, help="seconds to wait for a stopped session to exit")
     p.add_argument("--exec", dest="exec_dir", type=Path, help=argparse.SUPPRESS)
     p.add_argument("command", nargs="*", help=argparse.SUPPRESS)
@@ -310,8 +311,7 @@ def run_session(args: argparse.Namespace, task_dir: Path) -> int:
     os.replace(tmp, task_dir / "exit")
     # An isolated session keeps no records unless asked to, and the typing
     # log holds screens from it.
-    keep_records = "--" in dejima and "--keep-records" in dejima[: dejima.index("--")]
-    if not keep_records:
+    if not _keeps_records(dejima):
         (task_dir / "typing.log").unlink(missing_ok=True)
     if code:
         # The window closes when this process exits, taking the error with it.
@@ -323,8 +323,8 @@ def run_session(args: argparse.Namespace, task_dir: Path) -> int:
     return code
 
 
-def open_share(args: argparse.Namespace, task_dir: Path) -> int:
-    """Open a task's ~/shared, which must be a directory directly under the share root."""
+def _share_path(args: argparse.Namespace, task_dir: Path) -> tuple[str, str]:
+    """A task's ~/shared as the share root and a leaf directly under it, or ValueError."""
     raw = (task_dir / "shared-path").read_text()
     path = raw.removesuffix("\n")
     parent, leaf = os.path.split(path)
@@ -333,6 +333,16 @@ def open_share(args: argparse.Namespace, task_dir: Path) -> int:
     root = os.path.realpath(args.share_root)
     if os.path.realpath(parent) != root:
         raise ValueError(f"shared path {path!r} is not under {root}")
+    return root, leaf
+
+
+def _keeps_records(dejima: list[str]) -> bool:
+    return "--" in dejima and "--keep-records" in dejima[: dejima.index("--")]
+
+
+def open_share(args: argparse.Namespace, task_dir: Path) -> int:
+    """Open a task's ~/shared, which must be a directory directly under the share root."""
+    root, leaf = _share_path(args, task_dir)
     parent_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
     try:
         return os.open(leaf, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=parent_fd)
@@ -488,13 +498,56 @@ def _state(task_dir: Path) -> str:
 
 
 def forget(args: argparse.Namespace, task_id: str) -> None:
-    """Delete an ended session's task directory, which holds its prompt in argv.json."""
+    """Delete what's left of an ended session: its ~/shared, then its task directory.
+
+    The task directory holds its prompt in argv.json. The share goes first,
+    since its path is recorded in the task directory. If the share can't be
+    pruned, the task directory goes anyway and the error says so, leaving the
+    share for dejima-share prune by hand, as before this existed.
+    """
     task_dir = args.tasks_dir / task_id
     if not task_dir.is_dir():
         return
     if _state(task_dir) != "exited":
         raise RuntimeError(f"{task_id} hasn't ended")
+    problem = _prune_share(args, task_dir)
     shutil.rmtree(task_dir)
+    if problem:
+        raise RuntimeError(f"forgot {task_id}, but kept its ~/shared: {problem}")
+
+
+def _prune_share(args: argparse.Namespace, task_dir: Path) -> str | None:
+    """Have dejima remove an ended session's share. Why it couldn't, or None."""
+    try:
+        argv = json.loads((task_dir / "argv.json").read_text())
+    except (OSError, ValueError):
+        argv = []
+    if _keeps_records(argv):
+        return None
+    try:
+        root, leaf = _share_path(args, task_dir)
+    except FileNotFoundError:
+        return None  # the session never got as far as a share
+    except ValueError as e:
+        return str(e)
+    if not os.path.lexists(os.path.join(root, leaf)):
+        return None  # dejima removes an empty one itself
+    tool = shutil.which(args.dejima_share)
+    if tool is None:
+        return f"{args.dejima_share} not found on PATH; pass --dejima-share with its full path"
+    # dejima refuses anything that isn't a direct child of its isolated root, or
+    # a share still mounted or held by a launch, and --yes answers only its prompt
+    # about a share that still holds files.
+    try:
+        result = subprocess.run(
+            [tool, "prune", "--isolated", "--yes", os.path.join(root, leaf)],
+            stdin=subprocess.DEVNULL, capture_output=True, timeout=60,
+        )
+    except subprocess.TimeoutExpired:
+        return "dejima-share prune timed out"
+    if result.returncode:
+        return archive.clean_text(result.stderr, 500) or f"dejima-share prune exited {result.returncode}"
+    return None
 
 
 def status(args: argparse.Namespace) -> list[dict]:

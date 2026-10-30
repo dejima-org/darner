@@ -213,7 +213,7 @@ On the dejima host, as `DEJIMA_USER`, authorise the API's key to run the launche
 API_ADDR=192.0.2.10
 API_PUBKEY='ssh-ed25519 AAAA... darner-api'
 SHARE_DIR=$(dejima --print-config | sed -n 's/^core.share_dir=//p'); SHARE_DIR=${SHARE_DIR/#\~/$HOME}
-LAUNCHER_OPTIONS="--dejima $(command -v dejima) --dejima-allow $(command -v dejima-allow) --share-root $SHARE_DIR/isolated --harness claude-code --backend claude-code=anthropic"
+LAUNCHER_OPTIONS="--dejima $(command -v dejima) --dejima-allow $(command -v dejima-allow) --dejima-share $(command -v dejima-share) --share-root $SHARE_DIR/isolated --harness claude-code --backend claude-code=anthropic"
 
 install -d -m 700 ~/.ssh
 touch ~/.ssh/authorized_keys
@@ -490,7 +490,7 @@ The bot only treats a reply as an answer when the replied-to message is its own 
 
 The files are still agent-written: treat what is in the zip as untrusted.
 
-**Nothing about a session outlives it.** When a session ends, the API deletes everything it kept about it except output its frontend hasn't collected: the prompt and context, who asked, help requests, terminal screens and domain requests. The launcher deletes the session's task directory on the dejima host. Once the frontend acknowledges the output, the bot doing so as soon as it has posted it, the API deletes the rest, zips included. Output nobody collects is deleted after `output_retention`. Your frontend's own copy, such as the room's messages, is yours, and dejima keeps a session's `~/shared` on the dejima host if it isn't empty.
+**Nothing about a session outlives it.** When a session ends, the API deletes everything it kept about it except output its frontend hasn't collected: the prompt and context, who asked, help requests, terminal screens and domain requests. The launcher deletes the session's task directory on the dejima host. Once the frontend acknowledges the output, the bot doing so as soon as it has posted it, the API deletes the rest, zips included. Output nobody collects is deleted after `output_retention`. The launcher then has dejima remove the session's `~/shared` from the dejima host with `dejima-share prune --isolated --yes`, which dejima would otherwise keep if it isn't empty, unless `--keep-records` is set. If dejima refuses, the share is kept and the API logs why. Your frontend's own copy, such as the room's messages, is yours.
 
 ## Reference
 
@@ -518,6 +518,7 @@ The files are still agent-written: treat what is in the zip as untrusted.
 | `--max-upload BYTES` | 50 MiB | largest file a requester can upload into a session |
 | `--docker PATH` | `docker` | the docker CLI, used to find and stop a session's container |
 | `--dejima-allow PATH` | `dejima-allow` | dejima's `dejima-allow`, used to grant a session the domains it requested |
+| `--dejima-share PATH` | `dejima-share` | dejima's `dejima-share`, used to remove an ended session's `~/shared` once its output is collected |
 | `--stop-timeout SECONDS` | 60 | how long a stopped session may take to exit before dejima itself is ended |
 | `--help-interval SECONDS` | 300 | least time between a task's help requests, and between domain requests while one awaits a decision, so a session can't flood the room |
 
