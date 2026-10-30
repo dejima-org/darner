@@ -20,7 +20,7 @@ jobs:
     runs-on: dejima-confined
     name: confined (pytest)
     container:
-      image: node:20-bookworm
+      image: node:20-bookworm@sha256:8f693eaa7e0a8e71560c9a82b55fd54c2ae920a2ba5d2cde28bac7d1c01c9ba5  # by digest, as the Dockerfile's base
     steps:
       - name: Install Python
         run: |
@@ -44,7 +44,7 @@ jobs:
     runs-on: dejima-privileged
     name: privileged (API image)
     container:
-      image: node:20-bookworm
+      image: node:20-bookworm@sha256:8f693eaa7e0a8e71560c9a82b55fd54c2ae920a2ba5d2cde28bac7d1c01c9ba5  # by digest, as the Dockerfile's base
     env:
       DOCKER_CLI_VERSION: 27.5.1
       IMAGE: darner-api-ci-${{ github.run_id }}

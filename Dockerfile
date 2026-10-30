@@ -3,7 +3,9 @@
 #
 # The darner API. Config is mounted at /etc/darner and state, including
 # the ssh key and known_hosts, at /var/lib/darner; see examples/compose.yaml.
-FROM python:3.12-slim
+# By digest, so the base can't change unreviewed. To update it, take the new
+# digest from: docker buildx imagetools inspect python:3.12-slim
+FROM python:3.12-slim@sha256:aa943ce411423c7582288f18707ff66eddcbaeb510502d747a72aeb34f30d159
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends openssh-client \
