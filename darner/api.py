@@ -13,6 +13,7 @@ import shutil
 import sys
 import tempfile
 import time
+import unicodedata
 import tomllib
 from pathlib import Path
 
@@ -99,12 +100,39 @@ CONFIG = web.AppKey("config", dict)
 STORE = web.AppKey("store", Store)
 SHARE_ERRORS = web.AppKey("share_errors", dict)
 EXPIRE_FAILED = web.AppKey("expire_failed", set)
+STATUS_CACHE = web.AppKey("status_cache", dict)
+STATUS_LOCK = web.AppKey("status_lock", asyncio.Lock)
+# How old a launcher status a session listing may reuse, so tabs refreshing
+# don't each open an ssh connection to the dejima host.
+STATUS_MAX_AGE = 5
+
+
+async def launcher_status(app: web.Application, max_age: float) -> tuple[int, str, str]:
+    """The launcher's status, reused if it's younger than max_age. Callers share one request."""
+    async with app[STATUS_LOCK]:
+        cached = app[STATUS_CACHE]
+        if cached and time.monotonic() - cached["at"] < max_age:
+            return cached["result"]
+        result = await run_remote(app[CONFIG], ["status"])
+        if result[0] == 0:
+            cached.update(at=time.monotonic(), result=result)
+        return result
 
 
 class RequestError(Exception):
     def __init__(self, status: int, message: str):
         super().__init__(message)
         self.status = status
+
+
+def _requester(value: object) -> str:
+    """Who acted, as a frontend names them: a label, never trusted further, so only its shape is checked."""
+    if (
+        not isinstance(value, str) or not value.strip() or len(value) > 255
+        or any(unicodedata.category(c) in ("Cc", "Cf") for c in value)
+    ):
+        raise RequestError(400, "requester must be up to 255 characters, with no control or invisible characters")
+    return value
 
 
 def _text(body: dict, key: str, required: bool = True) -> str:
@@ -227,7 +255,7 @@ def build_job(config: dict, body: object) -> tuple[dict, dict, str]:
     if unknown:
         raise RequestError(400, f"unknown keys: {', '.join(sorted(unknown))}")
     source = _source(body)
-    requester = _text(body, "requester")
+    requester = _requester(body.get("requester"))
     grants = body.get("grants", {})
     if not isinstance(grants, dict) or set(grants) - {"domains", "internal", "dependencies"}:
         raise RequestError(400, "grants must be an object with domains, internal and dependencies")
@@ -458,7 +486,7 @@ async def poll_once(app: web.Application) -> None:
     ours = set(store.launched())
     if not ours:
         return
-    code, out, err = await run_remote(config, ["status"])
+    code, out, err = await launcher_status(app, 0)
     if code:
         log.warning("status failed: %s", err or f"exit {code}")
         return
@@ -601,7 +629,7 @@ async def create_selftest(request: web.Request) -> web.Response:
     try:
         if not isinstance(body, dict) or set(body) != {"source", "requester"}:
             raise RequestError(400, "body must have source and requester")
-        source, requester = _source(body), _text(body, "requester")
+        source, requester = _source(body), _requester(body.get("requester"))
     except RequestError as e:
         return web.json_response({"error": str(e)}, status=e.status)
     task_id = new_task_id()
@@ -619,20 +647,27 @@ async def create_selftest(request: web.Request) -> web.Response:
     return web.json_response({"id": task.id}, status=201)
 
 
+def _event_json(config: dict, e) -> dict:
+    return {
+        "seq": e.seq, "id": e.id, "type": e.type, "summary": e.summary, "size": e.size,
+        "answerable": e.answerable, "signalled": e.signalled, "data": e.data,
+        "target": e.target, "link": session_link(config, e.run_id),
+        "source": e.source,
+    }
+
+
 async def list_events(request: web.Request) -> web.Response:
     config = request.app[CONFIG]
-    events = request.app[STORE].events(_client(request))
-    return web.json_response(
-        [
-            {
-                "seq": e.seq, "id": e.id, "type": e.type, "summary": e.summary, "size": e.size,
-                "answerable": e.answerable, "signalled": e.signalled, "data": e.data,
-                "target": e.target, "link": session_link(config, e.run_id),
-                "source": e.source,
-            }
-            for e in events
-        ]
-    )
+    return web.json_response([_event_json(config, e) for e in request.app[STORE].events(_client(request))])
+
+
+async def task_events(request: web.Request) -> web.Response:
+    """A task's events so far, without acknowledging any. Gone with the task once it's purged."""
+    client, store = _client(request), request.app[STORE]
+    task_id = request.match_info["id"]
+    if store.task_status(client, task_id) is None:
+        raise web.HTTPNotFound()
+    return web.json_response([_event_json(request.app[CONFIG], e) for e in store.task_events(client, task_id)])
 
 
 async def get_output(request: web.Request) -> web.StreamResponse:
@@ -672,7 +707,7 @@ async def _type_into(request: web.Request, command: str) -> web.Response:
     if not isinstance(body, dict) or set(body) != {"text", "requester"}:
         return web.json_response({"error": "body must have text and requester"}, status=400)
     try:
-        text, requester = _text(body, "text"), _text(body, "requester")
+        text, requester = _text(body, "text"), _requester(body.get("requester"))
     except RequestError as e:
         return web.json_response({"error": str(e)}, status=e.status)
     payload = json.dumps({"text": text, "requester": requester}).encode()
@@ -700,7 +735,7 @@ async def _sessions(request: web.Request, task_id: str | None = None) -> list[di
     live = {}
     if tasks:
         try:
-            code, out, err = await run_remote(config, ["status"])
+            code, out, err = await launcher_status(request.app, STATUS_MAX_AGE)
             live = {t["id"]: t for t in json.loads(out)} if code == 0 else {}
         except (RuntimeError, ValueError):
             pass
@@ -745,9 +780,13 @@ async def upload_file(request: web.Request) -> web.Response:
         raise web.HTTPNotFound()
     if status != "launched":
         return web.json_response({"error": f"{task_id} is not running"}, status=409)
-    name, requester = request.query.get("name", ""), request.query.get("requester", "")
-    if not requester or len(name) > 255 or len(requester) > 255:
-        return web.json_response({"error": "name and requester are required"}, status=400)
+    name = request.query.get("name", "")
+    try:
+        requester = _requester(request.query.get("requester"))
+    except RequestError as e:
+        return web.json_response({"error": str(e)}, status=e.status)
+    if not name or len(name) > 255:
+        return web.json_response({"error": "name must be up to 255 characters"}, status=400)
     limit = config.get("max_upload", 50 * 1024 * 1024)
     data = bytearray()
     while chunk := await request.content.read(64 * 1024):
@@ -775,7 +814,7 @@ async def stop_task(request: web.Request) -> web.Response:
         return web.json_response({"error": f"{task_id} is not running"}, status=409)
     try:
         body = await request.json() if request.can_read_body else {}
-        requester = _text(body, "requester")
+        requester = _requester(body.get("requester"))
     except (ValueError, RequestError, AttributeError):
         return web.json_response({"error": "body must have requester"}, status=400)
     try:
@@ -800,7 +839,7 @@ async def decide_domains(request: web.Request) -> web.Response:
         raise web.HTTPNotFound()
     try:
         body = await request.json()
-        requester = _text(body, "requester")
+        requester = _requester(body.get("requester"))
     except (ValueError, RequestError, AttributeError):
         return web.json_response({"error": "body must have requester"}, status=400)
     payload = {"requester": requester}
@@ -902,6 +941,8 @@ def make_app(config: dict, poll: bool = True) -> web.Application:
     app[STORE].fail_pending()
     app[SHARE_ERRORS] = {}
     app[EXPIRE_FAILED] = set()
+    app[STATUS_CACHE] = {}
+    app[STATUS_LOCK] = asyncio.Lock()
     app.router.add_post("/v1/tasks", create_task)
     app.router.add_post("/v1/selftest", create_selftest)
     app.router.add_get("/v1/events", list_events)
@@ -918,6 +959,7 @@ def make_app(config: dict, poll: bool = True) -> web.Application:
     app.router.add_post(r"/v1/tasks/{id:dn-[a-z2-7]{5}}/files", upload_file)
     app.router.add_get("/v1/tasks", list_sessions)
     app.router.add_get(r"/v1/tasks/{id:dn-[a-z2-7]{5}}", get_session)
+    app.router.add_get(r"/v1/tasks/{id:dn-[a-z2-7]{5}}/events", task_events)
     app.router.add_post(r"/v1/tasks/{id:dn-[a-z2-7]{5}}/domains/{n:\d{1,9}}/{verb:allow|deny}", decide_domains)
     if poll:
         app.cleanup_ctx.append(poller)
