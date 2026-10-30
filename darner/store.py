@@ -125,6 +125,13 @@ class Store:
             self.db.execute("DELETE FROM events WHERE task_id = ?", (task_id,))
             self.db.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
 
+    def last_output_size(self, task_id: str) -> int | None:
+        """The size of the task's latest output's zip: 0 if it was rejected, None if it has none."""
+        row = self.db.execute(
+            "SELECT size FROM events WHERE task_id = ? AND type = 'output' ORDER BY seq DESC LIMIT 1", (task_id,)
+        ).fetchone()
+        return row[0] if row else None
+
     def kept_outputs(self, task_id: str) -> set[int]:
         rows = self.db.execute("SELECT seq FROM events WHERE task_id = ? AND type = 'output' AND acked = 0", (task_id,))
         return {r[0] for r in rows}

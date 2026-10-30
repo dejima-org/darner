@@ -496,9 +496,14 @@ def purge(app: web.Application) -> None:
         shutil.rmtree(Path(app[CONFIG]["results_dir"]) / task_id, ignore_errors=True)
 
 
-async def forget(app: web.Application, task_id: str) -> None:
-    """Have the launcher delete an ended session's task directory."""
-    code, _, err = await run_remote(app[CONFIG], ["forget", task_id])
+async def forget(app: web.Application, task_id: str, delivered: bool = False) -> None:
+    """Have the launcher delete an ended session's task directory.
+
+    With delivered, its ~/shared too, which the launcher does only if the
+    share still holds exactly what its last delivery carried. Only the API
+    knows the delivery's zip was kept, so only it can say delivered.
+    """
+    code, _, err = await run_remote(app[CONFIG], ["forget-delivered" if delivered else "forget", task_id])
     if code:
         log.warning("forget %s failed: %s", task_id, err or f"exit {code}")
 
@@ -551,8 +556,10 @@ async def poll_once(app: web.Application) -> None:
         check_waiting(config, store, task)
         await expire(app, task)
         if task["state"] == "exited" and collected:
+            # Delivered and kept: the session's latest output is a zip this API stored.
+            delivered = (store.last_output_size(task["id"]) or 0) > 0
             end_task(app, task["id"])
-            await forget(app, task["id"])
+            await forget(app, task["id"], delivered)
         elif task["state"] == "exited" and config["max_session_age"] and (
             time.time() - store.created(task["id"]) > config["max_session_age"]
         ):

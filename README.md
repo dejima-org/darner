@@ -490,7 +490,15 @@ The bot only treats a reply as an answer when the replied-to message is its own 
 
 The files are still agent-written: treat what is in the zip as untrusted.
 
-**Nothing about a session outlives it.** When a session ends, the API deletes everything it kept about it except output its frontend hasn't collected: the prompt and context, who asked, help requests, terminal screens and domain requests. The launcher deletes the session's task directory on the dejima host. Once the frontend acknowledges the output, the bot doing so as soon as it has posted it, the API deletes the rest, zips included. Output nobody collects is deleted after `output_retention`. The launcher then has dejima remove the session's `~/shared` from the dejima host with `dejima-share prune --isolated --yes`, which dejima would otherwise keep if it isn't empty, unless the launcher has `--keep-shared`. If dejima refuses, the share is kept and the API logs why. Your frontend's own copy, such as the room's messages, is yours.
+**Nothing about a session outlives it.** When a session ends, the API deletes everything it kept about it except output its frontend hasn't collected: the prompt and context, who asked, help requests, terminal screens and domain requests. The launcher deletes the session's task directory on the dejima host. Once the frontend acknowledges the output, the bot doing so as soon as it has posted it, the API deletes the rest, zips included. Output nobody collects is deleted after `output_retention`. Your frontend's own copy, such as the room's messages, is yours.
+
+The session's `~/shared` on the dejima host, which dejima keeps if it isn't empty, is pruned with `dejima-share prune --isolated --yes` when the session ends, but only once its output has been delivered whole. All of these must hold:
+
+- the API stored the zip from its latest output
+- that delivery left nothing out but `uploads/`
+- the share still holds exactly what the delivery carried
+
+Otherwise it's kept: a session that was stopped or ended without output, output that was rejected or couldn't be read, files changed after the delivery, or a delivery that left out symlinks or unreadable files. A kept share holds what darner couldn't deliver, so it's left on the dejima host for you to recover, or remove with `dejima-share prune --isolated`. The API's log says why each was kept. `--keep-shared` on the launcher keeps every share.
 
 ## Reference
 
@@ -518,8 +526,8 @@ The files are still agent-written: treat what is in the zip as untrusted.
 | `--max-upload BYTES` | 50 MiB | largest file a requester can upload into a session |
 | `--docker PATH` | `docker` | the docker CLI, used to find and stop a session's container |
 | `--dejima-allow PATH` | `dejima-allow` | dejima's `dejima-allow`, used to grant a session the domains it requested |
-| `--dejima-share PATH` | `dejima-share` | dejima's `dejima-share`, used to remove an ended session's `~/shared` once its output is collected |
-| `--keep-shared` | off | keep an ended session's `~/shared` on the dejima host rather than having dejima prune it; separate from `--keep-records`, which keeps dejima's records |
+| `--dejima-share PATH` | `dejima-share` | dejima's `dejima-share`, used to remove an ended session's `~/shared` once its output has been delivered whole; it needs a dejima with `prune --isolated [share]` and `--yes`, and without one, shares are kept |
+| `--keep-shared` | off | keep every ended session's `~/shared` on the dejima host, even once its output has been delivered; separate from `--keep-records`, which keeps dejima's records |
 | `--stop-timeout SECONDS` | 60 | how long a stopped session may take to exit before dejima itself is ended |
 | `--help-interval SECONDS` | 300 | least time between a task's help requests, and between domain requests while one awaits a decision, so a session can't flood the room |
 

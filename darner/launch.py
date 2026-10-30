@@ -498,27 +498,29 @@ def _state(task_dir: Path) -> str:
     return "starting"
 
 
-def forget(args: argparse.Namespace, task_id: str) -> None:
-    """Delete what's left of an ended session: its ~/shared, then its task directory.
+def forget(args: argparse.Namespace, task_id: str, delivered: bool = False) -> None:
+    """Delete what's left of an ended session: its task directory, and with delivered, its ~/shared.
 
-    The task directory holds its prompt in argv.json. The share goes first,
-    since its path is recorded in the task directory. If the share can't be
-    pruned, the task directory goes anyway and the error says so, leaving the
-    share for dejima-share prune by hand, as before this existed.
+    The task directory holds its prompt in argv.json. The share goes only when
+    the API says its output was delivered and kept (forget-delivered), and this
+    finds the share still holds exactly what that delivery carried. Otherwise
+    it's kept, as dejima keeps a non-empty share, for an operator to recover or
+    prune by hand. The share is checked first, since its path is recorded in
+    the task directory, which goes either way.
     """
     task_dir = args.tasks_dir / task_id
     if not task_dir.is_dir():
         return
     if _state(task_dir) != "exited":
         raise RuntimeError(f"{task_id} hasn't ended")
-    problem = _prune_share(args, task_dir)
+    problem = _prune_share(args, task_dir) if delivered else None
     shutil.rmtree(task_dir)
     if problem:
-        raise RuntimeError(f"forgot {task_id}, but kept its ~/shared: {problem}")
+        raise RuntimeError(f"forgot {task_id}, but kept its ~/shared for dejima-share prune --isolated by hand: {problem}")
 
 
 def _prune_share(args: argparse.Namespace, task_dir: Path) -> str | None:
-    """Have dejima remove an ended session's share. Why it couldn't, or None."""
+    """Have dejima remove an ended session's delivered share. Why it couldn't, or None."""
     if args.keep_shared:
         return None
     try:
@@ -527,23 +529,57 @@ def _prune_share(args: argparse.Namespace, task_dir: Path) -> str | None:
         return None  # the session never got as far as a share
     except ValueError as e:
         return str(e)
-    if not os.path.lexists(os.path.join(root, leaf)):
+    share = os.path.join(root, leaf)
+    if not os.path.lexists(share):
         return None  # dejima removes an empty one itself
+    if problem := _changed_since_delivery(args, task_dir):
+        return problem
     tool = shutil.which(args.dejima_share)
     if tool is None:
         return f"{args.dejima_share} not found on PATH; pass --dejima-share with its full path"
-    # dejima refuses anything that isn't a direct child of its isolated root, or
-    # a share still mounted or held by a launch, and --yes answers only its prompt
-    # about a share that still holds files.
     try:
+        # An older dejima-share's prune ignores the name and sweeps every ended
+        # share, so the named form is required, as is --yes.
+        usage = subprocess.run([tool, "--help"], stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=30)
+        if "prune --isolated [share]" not in usage.stdout or "--yes" not in usage.stdout:
+            return "this dejima-share can't prune one share by name; it needs a dejima release with `prune --isolated [share]` and `--yes`"
+        # dejima refuses anything that isn't a direct child of its isolated root,
+        # or a share still mounted or held by a launch.
         result = subprocess.run(
-            [tool, "prune", "--isolated", "--yes", os.path.join(root, leaf)],
-            stdin=subprocess.DEVNULL, capture_output=True, timeout=60,
+            [tool, "prune", "--isolated", "--yes", share], stdin=subprocess.DEVNULL, capture_output=True, timeout=60,
         )
     except subprocess.TimeoutExpired:
-        return "dejima-share prune timed out"
+        return "dejima-share timed out"
+    except OSError as e:
+        return f"couldn't run {args.dejima_share}: {e.strerror or type(e).__name__}"
     if result.returncode:
         return archive.clean_text(result.stderr, 500) or f"dejima-share prune exited {result.returncode}"
+    if os.path.lexists(share):
+        said = archive.clean_text(result.stdout + result.stderr, 500)
+        return "dejima-share exited 0 but the share is still there" + (f": {said}" if said else "")
+    return None
+
+
+def _changed_since_delivery(args: argparse.Namespace, task_dir: Path) -> str | None:
+    """Why the share no longer holds exactly what its last delivery carried, or None if it does."""
+    try:
+        delivery = json.loads((task_dir / "delivered-share").read_text())
+    except (OSError, ValueError):
+        return "no complete delivery of its output was recorded"
+    if delivery.get("skipped"):
+        return f"its delivery left out {len(delivery['skipped'])} entries, which are only in the share"
+    fd = open_share(args, task_dir)
+    signal.signal(signal.SIGALRM, _timeout)
+    signal.alarm(args.fetch_timeout)
+    try:
+        data, _ = archive.build(fd, archive.Limits(max_bytes=args.max_output))
+    except (archive.ArchiveError, _Timeout) as e:
+        return f"couldn't read it to compare with its delivery: {e or 'timed out'}"
+    finally:
+        signal.alarm(0)
+        os.close(fd)
+    if hashlib.sha256(data).hexdigest() != delivery.get("zip"):
+        return "it changed after its output was delivered"
     return None
 
 
@@ -598,10 +634,11 @@ def fetch(args: argparse.Namespace, task_id: str) -> int:
         signal.signal(signal.SIGALRM, _timeout)
         signal.alarm(args.fetch_timeout)
         try:
-            data, _ = archive.build(fd, archive.Limits(max_bytes=args.max_output))
+            data, manifest = archive.build(fd, archive.Limits(max_bytes=args.max_output))
         except (archive.ArchiveError, _Timeout) as e:
             # Retrying would fail the same way, so the output is consumed.
             _delivered(fd, task_dir, signal_id, result)
+            (task_dir / "delivered-share").unlink(missing_ok=True)
             reason = e if isinstance(e, archive.ArchiveError) else f"took longer than {args.fetch_timeout}s to read"
             print(f"darner-launch: {reason}", file=sys.stderr)
             return FETCH_REJECTED
@@ -610,6 +647,12 @@ def fetch(args: argparse.Namespace, task_id: str) -> int:
         sys.stdout.buffer.write(data)
         sys.stdout.buffer.flush()
         _delivered(fd, task_dir, signal_id, result)
+        # What this delivery carried, so the share is only ever pruned while it
+        # still holds exactly that: the zip is reproducible, sorted with fixed dates.
+        _write_atomic(task_dir / "delivered-share", json.dumps({
+            "zip": hashlib.sha256(data).hexdigest(),
+            "skipped": [path for path, _ in manifest.skipped if path != repr(archive.UPLOADS)],
+        }))
     finally:
         os.close(fd)
     return 0
@@ -1136,7 +1179,7 @@ def command(args: argparse.Namespace) -> list[str]:
     words = original.split() if original is not None else args.command
     if words in ([], ["status"], ["catalog"]) or (
         len(words) == 2
-        and words[0] in ("fetch", "help", "answer", "message", "upload", "stop", "domains", "forget")
+        and words[0] in ("fetch", "help", "answer", "message", "upload", "stop", "domains", "forget", "forget-delivered")
         and valid_task_id(words[1])
     ) or (
         len(words) == 3 and words[0] in ("allow", "deny") and valid_task_id(words[1])
@@ -1170,8 +1213,8 @@ def main(argv: list[str] | None = None) -> int:
             answer(args, words[1], json.load(sys.stdin), message=True)
         elif words and words[0] == "stop":
             stop(args, words[1])
-        elif words and words[0] == "forget":
-            forget(args, words[1])
+        elif words and words[0] in ("forget", "forget-delivered"):
+            forget(args, words[1], delivered=words[0] == "forget-delivered")
         elif words and words[0] == "domains":
             print(json.dumps(domain_request(args, words[1])))
         elif words and words[0] in ("allow", "deny"):
