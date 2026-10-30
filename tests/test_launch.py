@@ -1373,38 +1373,47 @@ def delivered(env, share, dejima_share):
     a, shared = share
     (shared / "RESULT.md").write_text("done")
     (shared / ".done").touch()
-    code, _, err = run(a, "fetch", "dn-abc23")
+    code, out, err = run(a, "fetch", "dn-abc23")
     assert code == 0, err
     (env / "tasks" / "dn-abc23" / "exit").write_text("0\n")
-    return a, shared
+    return a, shared, sha(out)
 
 
-def forget_delivered(a, dejima_share, *extra):
-    return run(a, "--dejima-share", str(dejima_share), *extra, "forget-delivered", "dn-abc23")
+def sha(data: bytes) -> str:
+    import hashlib
+
+    return hashlib.sha256(data).hexdigest()
+
+
+ANY_ZIP = "0" * 64
+
+
+def forget_delivered(a, dejima_share, stored, *extra):
+    return run(a, "--dejima-share", str(dejima_share), *extra, "forget-delivered", "dn-abc23", stored)
 
 
 def test_forget_delivered_prunes_a_share_that_still_holds_its_delivery(env, delivered, dejima_share):
-    a, shared = delivered
-    code, _, err = forget_delivered(a, dejima_share)
+    a, shared, stored = delivered
+    code, _, err = forget_delivered(a, dejima_share, stored)
     assert code == 0, err
     assert prunes(env) == [f"prune --isolated --yes {shared}"]
     assert not shared.exists() and not (env / "tasks" / "dn-abc23").exists()
 
 
 def test_plain_forget_never_prunes(env, delivered, dejima_share):
-    a, shared = delivered
+    a, shared, stored = delivered
     assert run(a, "--dejima-share", str(dejima_share), "forget", "dn-abc23")[0] == 0
     assert prunes(env) == [] and shared.is_dir() and not (env / "tasks" / "dn-abc23").exists()
 
 
 def test_forget_still_refuses_a_running_session(env, share, dejima_share):
     a, shared = share
-    code, _, err = forget_delivered(a, dejima_share)
+    code, _, err = forget_delivered(a, dejima_share, ANY_ZIP)
     assert code == 1 and "hasn't ended" in err and (env / "tasks" / "dn-abc23").is_dir()
 
 
-def kept(env, a, shared, dejima_share, why, *extra):
-    code, _, err = forget_delivered(a, dejima_share, *extra)
+def kept(env, a, shared, dejima_share, why, stored=ANY_ZIP):
+    code, _, err = forget_delivered(a, dejima_share, stored)
     assert code == 1 and "kept its ~/shared for dejima-share prune --isolated by hand" in err and why in err, err
     assert prunes(env) == [] and shared.is_dir() and not (env / "tasks" / "dn-abc23").exists()
 
@@ -1426,9 +1435,9 @@ def test_a_rejected_fetch_keeps_the_share(env, share, dejima_share):
 
 
 def test_a_share_changed_after_delivery_is_kept(env, delivered, dejima_share):
-    a, shared = delivered
+    a, shared, stored = delivered
     (shared / "later.md").write_text("written after the delivery")
-    kept(env, a, shared, dejima_share, "changed after its output was delivered")
+    kept(env, a, shared, dejima_share, "changed after its output was delivered", stored)
 
 
 def test_a_delivery_that_left_files_out_keeps_the_share(env, share, dejima_share):
@@ -1437,9 +1446,10 @@ def test_a_delivery_that_left_files_out_keeps_the_share(env, share, dejima_share
     (shared / "link").symlink_to("/etc/passwd")
     (shared / "uploads").mkdir()
     (shared / ".done").touch()
-    assert run(a, "fetch", "dn-abc23")[0] == 0
+    code, out, _ = run(a, "fetch", "dn-abc23")
+    assert code == 0
     (env / "tasks" / "dn-abc23" / "exit").write_text("0\n")
-    kept(env, a, shared, dejima_share, "left out 1 entries")
+    kept(env, a, shared, dejima_share, "left out 1 entries", sha(out))
 
 
 def test_uploads_alone_left_out_still_prunes(env, share, dejima_share):
@@ -1448,56 +1458,57 @@ def test_uploads_alone_left_out_still_prunes(env, share, dejima_share):
     (shared / "uploads").mkdir()
     (shared / "uploads" / "token").write_text("s3cret")
     (shared / ".done").touch()
-    assert run(a, "fetch", "dn-abc23")[0] == 0
+    code, out, _ = run(a, "fetch", "dn-abc23")
+    assert code == 0
     (env / "tasks" / "dn-abc23" / "exit").write_text("0\n")
-    assert forget_delivered(a, dejima_share)[0] == 0 and not shared.exists()
+    assert forget_delivered(a, dejima_share, sha(out))[0] == 0 and not shared.exists()
 
 
 def test_a_dejima_share_without_the_named_form_isn_t_run(env, delivered, dejima_share, monkeypatch):
-    a, shared = delivered
+    a, shared, stored = delivered
     monkeypatch.setenv("FAKE_SHARE_OLD", "1")
-    kept(env, a, shared, dejima_share, "can't prune one share by name")
+    kept(env, a, shared, dejima_share, "can't prune one share by name", stored)
 
 
 def test_a_prune_that_exits_0_but_leaves_the_share_is_reported(env, delivered, dejima_share, monkeypatch):
-    a, shared = delivered
+    a, shared, stored = delivered
     monkeypatch.setenv("FAKE_SHARE_NOOP", "1")
-    code, _, err = forget_delivered(a, dejima_share)
+    code, _, err = forget_delivered(a, dejima_share, stored)
     assert code == 1 and "exited 0 but the share is still there: Kept." in err and shared.is_dir()
 
 
 def test_a_share_dejima_refuses_is_kept(env, delivered, dejima_share, monkeypatch):
-    a, shared = delivered
+    a, shared, stored = delivered
     monkeypatch.setenv("FAKE_SHARE_REFUSE", "a container still mounts it")
-    code, _, err = forget_delivered(a, dejima_share)
+    code, _, err = forget_delivered(a, dejima_share, stored)
     assert code == 1 and "dejima-share: a container still mounts it" in err and shared.is_dir()
 
 
 def test_a_missing_dejima_share_keeps_the_share_and_the_task_still_goes(env, delivered):
-    a, shared = delivered
-    code, _, err = run(a, "--dejima-share", "no-such-dejima-share", "forget-delivered", "dn-abc23")
+    a, shared, stored = delivered
+    code, _, err = run(a, "--dejima-share", "no-such-dejima-share", "forget-delivered", "dn-abc23", stored)
     assert code == 1 and "pass --dejima-share with its full path" in err and shared.is_dir()
 
 
 def test_an_unrunnable_dejima_share_is_reported(env, delivered):
-    a, shared = delivered
+    a, shared, stored = delivered
     broken = env / "bin" / "broken-share"
     broken.parent.mkdir(exist_ok=True)
     broken.write_text("not a program")
     broken.chmod(0o755)
-    code, _, err = run(a, "--dejima-share", str(broken), "forget-delivered", "dn-abc23")
+    code, _, err = run(a, "--dejima-share", str(broken), "forget-delivered", "dn-abc23", stored)
     assert code == 1 and "couldn't run" in err and shared.is_dir() and not (env / "tasks" / "dn-abc23").exists()
 
 
 def test_keep_shared_keeps_the_share(env, delivered, dejima_share):
-    a, shared = delivered
-    assert forget_delivered(a, dejima_share, "--keep-shared")[0] == 0
+    a, shared, stored = delivered
+    assert forget_delivered(a, dejima_share, stored, "--keep-shared")[0] == 0
     assert prunes(env) == [] and shared.is_dir() and not (env / "tasks" / "dn-abc23").exists()
 
 
 @pytest.mark.parametrize("recorded", [None, "gone", "/etc"])
 def test_a_share_that_isn_t_there_or_isn_t_under_the_root_isn_t_pruned(env, delivered, dejima_share, recorded):
-    a, shared = delivered
+    a, shared, stored = delivered
     task_dir = env / "tasks" / "dn-abc23"
     if recorded is None:
         (task_dir / "shared-path").unlink()
@@ -1505,9 +1516,44 @@ def test_a_share_that_isn_t_there_or_isn_t_under_the_root_isn_t_pruned(env, deli
         shutil.rmtree(shared)
     else:
         (task_dir / "shared-path").write_text(f"{recorded}\n")
-    code, _, err = forget_delivered(a, dejima_share)
+    code, _, err = forget_delivered(a, dejima_share, stored)
     assert prunes(env) == [] and not task_dir.exists()
     if recorded == "/etc":
         assert code == 1 and "is not under" in err
     else:
         assert code == 0, err
+
+
+
+def test_a_later_delivery_the_api_didn_t_store_keeps_the_share(env, share, dejima_share):
+    a, shared = share
+    (shared / "RESULT.md").write_text("first")
+    (shared / ".done").touch()
+    code, first, _ = run(a, "fetch", "dn-abc23")
+    assert code == 0
+    # A second delivery the API never stored, as when its fetch timed out.
+    (shared / "RESULT.md").write_text("second")
+    (shared / "more.py").write_text("print('the only copy')")
+    (shared / ".done").touch()
+    assert run(a, "fetch", "dn-abc23")[0] == 0
+    (env / "tasks" / "dn-abc23" / "exit").write_text("0\n")
+    kept(env, a, shared, dejima_share, "isn't the output the API stored", sha(first))
+    assert (shared / "more.py").exists()
+
+
+def test_an_unreadable_share_is_kept_and_the_task_still_goes(env, delivered, dejima_share):
+    if os.geteuid() == 0:
+        pytest.skip("root ignores permissions")
+    a, shared, stored = delivered
+    shared.chmod(0)
+    try:
+        kept(env, a, shared, dejima_share, "couldn't open it to compare with its delivery: Permission denied", stored)
+    finally:
+        shared.chmod(0o755)
+
+
+@pytest.mark.parametrize("third", ["", "ABC" + "0" * 61, "0" * 63, "0" * 65, "g" * 64])
+def test_forget_delivered_needs_a_sha256(share, monkeypatch, third):
+    a, _ = share
+    monkeypatch.setenv("SSH_ORIGINAL_COMMAND", f"forget-delivered dn-abc23 {third}".strip())
+    assert run(a)[0] == 2

@@ -1132,7 +1132,7 @@ async def test_ending_deletes_all_but_uncollected_output_then_the_rest(started, 
     status(state="exited")
     output(zip_bytes([("RESULT.md", "done")]))
     await poll_once(app)
-    assert ["forget-delivered", task_id] in fetches(tmp_path)
+    assert ["forget-delivered", task_id] in [f[:2] for f in fetches(tmp_path)]
     job, requester = app[STORE].db.execute("SELECT job_json, requester FROM tasks WHERE id = ?", (task_id,)).fetchone()
     assert job == "{}" and requester == ""
     results = Path(config["results_dir"]) / task_id
@@ -1489,3 +1489,31 @@ async def test_a_session_this_api_never_recorded_keeps_its_share(started, tmp_pa
     status(state="running", ready=False)
     await poll_once(app)
     assert forgets(tmp_path, "dn-zzzzz") == ["forget"]
+
+
+async def test_forget_delivered_names_the_zip_the_api_stored(started, tmp_path):
+    import hashlib
+
+    app, client, task_id, status, output = started
+    sent = zip_bytes([("RESULT.md", "done")])
+    status(state="exited")
+    output(sent)
+    await poll_once(app)
+    assert ["forget-delivered", task_id, hashlib.sha256(sent).hexdigest()] in fetches(tmp_path)
+
+
+async def test_a_later_fetch_the_api_lost_doesn_t_change_which_zip_it_names(started, tmp_path, monkeypatch):
+    import hashlib
+
+    app, client, task_id, status, output = started
+    first = zip_bytes([("RESULT.md", "first")])
+    status(state="running")
+    output(first)
+    await poll_once(app)
+    # The launcher sent a second zip, but the API never stored it.
+    monkeypatch.setenv("STUB_FETCH_CODE", "1")
+    await poll_once(app)
+    monkeypatch.delenv("STUB_FETCH_CODE")
+    status(state="exited", ready=False)
+    await poll_once(app)
+    assert ["forget-delivered", task_id, hashlib.sha256(first).hexdigest()] in fetches(tmp_path)

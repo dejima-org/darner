@@ -36,6 +36,7 @@ from darner.job import (
 )
 
 FETCH_REJECTED = 3
+SHA256 = re.compile(r"[0-9a-f]{64}")
 RUN_ID = re.compile(r"[0-9a-f]{16}")
 MAX_HELP = 16 * 1024
 SIGNALS = {
@@ -498,12 +499,12 @@ def _state(task_dir: Path) -> str:
     return "starting"
 
 
-def forget(args: argparse.Namespace, task_id: str, delivered: bool = False) -> None:
+def forget(args: argparse.Namespace, task_id: str, delivered: str | None = None) -> None:
     """Delete what's left of an ended session: its task directory, and with delivered, its ~/shared.
 
     The task directory holds its prompt in argv.json. The share goes only when
-    the API says its output was delivered and kept (forget-delivered), and this
-    finds the share still holds exactly what that delivery carried. Otherwise
+    the API names the zip it stored (forget-delivered <id> <sha256>), that's
+    the zip this last sent, and the share still holds exactly what it carried. Otherwise
     it's kept, as dejima keeps a non-empty share, for an operator to recover or
     prune by hand. The share is checked first, since its path is recorded in
     the task directory, which goes either way.
@@ -513,13 +514,13 @@ def forget(args: argparse.Namespace, task_id: str, delivered: bool = False) -> N
         return
     if _state(task_dir) != "exited":
         raise RuntimeError(f"{task_id} hasn't ended")
-    problem = _prune_share(args, task_dir) if delivered else None
+    problem = _prune_share(args, task_dir, delivered) if delivered else None
     shutil.rmtree(task_dir)
     if problem:
         raise RuntimeError(f"forgot {task_id}, but kept its ~/shared for dejima-share prune --isolated by hand: {problem}")
 
 
-def _prune_share(args: argparse.Namespace, task_dir: Path) -> str | None:
+def _prune_share(args: argparse.Namespace, task_dir: Path, stored: str) -> str | None:
     """Have dejima remove an ended session's delivered share. Why it couldn't, or None."""
     if args.keep_shared:
         return None
@@ -532,7 +533,7 @@ def _prune_share(args: argparse.Namespace, task_dir: Path) -> str | None:
     share = os.path.join(root, leaf)
     if not os.path.lexists(share):
         return None  # dejima removes an empty one itself
-    if problem := _changed_since_delivery(args, task_dir):
+    if problem := _changed_since_delivery(args, task_dir, stored):
         return problem
     tool = shutil.which(args.dejima_share)
     if tool is None:
@@ -560,15 +561,20 @@ def _prune_share(args: argparse.Namespace, task_dir: Path) -> str | None:
     return None
 
 
-def _changed_since_delivery(args: argparse.Namespace, task_dir: Path) -> str | None:
-    """Why the share no longer holds exactly what its last delivery carried, or None if it does."""
+def _changed_since_delivery(args: argparse.Namespace, task_dir: Path, stored: str) -> str | None:
+    """Why the share isn't exactly the zip the API stored, which must be the one last sent, or None."""
     try:
         delivery = json.loads((task_dir / "delivered-share").read_text())
     except (OSError, ValueError):
         return "no complete delivery of its output was recorded"
+    if delivery.get("zip") != stored:
+        return "its last delivery isn't the output the API stored, so that output is only in the share"
     if delivery.get("skipped"):
         return f"its delivery left out {len(delivery['skipped'])} entries, which are only in the share"
-    fd = open_share(args, task_dir)
+    try:
+        fd = open_share(args, task_dir)
+    except OSError as e:
+        return f"couldn't open it to compare with its delivery: {e.strerror or type(e).__name__}"
     signal.signal(signal.SIGALRM, _timeout)
     signal.alarm(args.fetch_timeout)
     try:
@@ -578,7 +584,7 @@ def _changed_since_delivery(args: argparse.Namespace, task_dir: Path) -> str | N
     finally:
         signal.alarm(0)
         os.close(fd)
-    if hashlib.sha256(data).hexdigest() != delivery.get("zip"):
+    if hashlib.sha256(data).hexdigest() != stored:
         return "it changed after its output was delivered"
     return None
 
@@ -1179,11 +1185,13 @@ def command(args: argparse.Namespace) -> list[str]:
     words = original.split() if original is not None else args.command
     if words in ([], ["status"], ["catalog"]) or (
         len(words) == 2
-        and words[0] in ("fetch", "help", "answer", "message", "upload", "stop", "domains", "forget", "forget-delivered")
+        and words[0] in ("fetch", "help", "answer", "message", "upload", "stop", "domains", "forget")
         and valid_task_id(words[1])
     ) or (
         len(words) == 3 and words[0] in ("allow", "deny") and valid_task_id(words[1])
         and words[2].isascii() and words[2].isdigit() and len(words[2]) <= 9
+    ) or (
+        len(words) == 3 and words[0] == "forget-delivered" and valid_task_id(words[1]) and SHA256.fullmatch(words[2])
     ):
         return words
     raise ValueError("unknown command")
@@ -1213,8 +1221,10 @@ def main(argv: list[str] | None = None) -> int:
             answer(args, words[1], json.load(sys.stdin), message=True)
         elif words and words[0] == "stop":
             stop(args, words[1])
-        elif words and words[0] in ("forget", "forget-delivered"):
-            forget(args, words[1], delivered=words[0] == "forget-delivered")
+        elif words and words[0] == "forget":
+            forget(args, words[1])
+        elif words and words[0] == "forget-delivered":
+            forget(args, words[1], delivered=words[2])
         elif words and words[0] == "domains":
             print(json.dumps(domain_request(args, words[1])))
         elif words and words[0] in ("allow", "deny"):

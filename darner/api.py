@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import base64
 import contextlib
+import hashlib
 import hmac
 import json
 import logging
@@ -394,7 +395,10 @@ async def collect(app: web.Application, task_id: str, signalled: bool = True) ->
     fd, tmp = tempfile.mkstemp(dir=task_dir, suffix=".tmp")
     with os.fdopen(fd, "wb") as f:
         f.write(packed)
-    seq = store.add_event(task_id, "output", summary, len(packed), signalled=signalled)
+    # The hash of the zip as the launcher sent it, which the launcher recorded too:
+    # forget-delivered names it, so a share is only pruned for a zip stored here.
+    sent = hashlib.sha256(out).hexdigest()
+    seq = store.add_event(task_id, "output", summary, len(packed), signalled=signalled, data={"zip_sha256": sent})
     try:
         os.replace(tmp, task_dir / f"{seq}.zip")
     except OSError:
@@ -496,14 +500,16 @@ def purge(app: web.Application) -> None:
         shutil.rmtree(Path(app[CONFIG]["results_dir"]) / task_id, ignore_errors=True)
 
 
-async def forget(app: web.Application, task_id: str, delivered: bool = False) -> None:
+async def forget(app: web.Application, task_id: str, delivered: str | None = None) -> None:
     """Have the launcher delete an ended session's task directory.
 
-    With delivered, its ~/shared too, which the launcher does only if the
-    share still holds exactly what its last delivery carried. Only the API
-    knows the delivery's zip was kept, so only it can say delivered.
+    With delivered, the hash of the session's latest zip this API stored, its
+    ~/shared too. The launcher prunes it only if that's the zip it last sent
+    and the share still holds exactly that. Only the API knows which zip it
+    kept, so only it can say.
     """
-    code, _, err = await run_remote(app[CONFIG], ["forget-delivered" if delivered else "forget", task_id])
+    command = ["forget-delivered", task_id, delivered] if delivered else ["forget", task_id]
+    code, _, err = await run_remote(app[CONFIG], command)
     if code:
         log.warning("forget %s failed: %s", task_id, err or f"exit {code}")
 
@@ -557,7 +563,7 @@ async def poll_once(app: web.Application) -> None:
         await expire(app, task)
         if task["state"] == "exited" and collected:
             # Delivered and kept: the session's latest output is a zip this API stored.
-            delivered = (store.last_output_size(task["id"]) or 0) > 0
+            delivered = store.last_stored_zip(task["id"])
             end_task(app, task["id"])
             await forget(app, task["id"], delivered)
         elif task["state"] == "exited" and config["max_session_age"] and (

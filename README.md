@@ -494,7 +494,7 @@ The files are still agent-written: treat what is in the zip as untrusted.
 
 The session's `~/shared` on the dejima host, which dejima keeps if it isn't empty, is pruned with `dejima-share prune --isolated --yes` when the session ends, but only once its output has been delivered whole. All of these must hold:
 
-- the API stored the zip from its latest output
+- the API stored the zip from its latest output, and it's the zip the launcher last sent: the API names it by hash, and the launcher compares
 - that delivery left nothing out but `uploads/`
 - the share still holds exactly what the delivery carried
 
