@@ -495,7 +495,7 @@ class Dragonlet(Plugin):
             task = self._tagged_task(await self.client.get_event(evt.room_id, evt.content.get_reply_to()))
         if task is None:
             return STOP_HOW, False
-        async with self._api("POST", f"/v1/tasks/{task}/stop") as resp:
+        async with self._api("POST", f"/v1/tasks/{task}/stop", json={"requester": evt.sender}) as resp:
             if resp.ok:
                 return f"Stopped {task}.", True
             data = await resp.json(content_type=None)

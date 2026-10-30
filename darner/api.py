@@ -24,6 +24,18 @@ from darner.launch import FETCH_REJECTED
 from darner.store import Store
 
 log = logging.getLogger("darner.api")
+audit = logging.getLogger("darner.audit")
+
+
+def _audit(action: str, client: str, task_id: str, requester: str, **details) -> None:
+    """One line per action someone took on a session, so who did what can be answered later.
+
+    Never what was typed or uploaded: the log would outlive the session's
+    data, which is deleted when it ends. Values are repr'd, so a requester
+    can't forge a line.
+    """
+    extra = "".join(f" {key}={value!r}" for key, value in details.items())
+    audit.info("%s %s by %r via %s%s", action, task_id, requester, client, extra)
 
 RUN_ID = re.compile(r"[0-9a-f]{16}")
 
@@ -375,6 +387,7 @@ async def expire(app: web.Application, task: dict) -> None:
             log.warning("couldn't stop %s after max_session_age: %s", task["id"], err or f"exit {code}")
         return
     store.add_event(task["id"], "expired", data={"age": int(age)})
+    audit.info("stop %s after max_session_age, at %ds", task["id"], int(age))
 
 
 def end_task(app: web.Application, task_id: str, note: str = "") -> None:
@@ -525,6 +538,10 @@ async def create_task(request: web.Request) -> web.Response:
         store.delete(job["id"])
         return web.json_response({"error": f"launch failed: {e}"}, status=502)
     store.mark(job["id"], "launched", target=target)
+    _audit(
+        "start", client, job["id"], requester, domains=job["domains"], internal=job["internal_domains"],
+        dependencies=job["dependencies"], files=[f["name"] for f in job["files"]],
+    )
     run_id = result.get("run_id")
     if isinstance(run_id, str) and RUN_ID.fullmatch(run_id):
         store.set_run_id(job["id"], run_id)
@@ -630,6 +647,7 @@ async def _type_into(request: web.Request, command: str) -> web.Response:
         return web.json_response({"error": f"{command} failed: {e}"}, status=502)
     if code:
         return web.json_response({"error": err or f"launcher exited {code}"}, status=409)
+    _audit(command, client, task_id, requester, length=len(text))
     return web.Response(status=204)
 
 
@@ -706,6 +724,7 @@ async def upload_file(request: web.Request) -> web.Response:
         return web.json_response({"error": f"upload failed: {e}"}, status=502)
     if code:
         return web.json_response({"error": err or f"launcher exited {code}"}, status=409)
+    _audit("upload", client, task_id, requester, name=name, size=len(data))
     return web.json_response(json.loads(out))
 
 
@@ -718,11 +737,17 @@ async def stop_task(request: web.Request) -> web.Response:
     if status != "launched":
         return web.json_response({"error": f"{task_id} is not running"}, status=409)
     try:
+        body = await request.json() if request.can_read_body else {}
+        requester = _text(body, "requester")
+    except (ValueError, RequestError, AttributeError):
+        return web.json_response({"error": "body must have requester"}, status=400)
+    try:
         code, _, err = await run_remote(request.app[CONFIG], ["stop", task_id])
     except RuntimeError as e:
         return web.json_response({"error": f"stop failed: {e}"}, status=502)
     if code:
         return web.json_response({"error": err or f"launcher exited {code}"}, status=409)
+    _audit("stop", client, task_id, requester)
     return web.Response(status=204)
 
 
@@ -753,7 +778,12 @@ async def decide_domains(request: web.Request) -> web.Response:
         return web.json_response({"error": f"{verb} failed: {e}"}, status=502)
     if code:
         return web.json_response({"error": err or f"launcher exited {code}"}, status=409)
-    return web.json_response(json.loads(out))
+    result = json.loads(out)
+    if verb == "allow":
+        _audit("allow", client, task_id, requester, request=number, granted=result.get("granted"), failed=result.get("failed"))
+    else:
+        _audit("deny", client, task_id, requester, request=number, domains=[d["domain"] for d in shown["domains"]])
+    return web.json_response(result)
 
 
 async def list_configs(request: web.Request) -> web.Response:

@@ -59,6 +59,7 @@ else:
 """
 
 AUTH = {"Authorization": "Bearer s3cret-0123456789abcdef0123456789abcdef"}
+STOP_BODY = {"requester": "@alice:example.org"}
 
 
 def request(**overrides):
@@ -613,7 +614,7 @@ async def test_share_error_is_logged_once(started, tmp_path, monkeypatch, caplog
 
 async def test_stop_reaches_launcher(started, tmp_path):
     app, client, task_id, *_ = started
-    assert (await client.post(f"/v1/tasks/{task_id}/stop", headers=AUTH)).status == 204
+    assert (await client.post(f"/v1/tasks/{task_id}/stop", json=STOP_BODY, headers=AUTH)).status == 204
     assert fetches(tmp_path)[-1] == ["stop", task_id]
 
 
@@ -624,7 +625,7 @@ async def test_stop_is_scoped_and_needs_a_running_task(started, config, tmp_path
     assert (await client.post(f"/v1/tasks/{task_id}/stop", headers={"Authorization": "Bearer 0ther-0123456789abcdef0123456789abcdef"})).status == 404
     assert (await client.post(f"/v1/tasks/{task_id}/stop")).status == 401
     monkeypatch.setenv("STUB_STOP_ERROR", "dn-x is not running")
-    resp = await client.post(f"/v1/tasks/{task_id}/stop", headers=AUTH)
+    resp = await client.post(f"/v1/tasks/{task_id}/stop", json=STOP_BODY, headers=AUTH)
     assert resp.status == 409 and (await resp.json())["error"] == "dn-x is not running"
 
 
@@ -632,7 +633,7 @@ async def test_stop_refuses_an_ended_task(started, tmp_path):
 
     app, client, task_id, *_ = started
     app[STORE].mark(task_id, "ended")
-    resp = await client.post(f"/v1/tasks/{task_id}/stop", headers=AUTH)
+    resp = await client.post(f"/v1/tasks/{task_id}/stop", json=STOP_BODY, headers=AUTH)
     assert resp.status == 409 and "not running" in (await resp.json())["error"]
     assert ["stop", task_id] not in fetches(tmp_path)
 
@@ -1199,3 +1200,51 @@ async def test_a_task_id_in_use_is_not_reused(client, tmp_path, monkeypatch):
     first = await client.post("/v1/tasks", json=request(), headers=AUTH)
     second = await client.post("/v1/tasks", json=request(source={"kind": "matrix", "ref": "$other"}), headers=AUTH)
     assert (await first.json())["id"] == "dn-aaaaa" and (await second.json())["id"] == "dn-bbbbb"
+
+
+async def test_every_action_is_audited_without_its_content(started, monkeypatch, caplog):
+    import logging
+
+    app, client, task_id, status, _ = started
+    caplog.set_level(logging.INFO, logger="darner.audit")
+    status(ready=False)
+    body = {"text": "the password is hunter2", "requester": "@alice:example.org\nforged line"}
+    assert (await client.post(f"/v1/tasks/{task_id}/message", json=body, headers=AUTH)).status == 204
+    resp = await client.post(f"/v1/tasks/{task_id}/files?name=notes.txt&requester=%40alice%3Aexample.org", data=b"secret", headers=AUTH)
+    assert resp.status == 200
+    assert (await client.post(f"/v1/tasks/{task_id}/stop", json=STOP_BODY, headers=AUTH)).status == 204
+    lines = [r.getMessage() for r in caplog.records if r.name == "darner.audit"]
+    assert lines == [
+        f"message {task_id} by '@alice:example.org\\nforged line' via maubot length=23",
+        f"upload {task_id} by '@alice:example.org' via maubot name='notes.txt' size=6",
+        f"stop {task_id} by '@alice:example.org' via maubot",
+    ]
+    assert "hunter2" not in caplog.text and "secret" not in caplog.text
+
+
+async def test_stop_needs_a_requester(started):
+    app, client, task_id, *_ = started
+    assert (await client.post(f"/v1/tasks/{task_id}/stop", headers=AUTH)).status == 400
+
+
+async def test_a_start_is_audited_with_its_grants(client, caplog):
+    import logging
+
+    caplog.set_level(logging.INFO, logger="darner.audit")
+    task_id = (await (await client.post("/v1/tasks", json=request(), headers=AUTH)).json())["id"]
+    [line] = [r.getMessage() for r in caplog.records if r.name == "darner.audit"]
+    assert line == (
+        f"start {task_id} by '@u:example.org' via maubot domains=['pypi.org'] internal=[] dependencies=['pip:pytest'] files=[]"
+    )
+
+
+async def test_domain_decisions_are_audited(requested, caplog):
+    import logging
+
+    app, client, task_id = requested
+    caplog.set_level(logging.INFO, logger="darner.audit")
+    await client.post(f"/v1/tasks/{task_id}/domains/3/allow", json={"requester": "@alice:example.org"}, headers=AUTH)
+    await client.post(f"/v1/tasks/{task_id}/domains/3/deny", json={"requester": "@bob:example.org"}, headers=AUTH)
+    lines = [r.getMessage() for r in caplog.records if r.name == "darner.audit"]
+    assert lines[0] == f"allow {task_id} by '@alice:example.org' via maubot request=3 granted=['pypi.org'] failed=[]"
+    assert lines[1].startswith(f"deny {task_id} by '@bob:example.org' via maubot request=3 domains=[")
