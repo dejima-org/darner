@@ -34,6 +34,7 @@ Starting sessions for other people means holding the means to start them, so dar
 | A frontend's API token, or admin access to the frontend | The same, for every task started through that token, without its access control | Other tokens' tasks, anything past the API's policy |
 | The API's ssh key to the dejima host | The launcher's fixed command grammar, as the dejima host's user: sessions with any domains and dependencies, typing into them if `--answers` is on, their output, stopping them | A shell, a file outside the task and share directories, a tunnel |
 | `configs_dir/files` | Whatever you put there, such as an API token handed to sessions | |
+| The API's log | Who started, typed into, uploaded to, stopped or decided domains for each session, and what was granted; never what was typed or uploaded | The text or files themselves |
 | The API's database | Every open session's prompt and context, and who asked; an ended session's output until its frontend collects it, at most `output_retention` | Ended sessions, which are deleted. Output zips, which are kept in `results_dir` for the same time |
 
 The policy (`deny_domains`, `max_domains`) is the API's. The launcher re-validates every job and request, but it doesn't apply the policy itself, so whoever holds the ssh key isn't bound by it. The key is restricted at the dejima host end, with `command=`, `restrict` and `from=` in `authorized_keys`, rather than trusted on the API's side.

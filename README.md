@@ -269,7 +269,7 @@ sudo -u darner ssh -T -o BatchMode=yes "$DEJIMA_USER@$DEJIMA_HOST" status   # pr
 curl -H "Authorization: Bearer $API_TOKEN" http://127.0.0.1:8080/v1/blurbs   # prints []
 ```
 
-`journalctl -u darner-api` shows the API's log.
+`journalctl -u darner-api` shows the API's log. Lines from `darner.audit` record each action someone took on a session: starting it with its grants, messages and answers (their length, not their text), uploads (name and size), stops, and domain decisions with what was granted. They say who did it and through which frontend, so who did what can be answered after the session's own data is deleted.
 
 **With Docker Compose:** the config directory is mounted at `/etc/darner` in the container, so the example's paths work unchanged. `listen` becomes `0.0.0.0:8080`, which is inside the container. `compose.yaml` decides what reaches it: by default, only `127.0.0.1:8080` on the host. If maubot runs in Docker too, drop the published port and put both on a shared network.
 
@@ -584,7 +584,7 @@ Every `poll_interval` seconds the API asks the dejima host for the status of lau
 | `GET /v1/tasks/<id>` | one open session, in the same form |
 | `POST /v1/tasks/<id>/message` | `{text, requester}`: type a message into the session; 409 with the reason if the host refuses |
 | `POST /v1/tasks/<id>/files?name=&requester=` | the request body is a file for the session's `~/shared/uploads`; 413 over `max_upload` |
-| `POST /v1/tasks/<id>/stop` | end the task's session and close its tmux window; 409 if it isn't running |
+| `POST /v1/tasks/<id>/stop` | `{requester}`: end the task's session and close its tmux window; 409 if it isn't running |
 | `POST /v1/tasks/<id>/answer` | `{text, requester}`: answer the task's outstanding help request; 409 with the reason if the host refuses |
 
 `source` is echoed back as given, so a client knows where to reply without keeping state.
