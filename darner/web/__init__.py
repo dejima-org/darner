@@ -13,6 +13,7 @@ import argparse
 import hashlib
 import json
 import logging
+import re
 import secrets
 import sys
 import time
@@ -38,7 +39,15 @@ HERE = Path(__file__).parent
 API_TIMEOUT = 120
 DOWNLOAD_READ_TIMEOUT = 60
 
-DEFAULTS = {"listen": "127.0.0.1:8081", "user_header": None, "max_download": 100 * 1024 * 1024, "max_upload": 50 * 1024 * 1024}
+DEFAULTS = {
+    "listen": "127.0.0.1:8081", "user_header": None, "max_download": 100 * 1024 * 1024, "max_upload": 50 * 1024 * 1024,
+    # Longer than the API's own launch_timeout, so a slow launch is answered rather than abandoned.
+    "launch_timeout": 300,
+}
+# Room for the API's longest text fields, 32,768 characters each, at JSON's
+# worst case of six bytes a character, with the rest of a request beside them.
+# Uploads stream, so they aren't held to it.
+MAX_REQUEST = 1024 * 1024
 REQUIRED = ("api_url", "api_token", "public_origin")
 # The custom header every state-changing request carries. A cross-site page
 # can't send it without a CORS preflight, which this never answers.
@@ -91,6 +100,9 @@ def check_config(config: dict) -> dict:
         raise ValueError("api_url must start with http:// or https://")
     if not isinstance(full["api_token"], str) or len(full["api_token"]) < 32 or full["api_token"].startswith("replace-with"):
         raise ValueError("api_token must be this frontend's token from api.toml's [tokens], at least 32 characters")
+    for key in ("max_download", "max_upload", "launch_timeout"):
+        if type(full[key]) not in (int, float) or full[key] <= 0:
+            raise ValueError(f"{key} must be a positive number")
     if full["user_header"] is not None and not (isinstance(full["user_header"], str) and full["user_header"].strip()):
         raise ValueError("user_header must be a header name, such as X-authentik-username")
     return full
@@ -109,6 +121,11 @@ async def guard(request: web.Request, handler):
         if refusal:
             raise web.HTTPForbidden(text=refusal)
         response = await handler(request)
+    except web.HTTPRequestEntityTooLarge:
+        if request.method in ("GET", "HEAD"):
+            raise
+        # The page's script shows an action's error as a sentence, so it gets one.
+        return web.json_response({"error": "That's more than darner-web takes in one request."}, status=413, headers=HEADERS)
     except web.HTTPException as e:
         e.headers.update(HEADERS)
         raise
@@ -149,14 +166,19 @@ def _cut(request: web.Request) -> None:
         request.transport.close()
 
 
+def _status(e: "ApiError") -> int:
+    """What to answer for an API error: its own status, a timeout as a timeout, anything else upstream as 502."""
+    return e.status if e.status < 500 or e.status == 504 else 502
+
+
 class ApiError(Exception):
     def __init__(self, status: int, message: str):
         super().__init__(message)
         self.status = status
 
 
-async def api(request: web.Request, method: str, path: str, **kwargs):
-    """A JSON call to darner-api, as this frontend."""
+async def api(request: web.Request, method: str, path: str, with_status: bool = False, **kwargs):
+    """A JSON call to darner-api, as this frontend: its result, with its status if asked."""
     config = request.app[CONFIG]
     try:
         async with request.app[API].request(
@@ -167,9 +189,11 @@ async def api(request: web.Request, method: str, path: str, **kwargs):
             if resp.status >= 400:
                 error = data.get("error") if isinstance(data, dict) else None
                 raise ApiError(resp.status, error or f"darner-api answered {resp.status}")
-            return data
+            return (resp.status, data) if with_status else data
     except aiohttp.ClientError as e:
         raise ApiError(502, f"couldn't reach darner-api: {type(e).__name__}")
+    except TimeoutError:
+        raise ApiError(504, "darner-api didn't answer in time")
 
 
 def page(request: web.Request, template: str, state: str | None = None, status: int = 200, **context) -> web.Response:
@@ -222,7 +246,7 @@ async def state(request: web.Request) -> web.Response:
     try:
         data = await (_session_data(request, task_id) if task_id else _sessions_data(request))
     except ApiError as e:
-        return web.json_response({"version": None, "error": str(e)}, status=e.status if e.status < 500 else 502)
+        return web.json_response({"version": None, "error": str(e)}, status=_status(e))
     return web.json_response({"version": _version(data)})
 
 
@@ -244,6 +268,8 @@ async def download(request: web.Request) -> web.StreamResponse:
         )
     except aiohttp.ClientError as e:
         raise ApiError(502, f"couldn't reach darner-api: {type(e).__name__}")
+    except TimeoutError:
+        raise ApiError(504, "darner-api didn't answer in time")
     async with upstream:
         if upstream.status != 200:
             raise web.HTTPNotFound(text="That output isn't available.")
@@ -309,7 +335,7 @@ async def run_selftest(request: web.Request) -> web.Response:
     try:
         result = await api(request, "POST", "/v1/selftest", json={"requester": _user(request), "source": source})
     except ApiError as e:
-        return web.json_response({"error": str(e)}, status=e.status if e.status < 500 else 502)
+        return web.json_response({"error": str(e)}, status=_status(e))
     return web.json_response({"location": f"/sessions/{result['id']}"})
 
 
@@ -328,7 +354,7 @@ async def _act(request: web.Request, method: str, path: str, location: str | Non
     try:
         result = await api(request, method, path, **kwargs)
     except ApiError as e:
-        return web.json_response({"error": str(e)}, status=e.status if e.status < 500 else 502)
+        return web.json_response({"error": str(e)}, status=_status(e))
     return web.json_response({"location": location, "result": result})
 
 
@@ -359,13 +385,13 @@ async def clear_session(request: web.Request) -> web.Response:
         return web.json_response({"error": f"{task_id} is still running. Stop it first."}, status=409)
     except ApiError as e:
         if e.status != 404:
-            return web.json_response({"error": str(e)}, status=e.status if e.status < 500 else 502)
+            return web.json_response({"error": str(e)}, status=_status(e))
     try:
         for event in await api(request, "GET", "/v1/events"):
             if event["id"] == task_id:
                 await api(request, "POST", f"/v1/events/{event['seq']}/ack")
     except ApiError as e:
-        return web.json_response({"error": str(e)}, status=e.status if e.status < 500 else 502)
+        return web.json_response({"error": str(e)}, status=_status(e))
     return web.json_response({"location": "/"})
 
 
@@ -408,6 +434,8 @@ async def upload_file(request: web.Request) -> web.Response:
         if isinstance(e.__cause__, _TooLarge) or isinstance(e.__context__, _TooLarge):
             return web.json_response({"error": f"That file is over this darner-web's max_upload of {limit} bytes."}, status=413)
         return web.json_response({"error": f"couldn't reach darner-api: {type(e).__name__}"}, status=502)
+    except TimeoutError:
+        return web.json_response({"error": "darner-api didn't answer in time"}, status=504)
     return web.json_response({"location": None, "result": data})
 
 
@@ -433,7 +461,7 @@ async def start_task(request: web.Request) -> web.Response:
     task, ref = body.get("task"), body.get("ref")
     if not isinstance(task, str) or not task.strip():
         return web.json_response({"error": "Say what the task is."}, status=400)
-    if not isinstance(ref, str) or not 16 <= len(ref) <= 64 or not ref.isalnum():
+    if not isinstance(ref, str) or not re.fullmatch(r"[0-9a-f]{32}", ref):
         return web.json_response({"error": "Reload the page and try again."}, status=400)
     request_body = {
         "task": task,
@@ -451,10 +479,21 @@ async def start_task(request: web.Request) -> web.Response:
     for key in ("harness", "backend", "model", "effort", "context_window"):
         if isinstance(body.get(key), str) and body[key].strip():
             request_body[key] = body[key].strip()
+    timeout = aiohttp.ClientTimeout(total=request.app[CONFIG]["launch_timeout"])
     try:
-        result = await api(request, "POST", "/v1/tasks", json=request_body)
+        status, result = await api(request, "POST", "/v1/tasks", with_status=True, json=request_body, timeout=timeout)
     except ApiError as e:
-        return web.json_response({"error": str(e)}, status=e.status if e.status < 500 else 502)
+        if e.status >= 500:
+            # The launch may have gone ahead regardless, and resending this form would only find it.
+            return web.json_response({
+                "error": f"{e}. The task may still be starting: check Sessions before starting it again.",
+            }, status=e.status)
+        return web.json_response({"error": str(e)}, status=e.status)
+    if status == 200:
+        # This page's ref already started a task, so the form as sent now didn't start anything.
+        return web.json_response({
+            "error": f"This form already started {result['id']}. Reload the page to start another task.",
+        }, status=409)
     return web.json_response({"location": f"/sessions/{result['id']}"})
 
 
@@ -467,7 +506,7 @@ async def api_errors(request: web.Request, handler):
         if request.get(STARTED):
             _cut(request)
             raise
-        return page(request, "error.html", status=e.status if e.status < 500 else 502, message=str(e))
+        return page(request, "error.html", status=_status(e), message=str(e))
 
 
 def _age(started) -> str:
@@ -480,7 +519,7 @@ def _age(started) -> str:
 
 def make_app(config: dict) -> web.Application:
     config = check_config(config)
-    app = web.Application(middlewares=[guard, api_errors], client_max_size=64 * 1024)
+    app = web.Application(middlewares=[guard, api_errors], client_max_size=MAX_REQUEST)
     app[CONFIG] = config
     templates = jinja2.Environment(
         loader=jinja2.FileSystemLoader(HERE / "templates"), autoescape=True, undefined=jinja2.StrictUndefined,

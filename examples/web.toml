@@ -23,3 +23,7 @@ public_origin = "https://darner.example.com"
 # upload into a session.
 # max_download = 104857600
 # max_upload = 52428800
+
+# How long to wait for the API to start a task, longer than its own
+# launch_timeout. Past it, the page says the task may still be starting.
+# launch_timeout = 300
