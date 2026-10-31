@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 Brad Anderson
+import asyncio
 from html.parser import HTMLParser
 
 import pytest
@@ -38,10 +39,14 @@ class FakeApi:
         }
         self.zip = b"PK" + b"z" * 100
         self.chunked = False
+        self.delay = 0
+        self.create_status = 201
+        self.upload_delay = 0
 
     def app(self):
         async def record(request, result, status=200):
             assert request.headers["Authorization"] == f"Bearer {TOKEN}"
+            await asyncio.sleep(self.delay)
             body = await request.json() if request.can_read_body else None
             self.calls.append((request.method, request.path, body))
             return web.json_response(result, status=status)
@@ -103,6 +108,7 @@ class FakeApi:
 
         async def files(request):
             self.uploaded = await request.read()
+            await asyncio.sleep(self.upload_delay)
             self.calls.append((request.method, request.path, dict(request.query)))
             return web.json_response({"path": "~/shared/uploads/" + request.query["name"], "size": len(self.uploaded), "told": False})
 
@@ -110,7 +116,9 @@ class FakeApi:
             return await record(request, {"harnesses": ["claude-code", "cline"], "backends": ["self-hosted"], "default_harness": "claude-code"})
 
         async def create(request):
-            return await record(request, {"id": "dn-ccccc", "target": "darner:dn-ccccc"}, 201)
+            if self.create_status >= 400:
+                return await record(request, {"error": "launch failed: dejima exited 1"}, self.create_status)
+            return await record(request, {"id": "dn-ccccc", "target": "darner:dn-ccccc"}, self.create_status)
 
         app = web.Application()
         app.router.add_get("/v1/tasks", tasks)
@@ -387,6 +395,9 @@ def test_agent_markdown_rules(markdown, html):
     ({"listne": "x"}, "unknown setting listne"),
     ({"user_header": ""}, "user_header"),
     ({"public_origin": "https://user@darner.example.com"}, "public_origin"),
+    ({"launch_timeout": "300"}, "launch_timeout must be a positive number"),
+    ({"max_upload": 0}, "max_upload must be a positive number"),
+    ({"max_download": True}, "max_download must be a positive number"),
     ({"public_origin": "https://darner.example.com:notaport"}, "public_origin"),
 ])
 def test_a_config_that_wouldn_t_work_is_refused(change, message):
@@ -519,7 +530,10 @@ async def test_starting_a_task_builds_the_request_as_chat_would(client, fake):
     }
 
 
-@pytest.mark.parametrize("body, message", [({"ref": "a" * 32}, "Say what the task is"), ({"task": "x", "ref": "../x"}, "Reload")])
+@pytest.mark.parametrize("body, message", [
+    ({"ref": "a" * 32}, "Say what the task is"), ({"task": "x", "ref": "../x"}, "Reload"),
+    ({"task": "x", "ref": "A" * 32}, "Reload"), ({"task": "x", "ref": "\uff41" * 32}, "Reload"), ({"task": "x", "ref": "a" * 31}, "Reload"),
+])
 async def test_a_task_without_a_task_or_a_proper_ref_isn_t_started(client, fake, body, message):
     resp = await client.post("/tasks", headers=POST, json=body)
     assert resp.status == 400 and message in (await resp.json())["error"] and posted(fake) == []
@@ -546,3 +560,75 @@ async def test_the_session_page_offers_actions_only_where_they_apply(client, fak
     assert 'data-post="/sessions/dn-aaaaa/domains/1/allow"' in html and "Send it a message" in html
     _, html = await get(client, "/sessions/dn-bbbbb")
     assert 'data-post="/sessions/dn-bbbbb/clear"' in html and "/message" not in html
+
+
+async def test_a_task_at_the_api_s_limits_in_a_three_byte_script_reaches_it(client, fake):
+    task, context = "\u4e2d" * 32768, "\u6587" * 32768
+    resp = await client.post("/tasks", headers=POST, json={"task": task, "context": context, "ref": "a" * 32})
+    assert resp.status == 200, await resp.text()
+    [(_, sent)] = posted(fake)
+    assert sent["task"] == task and sent["context"] == context
+
+
+async def test_a_request_over_the_cap_gets_an_error_the_page_can_show(client, fake):
+    resp = await client.post("/tasks", headers=POST, json={"task": "x" * (2 * 1024 * 1024), "ref": "a" * 32})
+    assert resp.status == 413 and "more than darner-web takes" in (await resp.json())["error"]
+    assert resp.headers["Content-Security-Policy"] == HEADERS["Content-Security-Policy"] and posted(fake) == []
+
+
+async def test_a_slow_api_is_a_timeout_on_pages_and_actions(aiohttp_client, fake, monkeypatch):
+    import darner.web
+
+    monkeypatch.setattr(darner.web, "API_TIMEOUT", 0.3)
+    fake.delay = 1
+    client = await aiohttp_client(make_app(config_for(fake)))
+    resp, html = await get(client, "/")
+    assert resp.status == 504 and "darner-api didn&#39;t answer in time" in html
+    assert resp.headers["Content-Security-Policy"] == HEADERS["Content-Security-Policy"]
+    resp = await client.post("/sessions/dn-aaaaa/message", headers=POST, json={"text": "hi"})
+    assert resp.status == 504 and (await resp.json())["error"] == "darner-api didn't answer in time"
+
+
+async def test_a_slow_launch_says_the_task_may_still_be_starting(aiohttp_client, fake):
+    fake.delay = 1
+    client = await aiohttp_client(make_app(config_for(fake, launch_timeout=0.3)))
+    resp = await client.post("/tasks", headers=POST, json={"task": "x", "ref": "a" * 32})
+    error = (await resp.json())["error"]
+    assert resp.status == 504 and "didn't answer in time" in error and "may still be starting: check Sessions" in error
+
+
+async def test_a_form_that_already_started_a_task_says_so(client, fake):
+    fake.create_status = 200
+    resp = await client.post("/tasks", headers=POST, json={"task": "edited", "ref": "a" * 32})
+    assert resp.status == 409
+    assert (await resp.json())["error"] == "This form already started dn-ccccc. Reload the page to start another task."
+
+
+async def test_an_upload_the_api_is_slow_to_confirm_may_still_have_arrived(aiohttp_client, fake):
+    fake.upload_delay = 1
+    client = await aiohttp_client(make_app(config_for(fake, launch_timeout=0.3)))
+    resp = await client.post("/sessions/dn-aaaaa/files?name=notes.txt", headers=POST, data=b"some notes")
+    error = (await resp.json())["error"]
+    assert resp.status == 504 and "may still have reached the session" in error and fake.uploaded == b"some notes"
+
+
+async def test_a_socket_timeout_is_a_timeout_not_an_unreachable_api(aiohttp_server, aiohttp_client, monkeypatch):
+    import darner.web
+
+    async def stalls(request):
+        await asyncio.sleep(1)
+        return web.Response(body=b"PK", content_type="application/zip")
+
+    api = web.Application()
+    api.router.add_get("/v1/tasks/{id}/outputs/{seq}.zip", stalls)
+    server = await aiohttp_server(api)
+    monkeypatch.setattr(darner.web, "DOWNLOAD_READ_TIMEOUT", 0.3)
+    client = await aiohttp_client(make_app({"api_url": str(server.make_url("/")), "api_token": TOKEN, "public_origin": ORIGIN}))
+    resp, html = await get(client, "/sessions/dn-aaaaa/outputs/1.zip")
+    assert resp.status == 504 and "darner-api didn&#39;t answer in time" in html
+
+
+async def test_a_launch_the_api_says_failed_is_shown_as_it_is(client, fake):
+    fake.create_status = 502
+    resp = await client.post("/tasks", headers=POST, json={"task": "x", "ref": "a" * 32})
+    assert resp.status == 502 and (await resp.json())["error"] == "launch failed: dejima exited 1"
