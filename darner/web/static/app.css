@@ -16,3 +16,9 @@ pre { white-space: pre-wrap; overflow-wrap: anywhere; background: #8881; padding
 .event { border-left: 3px solid var(--rule); padding: .1em 0 .1em 1em; margin: 1em 0; }
 .event h2 { font-size: 1em; margin: .3em 0; }
 .agent { overflow-wrap: anywhere; }
+.actions { border: 1px solid var(--rule); padding: .6em 1em; margin: 1em 0; }
+form label, form legend { display: block; margin-top: .7em; font-weight: 600; }
+form .choice { display: inline-block; font-weight: normal; margin-right: 1em; }
+textarea, input:not([type=checkbox]), select { width: 100%; box-sizing: border-box; font: inherit; }
+fieldset { border: 1px solid var(--rule); margin-top: .8em; }
+button { margin-top: .5em; font: inherit; }

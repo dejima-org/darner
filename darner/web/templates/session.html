@@ -8,6 +8,27 @@
 {% else %}
 <p class="summary">Ended. Only its output is kept, until it's cleared.</p>
 {% endif %}
+{% if session %}
+<section class="actions">
+<form method="post" data-action="/sessions/{{ task_id }}/message">
+<label for="message">{% if session.waiting.answer is not none %}Answer its help request{% else %}Send it a message{% endif %}</label>
+<textarea id="message" name="text" rows="3" required></textarea>
+<button type="submit">Send</button>
+</form>
+<form method="post" data-upload="/sessions/{{ task_id }}/files">
+<label for="upload">Put a file in its ~/shared/uploads</label>
+<input id="upload" name="file" type="file" required>
+<button type="submit">Upload</button>
+</form>
+<p><button type="button" data-post="/sessions/{{ task_id }}/stop" data-confirm="Stop {{ task_id }}?">Stop the session</button></p>
+<p class="error" role="alert" hidden></p>
+</section>
+{% else %}
+<section class="actions">
+<p><button type="button" data-post="/sessions/{{ task_id }}/clear" data-confirm="Clear {{ task_id }}? Its output and zips are deleted.">Clear it</button> Its output and zips are deleted when it's cleared.</p>
+<p class="error" role="alert" hidden></p>
+</section>
+{% endif %}
 <p class="untrusted">Everything below marked as the agent's was written by the agent. Treat it as untrusted.</p>
 <ol class="timeline">
 {% for e in events %}
@@ -30,6 +51,12 @@
 {% endfor %}
 </ul>
 {% if e.data.rejected %}<p class="quiet">{{ e.data.rejected }} more weren't valid domains.</p>{% endif %}
+{% if session and session.waiting.domains is not none and session.waiting.domains.request == e.data.request %}
+<p class="decide">
+<button type="button" data-post="/sessions/{{ task_id }}/domains/{{ e.data.request }}/allow" data-confirm="Allow these domains for {{ task_id }}?">Allow</button>
+<button type="button" data-post="/sessions/{{ task_id }}/domains/{{ e.data.request }}/deny">Deny</button>
+</p>
+{% endif %}
 {% elif e.type == "expired" %}
 <h2>Stopped after running for {{ e.data.age // 3600 }}h, longer than sessions may run</h2>
 {% elif e.type == "ended" %}
