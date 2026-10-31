@@ -172,9 +172,13 @@ def _status(e: "ApiError") -> int:
 
 
 class ApiError(Exception):
-    def __init__(self, status: int, message: str):
+    """A call to darner-api that failed. answered says the API itself said so, rather
+    than the call timing out or not getting through, which leaves the outcome unknown."""
+
+    def __init__(self, status: int, message: str, answered: bool = True):
         super().__init__(message)
         self.status = status
+        self.answered = answered
 
 
 async def api(request: web.Request, method: str, path: str, with_status: bool = False, **kwargs):
@@ -190,10 +194,11 @@ async def api(request: web.Request, method: str, path: str, with_status: bool = 
                 error = data.get("error") if isinstance(data, dict) else None
                 raise ApiError(resp.status, error or f"darner-api answered {resp.status}")
             return (resp.status, data) if with_status else data
-    except aiohttp.ClientError as e:
-        raise ApiError(502, f"couldn't reach darner-api: {type(e).__name__}")
+    # First: aiohttp's socket timeouts are ClientErrors as well as TimeoutErrors.
     except TimeoutError:
-        raise ApiError(504, "darner-api didn't answer in time")
+        raise ApiError(504, "darner-api didn't answer in time", answered=False)
+    except aiohttp.ClientError as e:
+        raise ApiError(502, f"couldn't reach darner-api: {type(e).__name__}", answered=False)
 
 
 def page(request: web.Request, template: str, state: str | None = None, status: int = 200, **context) -> web.Response:
@@ -266,10 +271,10 @@ async def download(request: web.Request) -> web.StreamResponse:
             url, headers={"Authorization": f"Bearer {config['api_token']}"},
             timeout=aiohttp.ClientTimeout(total=None, sock_connect=10, sock_read=DOWNLOAD_READ_TIMEOUT),
         )
+    except TimeoutError:  # first, as in api()
+        raise ApiError(504, "darner-api didn't answer in time", answered=False)
     except aiohttp.ClientError as e:
-        raise ApiError(502, f"couldn't reach darner-api: {type(e).__name__}")
-    except TimeoutError:
-        raise ApiError(504, "darner-api didn't answer in time")
+        raise ApiError(502, f"couldn't reach darner-api: {type(e).__name__}", answered=False)
     async with upstream:
         if upstream.status != 200:
             raise web.HTTPNotFound(text="That output isn't available.")
@@ -422,7 +427,8 @@ async def upload_file(request: web.Request) -> web.Response:
         async with request.app[API].post(
             url, params={"name": name, "requester": _user(request)}, data=body(),
             headers={"Authorization": f"Bearer {config['api_token']}", "Content-Type": "application/octet-stream"},
-            timeout=aiohttp.ClientTimeout(total=None, sock_connect=10, sock_read=DOWNLOAD_READ_TIMEOUT),
+            # The API answers only once it has passed the file to the dejima host, over ssh.
+            timeout=aiohttp.ClientTimeout(total=None, sock_connect=10, sock_read=config["launch_timeout"]),
         ) as resp:
             data = await resp.json(content_type=None)
             if resp.status >= 400:
@@ -430,12 +436,14 @@ async def upload_file(request: web.Request) -> web.Response:
                 return web.json_response({"error": error or f"darner-api answered {resp.status}"}, status=min(resp.status, 502))
     except _TooLarge:
         return web.json_response({"error": f"That file is over this darner-web's max_upload of {limit} bytes."}, status=413)
+    except TimeoutError:  # first, as in api()
+        return web.json_response({
+            "error": "darner-api didn't answer in time. The file may still have reached the session: check before sending it again.",
+        }, status=504)
     except aiohttp.ClientError as e:
         if isinstance(e.__cause__, _TooLarge) or isinstance(e.__context__, _TooLarge):
             return web.json_response({"error": f"That file is over this darner-web's max_upload of {limit} bytes."}, status=413)
         return web.json_response({"error": f"couldn't reach darner-api: {type(e).__name__}"}, status=502)
-    except TimeoutError:
-        return web.json_response({"error": "darner-api didn't answer in time"}, status=504)
     return web.json_response({"location": None, "result": data})
 
 
@@ -483,8 +491,8 @@ async def start_task(request: web.Request) -> web.Response:
     try:
         status, result = await api(request, "POST", "/v1/tasks", with_status=True, json=request_body, timeout=timeout)
     except ApiError as e:
-        if e.status >= 500:
-            # The launch may have gone ahead regardless, and resending this form would only find it.
+        if not e.answered:
+            # Unknown whether the launch went ahead, and resending this form would only find it.
             return web.json_response({
                 "error": f"{e}. The task may still be starting: check Sessions before starting it again.",
             }, status=e.status)

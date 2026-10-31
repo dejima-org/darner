@@ -41,6 +41,7 @@ class FakeApi:
         self.chunked = False
         self.delay = 0
         self.create_status = 201
+        self.upload_delay = 0
 
     def app(self):
         async def record(request, result, status=200):
@@ -107,6 +108,7 @@ class FakeApi:
 
         async def files(request):
             self.uploaded = await request.read()
+            await asyncio.sleep(self.upload_delay)
             self.calls.append((request.method, request.path, dict(request.query)))
             return web.json_response({"path": "~/shared/uploads/" + request.query["name"], "size": len(self.uploaded), "told": False})
 
@@ -114,6 +116,8 @@ class FakeApi:
             return await record(request, {"harnesses": ["claude-code", "cline"], "backends": ["self-hosted"], "default_harness": "claude-code"})
 
         async def create(request):
+            if self.create_status >= 400:
+                return await record(request, {"error": "launch failed: dejima exited 1"}, self.create_status)
             return await record(request, {"id": "dn-ccccc", "target": "darner:dn-ccccc"}, self.create_status)
 
         app = web.Application()
@@ -598,3 +602,33 @@ async def test_a_form_that_already_started_a_task_says_so(client, fake):
     resp = await client.post("/tasks", headers=POST, json={"task": "edited", "ref": "a" * 32})
     assert resp.status == 409
     assert (await resp.json())["error"] == "This form already started dn-ccccc. Reload the page to start another task."
+
+
+async def test_an_upload_the_api_is_slow_to_confirm_may_still_have_arrived(aiohttp_client, fake):
+    fake.upload_delay = 1
+    client = await aiohttp_client(make_app(config_for(fake, launch_timeout=0.3)))
+    resp = await client.post("/sessions/dn-aaaaa/files?name=notes.txt", headers=POST, data=b"some notes")
+    error = (await resp.json())["error"]
+    assert resp.status == 504 and "may still have reached the session" in error and fake.uploaded == b"some notes"
+
+
+async def test_a_socket_timeout_is_a_timeout_not_an_unreachable_api(aiohttp_server, aiohttp_client, monkeypatch):
+    import darner.web
+
+    async def stalls(request):
+        await asyncio.sleep(1)
+        return web.Response(body=b"PK", content_type="application/zip")
+
+    api = web.Application()
+    api.router.add_get("/v1/tasks/{id}/outputs/{seq}.zip", stalls)
+    server = await aiohttp_server(api)
+    monkeypatch.setattr(darner.web, "DOWNLOAD_READ_TIMEOUT", 0.3)
+    client = await aiohttp_client(make_app({"api_url": str(server.make_url("/")), "api_token": TOKEN, "public_origin": ORIGIN}))
+    resp, html = await get(client, "/sessions/dn-aaaaa/outputs/1.zip")
+    assert resp.status == 504 and "darner-api didn&#39;t answer in time" in html
+
+
+async def test_a_launch_the_api_says_failed_is_shown_as_it_is(client, fake):
+    fake.create_status = 502
+    resp = await client.post("/tasks", headers=POST, json={"task": "x", "ref": "a" * 32})
+    assert resp.status == 502 and (await resp.json())["error"] == "launch failed: dejima exited 1"
