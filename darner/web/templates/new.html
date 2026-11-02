@@ -25,6 +25,8 @@
 <input id="internal" name="internal" placeholder="recipes.example.com:8443">
 <label for="dependencies">Dependencies (apt:, pip:, cargo:, npm:, tarball:)</label>
 <input id="dependencies" name="dependencies" placeholder="apt:jq pip:pytest-xdist">
+<label for="network">Beyond what's named here</label>
+<select id="network" name="network"><option value="">dejima's own allowlist too</option><option value="named">nothing: only what's named (--drop-domains)</option><option value="sealed">nothing, and refuse to start if it can look up any name (--require-sealed)</option></select>
 </fieldset>
 <fieldset><legend>Agent</legend>
 <div class="grid">

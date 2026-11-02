@@ -75,6 +75,7 @@ backend: <name>    use this backend instead of the harness's default{backends}
 model: <name>      use this model instead of the harness's default
 effort: <level>    effort level: low, medium, high or xhigh, or none for cline
 context_window: <tokens>  cline's context window, for a self-hosted model
+network: <reach>   named: only what this task names, not dejima's own allowlist; sealed: that, and refuse to start if the session can resolve any name
 ```
 
 Values are separated by commas or spaces, and keywords can repeat. For example:
@@ -213,7 +214,7 @@ class Dragonlet(Plugin):
             "requester": evt.sender,
             "source": {"kind": "matrix", "ref": evt.event_id, "channel": evt.room_id},
         }
-        for key in ("harness", "backend", "model", "effort", "context_window"):
+        for key in ("harness", "backend", "model", "effort", "context_window", "network"):
             if value := getattr(req, key):
                 payload[key] = value
         async with self._api("POST", "/v1/tasks", json=payload) as resp:

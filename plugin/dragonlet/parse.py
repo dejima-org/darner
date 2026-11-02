@@ -5,8 +5,8 @@ from dataclasses import dataclass, field
 from urllib.parse import unquote
 
 MARKDOWN_LINK = re.compile(r"\[([^\]\n]*)\]\(([^)\s]+)\)")
-KEYWORD = re.compile(r"^\s*(config|ctx|allow|internal|deps|harness|backend|model|effort|context_window)\s*:(.*)$", re.IGNORECASE)
-SINGLE = ("harness", "backend", "model", "effort", "context_window")
+KEYWORD = re.compile(r"^\s*(config|ctx|allow|internal|deps|harness|backend|model|effort|context_window|network)\s*:(.*)$", re.IGNORECASE)
+SINGLE = ("harness", "backend", "model", "effort", "context_window", "network")
 FIELDS = {"config": "configs", "ctx": "blurbs", "allow": "domains", "internal": "internal_domains", "deps": "dependencies"}
 
 
@@ -27,6 +27,7 @@ class Request:
     model: str | None = None
     effort: str | None = None
     context_window: str | None = None
+    network: str | None = None
 
 
 def _mention(names: list[str]) -> str:

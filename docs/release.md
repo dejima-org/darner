@@ -4,7 +4,7 @@ Work lands on `development`, and every merge there publishes a pre-release. A re
 
 ## 1. It trails a dejima release
 
-darner runs dejima on the dejima host and relies on its flags and tools: `--isolated`, `--shared-path-file`, `--internal-domain`, `--model`, `dejima-allow --port`, `dejima-share prune --isolated --yes <share>` and others. A darner release is released against one dejima release, the tag on dejima's `main` that it was tested with and that has everything it needs. `CHANGELOG.md` names it under the version's heading:
+darner runs dejima on the dejima host and relies on its flags and tools: `--isolated`, `--shared-path-file`, `--internal-domain`, `--model`, `--drop-domains`, `--require-sealed`, `dejima-allow --port`, `dejima-share prune --isolated --yes <share>` and others. A darner release is released against one dejima release, the tag on dejima's `main` that it was tested with and that has everything it needs. `CHANGELOG.md` names it under the version's heading:
 
 ```
 ## 0.1.18

@@ -13,7 +13,7 @@ from pathlib import Path
 from darner.job import valid_name
 
 LISTS = {"ctx": "blurbs", "allow": "domains", "internal": "internal", "deps": "dependencies", "file": "files"}
-SINGLES = ("harness", "backend", "model", "effort", "context_window")
+SINGLES = ("harness", "backend", "model", "effort", "context_window", "network")
 _LINE = re.compile(r"\s*([A-Za-z_]+)\s*:(.*)")
 
 

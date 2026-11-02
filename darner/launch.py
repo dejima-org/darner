@@ -123,6 +123,8 @@ def dejima_argv(args: argparse.Namespace, job, task_dir: Path, dejima: str) -> l
     ):
         if value:
             argv += [flag, value]
+    if job.network:
+        argv.append({"named": "--drop-domains", "sealed": "--require-sealed"}[job.network])
     if job.domains:
         argv += ["--domains", str(task_dir / "domains")]
     for name in job.internal_domains:

@@ -92,7 +92,7 @@ def session_link(config: dict, run_id: str | None) -> str | None:
     return f"{base.rstrip('/')}/?arg={run_id}" if base and run_id else None
 
 REQUEST_KEYS = {
-    "task", "context", "blurbs", "configs", "grants", "harness", "backend", "model", "effort", "context_window",
+    "task", "context", "blurbs", "configs", "grants", "harness", "backend", "model", "effort", "context_window", "network",
     "requester", "source",
 }
 MAX_TEXT = 32 * 1024
@@ -307,7 +307,7 @@ def build_job(config: dict, body: object) -> tuple[dict, dict, str]:
         "files": [{"name": name, "data": base64.b64encode(data).decode()} for name, data in files],
     }
     # The request's own values override its config sets'.
-    for key in ("harness", "backend", "model", "effort", "context_window"):
+    for key in configsets.SINGLES:
         value = body.get(key) if body.get(key) is not None else sets[key]
         # Chat and config sets give it as text.
         if key == "context_window" and isinstance(value, str) and value.isascii() and value.isdecimal():

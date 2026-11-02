@@ -497,7 +497,7 @@ async def start_task(request: web.Request) -> web.Response:
         "requester": _user(request),
         "source": {"kind": "web", "ref": ref},
     }
-    for key in ("harness", "backend", "model", "effort", "context_window"):
+    for key in ("harness", "backend", "model", "effort", "context_window", "network"):
         if isinstance(body.get(key), str) and body[key].strip():
             request_body[key] = body[key].strip()
     timeout = aiohttp.ClientTimeout(total=request.app[CONFIG]["launch_timeout"])

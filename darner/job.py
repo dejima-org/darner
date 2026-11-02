@@ -30,6 +30,10 @@ _NAME = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}")
 _MODEL = re.compile(r"[A-Za-z0-9][][A-Za-z0-9._:/-]{0,199}")
 # Every harness's levels: none is cline's only. dejima holds each harness to its own.
 EFFORTS = ("none", "low", "medium", "high", "xhigh")
+# What a session may reach beyond what it's granted: named passes dejima --drop-domains,
+# keeping only what the launch names, and sealed --require-sealed, refusing to
+# start a session that can resolve any name.
+NETWORKS = ("named", "sealed")
 # dejima's range for a harness's context_window, in tokens.
 CONTEXT_WINDOW = range(512, 100_000_001)
 _ID = re.compile(r"dn-[a-z2-7]{5}")
@@ -69,6 +73,7 @@ class Job:
     model: str | None = None
     effort: str | None = None
     context_window: int | None = None
+    network: str | None = None
     session_wait: int = 0
     files: list[tuple[str, bytes]] = field(default_factory=list)
 
@@ -159,7 +164,7 @@ def validate_job(d: object) -> Job:
         raise JobError("job must be an object")
     unknown = set(d) - {
         "id", "prompt", "domains", "internal_domains", "dependencies", "harness", "backend", "model", "effort",
-        "context_window", "session_wait", "files",
+        "context_window", "network", "session_wait", "files",
     }
     if unknown:
         raise JobError(f"unknown job keys: {', '.join(sorted(unknown))}")
@@ -174,6 +179,7 @@ def validate_job(d: object) -> Job:
         ("model", valid_model, "model"),
         ("effort", valid_effort, f"effort ({', '.join(EFFORTS)})"),
         ("context_window", valid_context_window, f"context window ({CONTEXT_WINDOW.start} to {CONTEXT_WINDOW.stop - 1} tokens)"),
+        ("network", lambda v: v in NETWORKS, f"network ({', '.join(NETWORKS)})"),
     ):
         if d.get(key) is not None and not check(d[key]):
             raise JobError(f"not a valid {what}: {d[key]!r}")
@@ -191,6 +197,7 @@ def validate_job(d: object) -> Job:
         model=d.get("model"),
         effort=d.get("effort"),
         context_window=d.get("context_window"),
+        network=d.get("network"),
         session_wait=session_wait,
         files=_files(d),
     )

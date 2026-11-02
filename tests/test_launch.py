@@ -127,6 +127,13 @@ def test_harness_and_backend_resolution(env, job, expected):
     assert written_argv(env, "dn-abc23")[5:-2] == ["--identity", "darner", *expected]
 
 
+@pytest.mark.parametrize("network,flag", [("named", "--drop-domains"), ("sealed", "--require-sealed")])
+def test_network_reaches_dejima(env, network, flag):
+    launch(args(env), {"id": "dn-abc23", "prompt": "p", "network": network})
+    argv = written_argv(env, "dn-abc23")
+    assert flag in argv[:argv.index("--")]
+
+
 def test_main_reports_invalid_job(env, monkeypatch, capsys):
     monkeypatch.setattr(sys, "stdin", io.StringIO('{"id": "dn-abc23", "prompt": "p", "identity": "x"}'))
     assert main(["--tmux", str(env / "tmux"), "--tasks-dir", str(env / "tasks")]) == 1
