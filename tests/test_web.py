@@ -97,7 +97,10 @@ class FakeApi:
             return await record(request, ["recipes", "local"])
 
         async def config(request):
-            sets = {"recipes": {"ctx": ["mealie"], "harness": "<i>cline</i>", "file": ["token"]}, "local": {"harness": "cline"}}
+            sets = {
+                "recipes": {"ctx": ["mealie"], "harness": "<i>cline</i>", "file": ["token"], "description": "Adds <b>recipes</b>."},
+                "local": {"harness": "cline"},
+            }
             if request.match_info["name"] not in sets:
                 raise web.HTTPNotFound()
             return await record(request, sets[request.match_info["name"]])
@@ -244,6 +247,8 @@ async def test_blurbs_and_config_sets_are_read_only_and_escaped(client):
     assert (await get(client, "/blurbs/nope"))[0].status == 404
     _, html = await get(client, "/configs/recipes")
     assert "harness: &lt;i&gt;cline&lt;/i&gt;" in html and "ctx: mealie" in html and "contents aren" in html
+    # The description is shown as such, not as a keyword.
+    assert "<p>Adds &lt;b&gt;recipes&lt;/b&gt;.</p>" in html and "description:" not in html
 
 
 async def test_every_response_carries_the_security_headers(client):

@@ -912,7 +912,7 @@ async def get_blurb(request: web.Request) -> web.Response:
 
 
 async def describe_config(request: web.Request) -> web.Response:
-    """What a config set applies, by keyword. Its files are named, never read."""
+    """What a config set applies, by keyword, and its description. Its files are named, never read."""
     _client(request)
     configs_dir, name = Path(request.app[CONFIG].get("configs_dir", "")), request.match_info["name"]
     if name not in configsets.available(configs_dir):
@@ -923,6 +923,8 @@ async def describe_config(request: web.Request) -> web.Response:
         return web.json_response({"error": str(e)}, status=400)
     described = {keyword: found[field] for keyword, field in configsets.LISTS.items() if found[field]}
     described |= {key: found[key] for key in configsets.SINGLES if found[key] is not None}
+    if summary := configsets.description((configs_dir / name).read_text()):
+        described["description"] = summary
     return web.json_response(described)
 
 

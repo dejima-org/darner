@@ -894,6 +894,9 @@ async def test_config_sets_expand_and_the_request_overrides(aiohttp_client, conf
         "ctx": ["myapp"], "internal": ["recipes.example.com:8443"], "file": ["token"],
         "harness": "cline", "backend": "self-hosted", "model": "qwen3-14b", "context_window": "30000",
     }
+    (configs / "mealie").write_text("# Recipes, from Mealie\n#   on the home server\n\n# not this\n" + (configs / "mealie").read_text())
+    described = await (await client.get("/v1/configs/mealie", headers=AUTH)).json()
+    assert described["description"] == "Recipes, from Mealie on the home server" and described["harness"] == "cline"
     assert (await client.get("/v1/configs/nope", headers=AUTH)).status == 404
     (Path(config["blurbs_dir"]) / "mealie.md").write_text("Recipes live in Mealie.\n")
     assert await (await client.get("/v1/blurbs/mealie", headers=AUTH)).json() == "Recipes live in Mealie.\n"

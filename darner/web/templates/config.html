@@ -2,6 +2,7 @@
 {% block title %}{{ name }} · darner{% endblock %}
 {% block main %}
 <h1>{{ name }}<span class="kind">config set</span></h1>
+{% if description %}<p>{{ description }}</p>{% endif %}
 <p class="lead">What a task naming it applies. Read-only here: config sets are edited on the API host.</p>
 <pre class="well">{% for key, value in described.items() %}{{ key }}: {% if value is string %}{{ value }}{% else %}{{ value | join(", ") }}{% endif %}
 {% endfor %}</pre>

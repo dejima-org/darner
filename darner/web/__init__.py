@@ -341,7 +341,8 @@ async def config_page(request: web.Request) -> web.Response:
         if e.status == 404:
             raise web.HTTPNotFound(text="There's no config set by that name.")
         raise
-    return page(request, "config.html", name=name, described=described)
+    description = described.pop("description", None)
+    return page(request, "config.html", name=name, described=described, description=description)
 
 
 async def selftest_page(request: web.Request) -> web.Response:

@@ -3,7 +3,7 @@
 """Config sets: named groups of task keywords, so a recurring task needs only what changes.
 
 A config set is a file of the keyword lines a chat request takes, one per
-line, with # comments. A request names config sets, and its own values
+line, with # comments. Comment lines at its top are its description. A request names config sets, and its own values
 override theirs: a single value replaces theirs, and a list adds to theirs.
 """
 
@@ -67,6 +67,16 @@ def parse(name: str, text: str) -> dict:
             field = found[LISTS[key]]
             field += [v for v in values if v not in field]
     return found
+
+
+def description(text: str) -> str | None:
+    """The comment lines a config set starts with, as one line, or None."""
+    lines = []
+    for line in text.splitlines():
+        if not line.startswith("#"):
+            break
+        lines.append(line[1:].strip())
+    return " ".join(line for line in lines if line) or None
 
 
 def load(configs_dir: Path, names: list) -> dict:

@@ -673,7 +673,10 @@ def _described_notice(sections: list[tuple[str, str, object]], missing: list[str
     """Config sets as the keyword lines they apply, and blurbs as their text."""
     body, html_body = [], []
     for name, kind, data in sections:
+        description = ""
         if kind == "config set":
+            data = dict(data)
+            description = data.pop("description", "")
             text = "\n".join(
                 f"{key}: {', '.join(value) if isinstance(value, list) else value}" for key, value in data.items()
             ) or "(nothing)"
@@ -682,9 +685,13 @@ def _described_notice(sections: list[tuple[str, str, object]], missing: list[str
             text = "\n".join(data.strip().splitlines()[:MAX_BLURB_LINES])[:MAX_BLURB_CHARS]
             note = "Cut short here; the whole blurb is in the API's blurbs directory." if text != data.strip() else ""
         head = f"{name} ({kind})"
-        body.append(f"{head}\n\n" + "\n".join(f"    {line}" for line in text.splitlines()) + (f"\n\n{note}" if note else ""))
+        body.append(
+            f"{head}\n\n" + (f"{description}\n\n" if description else "") + "\n".join(f"    {line}" for line in text.splitlines())
+            + (f"\n\n{note}" if note else "")
+        )
         html_body.append(
-            f"<p><strong>{html.escape(name)}</strong> ({kind})</p><pre><code>{html.escape(text)}</code></pre>"
+            f"<p><strong>{html.escape(name)}</strong> ({kind})</p>" + (f"<p>{html.escape(description)}</p>" if description else "")
+            + f"<pre><code>{html.escape(text)}</code></pre>"
             + (f"<p>{html.escape(note)}</p>" if note else "")
         )
     if missing:
