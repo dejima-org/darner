@@ -15,16 +15,17 @@ function typing() {
   return [...document.querySelectorAll("textarea, input:not([type=hidden]):not([type=checkbox])")].some((f) => f.value);
 }
 
-function showError(near, message) {
-  const error = near.closest("main").querySelector(".error");
-  error.textContent = message;
-  error.hidden = false;
+function show(near, message, ok = false) {
+  const alert = near.closest("main").querySelector(".alert");
+  alert.textContent = message;
+  alert.classList.toggle("ok", ok);
+  alert.hidden = false;
 }
 
 // Sends one action. Resolves "moved" if it worked and said where to go next, which
 // it has started going to, true if it worked otherwise, and false if it didn't.
 async function send(url, init, near) {
-  near.closest("main").querySelector(".error").hidden = true;
+  near.closest("main").querySelector(".alert").hidden = true;
   try {
     const response = await fetch(url, { method: "POST", ...init, headers: { [REQUEST_HEADER]: "1", ...init.headers } });
     const body = await response.json().catch(() => ({}));
@@ -33,9 +34,9 @@ async function send(url, init, near) {
       location.assign(body.location);
       return "moved";
     }
-    showError(near, body.error || `Failed: ${response.status}`);
+    show(near, body.error || `Failed: ${response.status}`);
   } catch (e) {
-    showError(near, `Failed: ${e.message}`);
+    show(near, `Failed: ${e.message}`);
   }
   return false;
 }
@@ -98,7 +99,7 @@ for (const form of document.querySelectorAll("form[data-upload]")) {
     const url = `${form.dataset.upload}?name=${encodeURIComponent(file.name)}`;
     if (await send(url, { headers: { "Content-Type": "application/octet-stream" }, body: file }, form)) {
       form.reset();
-      showError(form, `Uploaded ${file.name}.`);
+      show(form, `Uploaded ${file.name}.`, true);
     }
     button.disabled = false;
   });

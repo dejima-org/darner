@@ -24,7 +24,7 @@ darner-web = "darner.web:main"
 packages = ["darner", "darner.web"]
 
 [tool.setuptools.package-data]
-"darner.web" = ["templates/*.html", "static/*"]
+"darner.web" = ["templates/*.html", "static/*", "static/fonts/*"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

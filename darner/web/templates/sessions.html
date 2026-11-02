@@ -2,7 +2,7 @@
 {% block main %}
 <h1>Sessions</h1>
 {% if not sessions and not ended %}
-<p class="quiet">No sessions.</p>
+<p class="lead">No sessions. <a href="/new">Start a task</a>.</p>
 {% endif %}
 {% if sessions %}
 <table class="sessions">
@@ -10,11 +10,11 @@
 <tbody>
 {% for s in sessions %}
 <tr>
-<td><a href="/sessions/{{ s.id }}">{{ s.id }}</a></td>
+<td><a href="/sessions/{{ s.id }}" class="id">{{ s.id }}</a></td>
 <td>{{ s.requester }}</td>
 <td>{{ s.started | age }}</td>
-<td>{{ s.state }}</td>
-<td>{% if s.waiting.answer is not none %}a help request{% elif s.waiting.domains is not none %}a domain request{% else %}<span class="quiet">nothing</span>{% endif %}</td>
+<td><span class="state {{ s.state }}">{{ s.state }}</span></td>
+<td>{% if s.waiting.answer is not none %}<span class="waits">a help request</span>{% elif s.waiting.domains is not none %}<span class="waits">a domain request</span>{% else %}<span class="quiet">nothing</span>{% endif %}</td>
 <td>{% if s.link %}<a href="{{ s.link }}" rel="noopener noreferrer">remote access</a>{% endif %}</td>
 </tr>
 {% endfor %}
@@ -23,7 +23,7 @@
 {% endif %}
 {% if ended %}
 <h2>Ended, not yet cleared</h2>
-<ul class="ended">
+<ul class="ended-list">
 {% for task_id in ended %}
 <li><a href="/sessions/{{ task_id }}">{{ task_id }}</a></li>
 {% endfor %}

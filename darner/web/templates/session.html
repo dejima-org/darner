@@ -1,15 +1,11 @@
 {% extends "base.html" %}
 {% block title %}{{ task_id }} · darner{% endblock %}
 {% block main %}
-<h1>{{ task_id }}</h1>
+<h1 class="id">{{ task_id }}</h1>
 {% if session %}
-<p class="summary">Started by {{ session.requester }}, {{ session.started | age }} ago. {{ session.state | capitalize }}.
-{% if session.link %}<a href="{{ session.link }}" rel="noopener noreferrer">Open it in remote access</a>.{% endif %}</p>
-{% else %}
-<p class="summary">Ended. Only its output is kept, until it's cleared.</p>
-{% endif %}
-{% if session %}
-<section class="actions">
+<p class="summary">Started by <strong>{{ session.requester }}</strong>, {{ session.started | age }} ago. <span class="state {{ session.state }}">{{ session.state }}</span>
+{% if session.link %} · <a href="{{ session.link }}" rel="noopener noreferrer">Open it in remote access</a>{% endif %}</p>
+<section class="panel">
 <form method="post" data-action="/sessions/{{ task_id }}/message">
 <label for="message">{% if session.waiting.answer is not none %}Answer its help request{% else %}Send it a message{% endif %}</label>
 <textarea id="message" name="text" rows="3" required></textarea>
@@ -18,44 +14,48 @@
 <form method="post" data-upload="/sessions/{{ task_id }}/files">
 <label for="upload">Put a file in its ~/shared/uploads</label>
 <input id="upload" name="file" type="file" required>
-<button type="submit">Upload</button>
+<button type="submit" class="quiet">Upload</button>
 </form>
-<p><button type="button" data-post="/sessions/{{ task_id }}/stop" data-confirm="Stop {{ task_id }}?">Stop the session</button></p>
-<p class="error" role="alert" hidden></p>
+<div class="row"><button type="button" class="refuse" data-post="/sessions/{{ task_id }}/stop" data-confirm="Stop {{ task_id }}?">Stop the session</button></div>
+<p class="alert" role="alert" hidden></p>
 </section>
 {% else %}
-<section class="actions">
-<p><button type="button" data-post="/sessions/{{ task_id }}/clear" data-confirm="Clear {{ task_id }}? Its output and zips are deleted.">Clear it</button> Its output and zips are deleted when it's cleared.</p>
-<p class="error" role="alert" hidden></p>
+<p class="summary">Ended. Only its output is kept, until it's cleared.</p>
+<section class="panel">
+<div class="row"><button type="button" class="refuse" data-post="/sessions/{{ task_id }}/clear" data-confirm="Clear {{ task_id }}? Its output and zips are deleted.">Clear it</button>
+<span class="quiet">Its output and zips are deleted when it's cleared.</span></div>
+<p class="alert" role="alert" hidden></p>
 </section>
 {% endif %}
-<p class="untrusted">Everything below marked as the agent's was written by the agent. Treat it as untrusted.</p>
+<p class="untrusted">Everything marked as the agent's was written by the agent. Treat it as untrusted.</p>
 <ol class="timeline">
 {% for e in events %}
 <li class="event {{ e.type }}">
 {% if e.type == "output" %}
 <h2>Output{% if e.signalled == false %}, collected without the agent's done signal{% endif %} <span class="by">the agent's</span></h2>
-<div class="agent">{{ e.summary | agent }}</div>
-{% if e.size %}<p><a href="/sessions/{{ task_id }}/outputs/{{ e.seq }}.zip" download>Download the zip</a> ({{ e.size }} bytes)</p>{% endif %}
+<div class="body agent">{{ e.summary | agent }}</div>
+{% if e.size %}<div class="footer"><a href="/sessions/{{ task_id }}/outputs/{{ e.seq }}.zip" class="button quiet" download>Download the zip</a> <span class="quiet">{{ e.size }} bytes</span></div>{% endif %}
 {% elif e.type == "help" %}
 <h2>Help request <span class="by">the agent's</span></h2>
-<div class="agent">{{ e.summary | agent }}</div>
+<div class="body agent">{{ e.summary | agent }}</div>
 {% elif e.type == "waiting" %}
-<h2>Seems to be waiting: its screen hasn't changed for {{ e.data.quiet // 60 }}m</h2>
-{% if e.summary %}<p class="by">The end of its screen, the agent's:</p><pre class="agent">{{ e.summary }}</pre>{% endif %}
+<h2>Seems to be waiting: its screen hasn't changed for {{ e.data.quiet // 60 }}m{% if e.summary %} <span class="by">the end of its screen, the agent's</span>{% endif %}</h2>
+{% if e.summary %}<pre class="agent">{{ e.summary }}</pre>{% endif %}
 {% elif e.type == "domains" %}
 <h2>Asks to reach these domains</h2>
+<div class="body">
 <ul class="domains">
 {% for d in e.data.domains %}
-<li>{{ d.domain }}{% if d.port %}:{{ d.port }}{% endif %}{% if d.internal %} (internal){% endif %}{% if d.denied %} <strong>refused by policy</strong>{% endif %}</li>
+<li>{{ d.domain }}{% if d.port %}:{{ d.port }}{% endif %}{% if d.internal %}<span class="label">internal</span>{% endif %}{% if d.denied %}<span class="label refused">refused by policy</span>{% endif %}</li>
 {% endfor %}
 </ul>
 {% if e.data.rejected %}<p class="quiet">{{ e.data.rejected }} more weren't valid domains.</p>{% endif %}
+</div>
 {% if session and session.waiting.domains is not none and session.waiting.domains.request == e.data.request %}
-<p class="decide">
-<button type="button" data-post="/sessions/{{ task_id }}/domains/{{ e.data.request }}/allow" data-confirm="Allow these domains for {{ task_id }}?">Allow</button>
-<button type="button" data-post="/sessions/{{ task_id }}/domains/{{ e.data.request }}/deny">Deny</button>
-</p>
+<div class="footer">
+<button type="button" class="allow" data-post="/sessions/{{ task_id }}/domains/{{ e.data.request }}/allow" data-confirm="Allow these domains for {{ task_id }}?">Allow</button>
+<button type="button" class="refuse" data-post="/sessions/{{ task_id }}/domains/{{ e.data.request }}/deny">Deny</button>
+</div>
 {% endif %}
 {% elif e.type == "expired" %}
 <h2>Stopped after running for {{ e.data.age // 3600 }}h, longer than sessions may run</h2>

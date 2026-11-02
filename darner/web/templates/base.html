@@ -5,18 +5,21 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="referrer" content="no-referrer">
 <title>{% block title %}darner{% endblock %}</title>
+<link rel="icon" href="/static/favicon.png">
 <link rel="stylesheet" href="/static/app.css">
 <script src="/static/app.js" defer></script>
 </head>
 <body{% if state %} data-state="{{ state }}" data-version="{{ version }}"{% endif %}>
 <header>
-<nav>
-<a href="/" class="name">darner</a>
+<nav aria-label="darner">
+<a href="/" class="brand"><img src="/static/dejima-wordmark-darkmode.png" alt="dejima" width="106" height="26"></a>
+<span class="links">
 <a href="/">Sessions</a>
-<a href="/new">New task</a>
 <a href="/blurbs">Blurbs</a>
 <a href="/configs">Config sets</a>
 <a href="/selftest">Self-test</a>
+</span>
+<a href="/new" class="button new">New task</a>
 </nav>
 </header>
 <main>

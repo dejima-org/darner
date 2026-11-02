@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% block main %}
-<h1>{{ task_id }}</h1>
-<p>This session has ended and been cleared, or never existed here. darner keeps nothing about a session once it's cleared.</p>
+<h1 class="id">{{ task_id }}</h1>
+<p class="lead">This session has ended and been cleared, or never existed here. darner keeps nothing about a session once it's cleared.</p>
+<p><a href="/" class="button quiet">Back to sessions</a></p>
 {% endblock %}
