@@ -527,7 +527,7 @@ async def test_starting_a_task_builds_the_request_as_chat_would(client, fake):
         "task": "add this recipe", "context": "from the site", "ref": "a" * 32,
         "blurbs": ["mealie"], "configs": ["recipes"], "domains": "allrecipes.example.org, cdn.example.org",
         "internal": "recipes.example.com:8443", "dependencies": "pip:requests  apt:jq",
-        "harness": "cline", "backend": "", "model": " qwen3 ", "effort": "", "context_window": "30000",
+        "harness": "cline", "backend": "", "model": " qwen3 ", "effort": "", "context_window": "30000", "network": "sealed",
     }
     resp = await client.post("/tasks", headers=POST, json=body)
     assert resp.status == 200 and await resp.json() == {"location": "/sessions/dn-ccccc"}
@@ -537,7 +537,7 @@ async def test_starting_a_task_builds_the_request_as_chat_would(client, fake):
         "grants": {"domains": ["allrecipes.example.org", "cdn.example.org"], "internal": ["recipes.example.com:8443"],
                    "dependencies": ["pip:requests", "apt:jq"]},
         "requester": "web", "source": {"kind": "web", "ref": "a" * 32},
-        "harness": "cline", "model": "qwen3", "context_window": "30000",
+        "harness": "cline", "model": "qwen3", "context_window": "30000", "network": "sealed",
     }
 
 

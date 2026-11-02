@@ -832,6 +832,18 @@ async def test_bad_context_window_is_refused(client, value):
     assert resp.status == 400 and "context window" in (await resp.json())["error"]
 
 
+async def test_network_reaches_the_job_from_a_request_or_a_config_set(client, config, tmp_path):
+    configs = Path(config["blurbs_dir"]).parent / "configs"
+    configs.mkdir()
+    (configs / "airgapped").write_text("network: sealed\n")
+    assert (await client.post("/v1/tasks", json=request(network="named"), headers=AUTH)).status == 201
+    source = {"kind": "matrix", "ref": "$event2", "channel": "!room:example.org"}
+    assert (await client.post("/v1/tasks", json=request(configs=["airgapped"], source=source), headers=AUTH)).status == 201
+    assert [job.get("network") for job in launched(tmp_path)] == ["named", "sealed"]
+    resp = await client.post("/v1/tasks", json=request(network="open"), headers=AUTH)
+    assert resp.status == 400 and "network" in (await resp.json())["error"]
+
+
 async def test_bad_effort_is_refused(client):
     resp = await client.post("/v1/tasks", json=request(effort="max"), headers=AUTH)
     assert resp.status == 400 and "effort" in (await resp.json())["error"]

@@ -143,6 +143,17 @@ def test_valid_efforts(effort):
     assert validate_job({"id": "dn-abc23", "prompt": "p", "effort": effort}).effort == effort
 
 
+@pytest.mark.parametrize("network", ["named", "sealed"])
+def test_networks(network):
+    assert validate_job({"id": "dn-abc23", "prompt": "p", "network": network}).network == network
+
+
+@pytest.mark.parametrize("network", ["open", "Sealed", "", True])
+def test_invalid_networks(network):
+    with pytest.raises(JobError, match="network"):
+        validate_job({"id": "dn-abc23", "prompt": "p", "network": network})
+
+
 def test_internal_domains_must_be_permitted():
     with pytest.raises(JobError, match="internal domains must also be permitted: recipes.example.com"):
         validate_job({"id": "dn-abc23", "prompt": "p", "domains": ["pypi.org"], "internal_domains": ["recipes.example.com"]})

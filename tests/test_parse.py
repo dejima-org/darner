@@ -120,7 +120,11 @@ def test_context_window_keyword():
     assert parse_reply("go\ncontext_window: 32768", ["@dragonlet:example.org"]).context_window == "32768"
 
 
-@pytest.mark.parametrize("key", ["model", "effort", "context_window"])
+def test_network_keyword():
+    assert parse_reply("go\nnetwork: sealed", ["@dragonlet:example.org"]).network == "sealed"
+
+
+@pytest.mark.parametrize("key", ["model", "effort", "context_window", "network"])
 def test_model_and_effort_take_one_value(key):
     with pytest.raises(ParseError, match=f"{key} takes one value"):
         parse_reply(f"go\n{key}: a b", ["@dragonlet:example.org"])
