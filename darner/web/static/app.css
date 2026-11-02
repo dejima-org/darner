@@ -103,7 +103,9 @@ nav .links a { color: var(--fg-dim); text-decoration: none; }
 nav .links a:hover, nav .links a[aria-current="page"] { color: var(--fg); }
 nav .new { margin-left: auto; }
 
-main { max-width: var(--wrap); margin-inline: auto; padding: 2.5rem var(--pad-x) 4rem; }
+/* Agent-chosen text, such as a link's destination or a requested domain, must
+   wrap rather than run out of sight: nothing in main may clip it. */
+main { max-width: var(--wrap); margin-inline: auto; padding: 2.5rem var(--pad-x) 4rem; overflow-wrap: anywhere; }
 .lead { color: var(--fg-dim); margin-bottom: 1.75rem; }
 
 /* --- buttons ----------------------------------------------------------- */
@@ -176,7 +178,10 @@ td .id { font-size: 0.92rem; }
 .untrusted { color: var(--fg-dim); border-left: 2px solid var(--accent); padding-left: 0.9rem; margin: 2rem 0 1rem; font-size: 0.95rem; }
 
 .timeline { list-style: none; padding: 0; margin: 0; display: grid; gap: 1rem; }
-.event { border: 1px solid var(--rule-strong); border-radius: 6px; overflow: hidden; background: var(--bg); }
+.event { border: 1px solid var(--rule-strong); border-radius: 6px; background: var(--bg); }
+.event > :first-child { border-radius: 5px 5px 0 0; }
+.event > :last-child { border-radius: 0 0 5px 5px; }
+.event > :only-child { border-radius: 5px; }
 .event > h2 {
   margin: 0;
   padding: 0.5rem 1rem;
