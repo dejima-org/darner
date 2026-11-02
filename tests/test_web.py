@@ -54,13 +54,18 @@ class FakeApi:
         async def tasks(request):
             return await record(request, self.sessions)
 
+        # darner-api answers an unknown task, blurb or config set with aiohttp's plain-text 404.
         async def task(request):
             found = [s for s in self.sessions if s["id"] == request.match_info["id"]]
-            return await record(request, found[0] if found else {"error": "not found"}, 200 if found else 404)
+            if not found:
+                raise web.HTTPNotFound()
+            return await record(request, found[0])
 
         async def task_events(request):
             found = self.events.get(request.match_info["id"])
-            return await record(request, found if found is not None else {"error": "not found"}, 200 if found is not None else 404)
+            if found is None:
+                raise web.HTTPNotFound()
+            return await record(request, found)
 
         async def events(request):
             return await record(request, [e for es in self.events.values() for e in es])
@@ -83,14 +88,17 @@ class FakeApi:
 
         async def blurb(request):
             if request.match_info["name"] != "mealie":
-                return await record(request, {"error": "not found"}, 404)
+                raise web.HTTPNotFound()
             return await record(request, "Use <script>the API</script>.\n")
 
         async def configs(request):
-            return await record(request, ["recipes"])
+            return await record(request, ["recipes", "local"])
 
         async def config(request):
-            return await record(request, {"ctx": ["mealie"], "harness": "<i>cline</i>", "file": ["token"]})
+            sets = {"recipes": {"ctx": ["mealie"], "harness": "<i>cline</i>", "file": ["token"]}, "local": {"harness": "cline"}}
+            if request.match_info["name"] not in sets:
+                raise web.HTTPNotFound()
+            return await record(request, sets[request.match_info["name"]])
 
         async def selftest(request):
             return await record(request, {"id": "dn-ccccc"}, 201)
@@ -632,3 +640,28 @@ async def test_a_launch_the_api_says_failed_is_shown_as_it_is(client, fake):
     fake.create_status = 502
     resp = await client.post("/tasks", headers=POST, json={"task": "x", "ref": "a" * 32})
     assert resp.status == 502 and (await resp.json())["error"] == "launch failed: dejima exited 1"
+
+
+async def test_a_session_the_api_no_longer_lists_as_open_shows_as_ended(client, fake):
+    # As a self-test's session does: it's ended from the start, and darner-api
+    # answers GET /v1/tasks/<id> with a plain-text 404.
+    resp, html = await get(client, "/sessions/dn-bbbbb")
+    assert resp.status == 200 and "Only its output is kept" in html
+
+
+async def test_a_config_set_without_files_renders(client):
+    resp, html = await get(client, "/configs/local")
+    assert resp.status == 200 and "harness: cline" in html and "contents aren" not in html
+    assert (await get(client, "/configs/nope"))[0].status == 404
+
+
+async def test_an_answer_that_isn_t_json_is_an_error_page(aiohttp_server, aiohttp_client):
+    async def text(request):
+        return web.Response(text="not json")
+
+    api = web.Application()
+    api.router.add_get("/v1/tasks", text)
+    server = await aiohttp_server(api)
+    client = await aiohttp_client(make_app({"api_url": str(server.make_url("/")), "api_token": TOKEN, "public_origin": ORIGIN}))
+    resp, html = await get(client, "/")
+    assert resp.status == 502 and "answer wasn&#39;t JSON" in html
