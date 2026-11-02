@@ -2,7 +2,7 @@
 
 [← darner README](../README.md)
 
-A browser frontend for darner: everything the Matrix bot does, from a browser, and more. It shows this frontend's sessions at a glance, each one's events so far, the full text of blurbs and config sets, and the self-test. It can start tasks with every keyword the bot takes, send a session a message or answer its help request, upload a file into its `~/shared/uploads`, allow or deny its domain requests, stop it, and clear it once it has ended. It's optional. darner runs without it, and it runs as its own container with its own API token.
+A browser frontend for darner: everything the Matrix bot does, from a browser, and more. It shows this frontend's sessions at a glance, each one's events so far, the full text of blurbs and config sets, and the self-test. It can start tasks with every keyword the bot takes, showing before Start what the task will launch: its config sets combined, its agent settings and where each comes from, the defaults included, and each blurb in full, send a session a message or answer its help request, upload a file into its `~/shared/uploads`, allow or deny its domain requests, stop it, and clear it once it has ended. It's optional. darner runs without it, and it runs as its own container with its own API token.
 
 **It has no login of its own.** Like dejima's [remote access](https://gitbox.branderson.io/dejima/dejima/src/branch/main/docs/remote-access.md), whatever proxy you put in front of it is the whole gate. Don't open it to the public internet.
 

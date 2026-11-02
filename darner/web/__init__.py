@@ -478,15 +478,10 @@ async def new_task_page(request: web.Request) -> web.Response:
     return page(request, "new.html", catalog=catalog, blurbs=blurbs, configs=configs, ref=secrets.token_hex(16))
 
 
-async def start_task(request: web.Request) -> web.Response:
-    body = await _body(request)
-    task, ref = body.get("task"), body.get("ref")
-    if not isinstance(task, str) or not task.strip():
-        return web.json_response({"error": "Say what the task is."}, status=400)
-    if not isinstance(ref, str) or not re.fullmatch(r"[0-9a-f]{32}", ref):
-        return web.json_response({"error": "Reload the page and try again."}, status=400)
+def _task_request(request: web.Request, body: dict, ref: str) -> dict:
+    """The form as the API's task request, the way chat would send it."""
     request_body = {
-        "task": task,
+        "task": body.get("task") if isinstance(body.get("task"), str) else "",
         "context": body.get("context") if isinstance(body.get("context"), str) else "",
         "blurbs": _words(body.get("blurbs")),
         "configs": _words(body.get("configs")),
@@ -501,6 +496,26 @@ async def start_task(request: web.Request) -> web.Response:
     for key in ("harness", "backend", "model", "effort", "context_window", "network"):
         if isinstance(body.get(key), str) and body[key].strip():
             request_body[key] = body[key].strip()
+    return request_body
+
+
+async def preview_task(request: web.Request) -> web.Response:
+    body = await _body(request)
+    try:
+        result = await api(request, "POST", "/v1/tasks/preview", json=_task_request(request, body, "0" * 32))
+    except ApiError as e:
+        return web.json_response({"error": str(e)}, status=_status(e))
+    return web.json_response(result)
+
+
+async def start_task(request: web.Request) -> web.Response:
+    body = await _body(request)
+    task, ref = body.get("task"), body.get("ref")
+    if not isinstance(task, str) or not task.strip():
+        return web.json_response({"error": "Say what the task is."}, status=400)
+    if not isinstance(ref, str) or not re.fullmatch(r"[0-9a-f]{32}", ref):
+        return web.json_response({"error": "Reload the page and try again."}, status=400)
+    request_body = _task_request(request, body, ref)
     timeout = aiohttp.ClientTimeout(total=request.app[CONFIG]["launch_timeout"])
     try:
         status, result = await api(request, "POST", "/v1/tasks", with_status=True, json=request_body, timeout=timeout)
@@ -569,6 +584,7 @@ def make_app(config: dict) -> web.Application:
     app.router.add_post("/selftest", run_selftest)
     app.router.add_get("/new", new_task_page)
     app.router.add_post("/tasks", start_task)
+    app.router.add_post("/tasks/preview", preview_task)
     app.router.add_post(f"/sessions/{TASK_ID}/message", send_message)
     app.router.add_post(f"/sessions/{TASK_ID}/stop", stop_session)
     app.router.add_post(f"/sessions/{TASK_ID}/clear", clear_session)

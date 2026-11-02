@@ -105,21 +105,35 @@ for (const form of document.querySelectorAll("form[data-upload]")) {
   });
 }
 
-// The agent fields offer only what the harness and backend above them can take,
-// and a choice a change above no longer allows goes back to the default.
+// The new-task form. The agent fields are changes to what the task gets from its
+// config sets, or else from the defaults, and offer only what fits the harness and
+// backend above them; a change above that a choice no longer fits sets it back to
+// No change. Above Start, what Start launches, as the API would build it.
 const agent = document.querySelector("fieldset[data-catalog]");
 if (agent) {
+  const form = agent.closest("form");
   const catalog = JSON.parse(agent.dataset.catalog);
-  const field = (id) => agent.querySelector(`#${id}`);
-  const [harness, backend, model, models, effort, contextWindow] =
-    ["harness", "backend", "model", "models", "effort", "context_window"].map(field);
+  const field = (id) => form.querySelector(`#${id}`);
+  const [harness, backend, model, models, effort, contextWindow, network] =
+    ["harness", "backend", "model", "models", "effort", "context_window", "network"].map(field);
   const allEfforts = [...effort.options].slice(1).map((o) => o.value);
-  const named = (value) => (value ? `the harness's default (${value})` : "the harness's default");
+  const NETWORKS = { named: "only what's named", sealed: "only what's named, and sealed" };
+  let fromConfigs = {};
+  let pair = null;
 
-  function offered() {
+  function offered(name) {
     const open = { backends: catalog.backends, efforts: allEfforts, context_window: true, defaults: {}, models: {} };
-    return catalog.options?.[harness.value || catalog.default_harness] ?? open;
+    return catalog.options?.[name] ?? open;
   }
+
+  // What a field gets with No change, and where from.
+  function unchanged(key, defaults) {
+    if (fromConfigs[key] != null) return [String(fromConfigs[key]), "from config sets"];
+    if (defaults[key] != null) return [String(defaults[key]), "default"];
+    return [null, null];
+  }
+
+  const noChange = ([value, source]) => (value ? `No change: ${value}, ${source}` : "No change");
 
   function fill(select, values, label) {
     const chosen = select.value;
@@ -127,32 +141,122 @@ if (agent) {
     select.value = values.includes(chosen) ? chosen : "";
   }
 
-  function listed() {
-    const o = offered();
-    return o.models[backend.value || o.defaults.backend] ?? [];
+  // The harness and backend the task ends up with, and what that harness offers.
+  function current() {
+    const name = harness.value || unchanged("harness", { harness: catalog.default_harness })[0];
+    const o = offered(name);
+    return { name, o, backend: backend.value || unchanged("backend", o.defaults)[0] };
   }
 
   function update() {
-    const o = offered();
-    fill(backend, o.backends, named(o.defaults.backend));
-    fill(effort, o.efforts ?? allEfforts, named(o.defaults.effort));
-    const ids = listed();
-    models.replaceChildren(...ids.map((m) => new Option(m.context_window ? `${m.context_window} tokens` : "", m.id)));
-    model.placeholder = named(o.defaults.model);
-    if (model.value && !ids.some((m) => m.id === model.value)) {
+    harness.options[0].textContent = noChange(unchanged("harness", { harness: catalog.default_harness }));
+    let { o } = current();
+    fill(backend, o.backends, noChange(unchanged("backend", o.defaults)));
+    fill(effort, o.efforts ?? allEfforts, noChange(unchanged("effort", o.defaults)));
+    const now = current();
+    o = now.o;
+    const listed = o.models[now.backend] ?? [];
+    models.replaceChildren(...listed.map((m) => new Option(m.context_window ? `${m.context_window} tokens` : "", m.id)));
+    model.placeholder = noChange(unchanged("model", o.defaults));
+    if (pair !== null && pair !== `${now.name} ${now.backend}` && model.value && !listed.some((m) => m.id === model.value)) {
       model.value = "";
       contextWindow.value = "";
     }
+    pair = `${now.name} ${now.backend}`;
     contextWindow.disabled = !o.context_window;
     if (!o.context_window) contextWindow.value = "";
-    contextWindow.placeholder = o.context_window ? named(o.defaults.context_window) : "not taken by this harness";
+    contextWindow.placeholder = o.context_window ? noChange(unchanged("context_window", o.defaults)) : "not taken by this harness";
+    const reach = fromConfigs.network ? [NETWORKS[fromConfigs.network], "from config sets"] : ["dejima's own allowlist too", "default"];
+    network.options[0].textContent = noChange(reach);
   }
 
-  harness.addEventListener("change", update);
-  backend.addEventListener("change", update);
-  model.addEventListener("input", () => {
-    const found = listed().find((m) => m.id === model.value);
-    if (found?.context_window && !contextWindow.disabled) contextWindow.value = found.context_window;
+  function row(list, name, value, source) {
+    const dd = document.createElement("dd");
+    dd.textContent = value;
+    if (source) {
+      const from = document.createElement("span");
+      from.className = "quiet";
+      from.textContent = source;
+      dd.append(from);
+    }
+    const dt = document.createElement("dt");
+    dt.textContent = name;
+    list.append(dt, dd);
+  }
+
+  function showPreview(preview, error) {
+    const list = field("preview");
+    const blurbs = field("preview-blurbs");
+    const refusal = form.querySelector(".preview .refusal");
+    list.replaceChildren();
+    blurbs.replaceChildren();
+    refusal.hidden = !error;
+    refusal.textContent = error ? `Start would be refused: ${error}` : "";
+    if (!preview) return;
+    const set = preview.settings;
+    const name = set.harness ?? catalog.default_harness;
+    const o = offered(name);
+    const setting = (key, input) => {
+      if (set[key] != null) return [String(set[key]), input.value ? "set here" : "from config sets"];
+      const fallback = key === "harness" ? catalog.default_harness : o.defaults[key];
+      return fallback != null ? [String(fallback), "default"] : ["dejima decides", null];
+    };
+    row(list, "Harness", ...setting("harness", harness));
+    row(list, "Backend", ...setting("backend", backend));
+    row(list, "Model", ...setting("model", model));
+    row(list, "Effort", ...setting("effort", effort));
+    if (o.context_window) row(list, "Context window", ...setting("context_window", contextWindow));
+    row(list, "Reach", set.network ? NETWORKS[set.network] : "dejima's own allowlist too", set.network ? (network.value ? "set here" : "from config sets") : null);
+    for (const [label, values] of [["Domains", preview.domains], ["Internal domains", preview.internal_domains],
+      ["Dependencies", preview.dependencies], ["Files", preview.files]]) {
+      row(list, label, values.length ? values.join(", ") : "none", null);
+    }
+    for (const blurb of preview.blurbs) {
+      const details = document.createElement("details");
+      const summary = document.createElement("summary");
+      summary.textContent = `Blurb: ${blurb.name}`;
+      const text = document.createElement("pre");
+      text.textContent = blurb.text;
+      details.append(summary, text);
+      blurbs.append(details);
+    }
+  }
+
+  let timer;
+  let asked = 0;
+  async function preview() {
+    const n = ++asked;
+    try {
+      const response = await fetch("/tasks/preview", {
+        method: "POST", headers: { [REQUEST_HEADER]: "1", "Content-Type": "application/json" }, body: JSON.stringify(fields(form)),
+      });
+      const body = await response.json().catch(() => ({}));
+      if (n !== asked) return;
+      if (!response.ok) return showPreview(null, body.error || `Failed: ${response.status}`);
+      fromConfigs = body.from_configs;
+      const before = JSON.stringify(fields(form));
+      update();
+      // A config set's harness can leave a change below it that no longer fits.
+      if (JSON.stringify(fields(form)) !== before) return later();
+      showPreview(body);
+    } catch (e) {
+      if (n === asked) showPreview(null, `couldn't check it: ${e.message}`);
+    }
+  }
+
+  function later() {
+    clearTimeout(timer);
+    timer = setTimeout(preview, 250);
+  }
+
+  form.addEventListener("input", (event) => {
+    if (event.target === model) {
+      const found = (current().o.models[current().backend] ?? []).find((m) => m.id === model.value);
+      if (found?.context_window && !contextWindow.disabled) contextWindow.value = found.context_window;
+    }
+    update();
+    later();
   });
   update();
+  preview();
 }

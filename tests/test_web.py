@@ -115,7 +115,7 @@ class FakeApi:
         async def config(request):
             sets = {
                 "recipes": {"ctx": ["mealie"], "harness": "<i>cline</i>", "file": ["token"], "description": "Adds <b>recipes</b>."},
-                "local": {"harness": "cline"},
+                "local": {"backend": "openrouter"},
             }
             if request.match_info["name"] not in sets:
                 raise web.HTTPNotFound()
@@ -144,6 +144,22 @@ class FakeApi:
         async def catalog(request):
             return await record(request, CATALOG)
 
+        async def preview(request):
+            body = await request.json()
+            sets = {"recipes": {"harness": "cline", "context_window": 30000}, "local": {"backend": "openrouter"}}
+            from_configs = {}
+            for name in body.get("configs", []):
+                from_configs |= sets.get(name, {})
+            settings = from_configs | {k: body[k] for k in ("harness", "backend", "model", "effort", "context_window", "network") if k in body}
+            self.calls.append((request.method, request.path, body))
+            if settings.get("harness", "claude-code") == "claude-code" and settings.get("backend") == "openrouter":
+                return web.json_response({"error": "claude-code can't use the openrouter backend, only anthropic"}, status=400)
+            return web.json_response({
+                "settings": settings, "from_configs": from_configs, "domains": body["grants"]["domains"], "internal_domains": [],
+                "dependencies": [], "files": ["token"] if "recipes" in body.get("configs", []) else [],
+                "blurbs": [{"name": n, "text": "Use <script>the API</script>.\n"} for n in body.get("blurbs", [])],
+            })
+
         async def create(request):
             if self.create_status >= 400:
                 return await record(request, {"error": "launch failed: dejima exited 1"}, self.create_status)
@@ -167,6 +183,7 @@ class FakeApi:
         app.router.add_post("/v1/tasks/{id}/files", files)
         app.router.add_get("/v1/catalog", catalog)
         app.router.add_post("/v1/tasks", create)
+        app.router.add_post("/v1/tasks/preview", preview)
         return app
 
 
@@ -538,9 +555,27 @@ async def test_an_upload_over_max_upload_is_refused(aiohttp_client, fake):
 async def test_the_new_task_page_offers_what_the_api_has(client):
     resp, html = await get(client, "/new")
     assert resp.status == 200
-    assert '<option>cline</option>' in html and "the default (claude-code)" in html and '<option>self-hosted</option>' in html
+    assert '<option>cline</option>' in html and '<option>self-hosted</option>' in html
+    # The default harness reaches the page's script as the catalog's, never as darner's own choice.
+    assert '"default_harness": "claude-code"' in html
     assert 'name="blurbs" value="mealie"' in html and 'name="configs" value="recipes"' in html
     assert 'name="ref" value="' in html
+
+
+async def test_the_preview_asks_the_api_with_the_request_start_would_send(client, fake):
+    body = {"task": "", "configs": ["recipes"], "blurbs": ["mealie"], "domains": "pypi.org", "harness": "", "network": "sealed"}
+    resp = await client.post("/tasks/preview", headers=POST, json=body)
+    assert resp.status == 200
+    shown = await resp.json()
+    assert shown["settings"] == {"harness": "cline", "context_window": 30000, "network": "sealed"} and shown["files"] == ["token"]
+    [(path, sent)] = posted(fake)
+    assert path == "/v1/tasks/preview" and sent["configs"] == ["recipes"] and sent["network"] == "sealed" and "harness" not in sent
+    assert (await client.post("/tasks/preview", headers=HOST, json=body)).status == 403
+
+
+async def test_a_refused_preview_says_why(client):
+    resp = await client.post("/tasks/preview", headers=POST, json={"harness": "claude-code", "backend": "openrouter"})
+    assert resp.status == 400 and "can't use the openrouter backend" in (await resp.json())["error"]
 
 
 async def test_starting_a_task_builds_the_request_as_chat_would(client, fake):
@@ -675,7 +710,7 @@ async def test_a_session_the_api_no_longer_lists_as_open_shows_as_ended(client, 
 
 async def test_a_config_set_without_files_renders(client):
     resp, html = await get(client, "/configs/local")
-    assert resp.status == 200 and "harness: cline" in html and "contents aren" not in html
+    assert resp.status == 200 and "backend: openrouter" in html and "contents aren" not in html
     assert (await get(client, "/configs/nope"))[0].status == 404
 
 

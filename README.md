@@ -213,7 +213,7 @@ On the dejima host, as `DEJIMA_USER`, authorise the API's key to run the launche
 API_ADDR=192.0.2.10
 API_PUBKEY='ssh-ed25519 AAAA... darner-api'
 SHARE_DIR=$(dejima --print-config | sed -n 's/^core.share_dir=//p'); SHARE_DIR=${SHARE_DIR/#\~/$HOME}
-LAUNCHER_OPTIONS="--dejima $(command -v dejima) --dejima-allow $(command -v dejima-allow) --dejima-share $(command -v dejima-share) --share-root $SHARE_DIR/isolated --harness claude-code --backend claude-code=anthropic"
+LAUNCHER_OPTIONS="--dejima $(command -v dejima) --dejima-allow $(command -v dejima-allow) --dejima-share $(command -v dejima-share) --share-root $SHARE_DIR/isolated"
 
 install -d -m 700 ~/.ssh
 touch ~/.ssh/authorized_keys
@@ -225,7 +225,7 @@ ssh-keygen -lf ~/.ssh/authorized_keys | grep darner-api   # no output means sshd
 
 - `command=` makes the launcher the only thing this key can run, whatever the client asks for. Its paths are absolute, since a non-interactive ssh login has a minimal `PATH` without `~/.local/bin`. That is also why `--dejima` gives dejima's full path. `--share-root` comes from dejima's own `share_dir`, since output is only read from where dejima puts isolated sessions' `~/shared`.
 - `restrict` turns off forwarding and terminals, and `from=` accepts the key only from `API_ADDR`.
-- `LAUNCHER_OPTIONS` holds the defaults every session gets. Add `--identity darner` if you set one up in step 1, and `--answers` if replies in chat may be typed into sessions. All options are listed under [Launcher options](#launcher-options).
+- `LAUNCHER_OPTIONS` holds the defaults every session gets. Add `--identity darner` if you set one up in step 1, and `--answers` if replies in chat may be typed into sessions. Sessions use dejima's own default harness and its settings unless a task or an option such as `--harness` says otherwise, and frontends show those defaults. All options are listed under [Launcher options](#launcher-options).
 - To change the options later, delete the `darner-api` line and run this step again with new `LAUNCHER_OPTIONS`. Don't edit it in place: an option outside the quotes makes sshd skip the whole line, which shows up as `Permission denied (publickey)`.
 
 ### 5. Configure and start the API
@@ -391,7 +391,7 @@ Reply to a note with a message that mentions the bot:
 ctx: myapp
 allow: pypi.org, files.pythonhosted.org
 deps: apt:jq pip:pytest-xdist
-harness: claude-code
+harness: cline
 backend: openrouter
 ```
 
@@ -437,7 +437,7 @@ The note is the task. The rest of the reply, minus the mention and the keyword l
 | `context_window:` | context window for this task, in tokens, for a harness that has the setting (cline). Set it a little under what the model's server allows, so cline compacts before the server refuses |
 | `network:` | `named`: the session reaches only what this task names and its model, not dejima's own allowlist (dejima's `--drop-domains`). `sealed`: that, and the session doesn't start if it could look up any name, so only addresses are reachable (`--require-sealed`). A sealed session needs its model reached by address, such as a self-hosted one, and a domain request can't grant it a name later |
 
-darner refuses a task asking for a backend, effort level or context window its harness can't take, as dejima's own manifests declare them: the backends speaking one of the harness's `api_styles`, the levels of its `effort` key, and whether it has a `context_window` key. The API checks against the launcher's catalog, fetched at most every five minutes, and the launcher checks again with its defaults filled in.
+darner refuses a task asking for a backend, effort level or context window its harness can't take, as dejima's own manifests declare them: the backends speaking one of the harness's `api_styles`, the levels of its `effort` key, and whether it has a `context_window` key. A task naming no harness is held to the one dejima will pick, with its defaults. The API checks against the launcher's catalog, fetched at most every five minutes, and the launcher checks again, with its and dejima's defaults filled in.
 
 The bot replies with the task id and its tmux target, plus a link to the session if the API has `remote_access_url` set, or with why it was refused. It only acts when both the reply and the note are from users in its `allowlist`, since the note becomes the agent's instructions.
 
@@ -576,7 +576,7 @@ Grants use `dejima --domains FILE` and `--dependencies FILE`, and output collect
   "context": "...",
   "blurbs": ["myapp"],
   "grants": {"domains": ["pypi.org"], "dependencies": ["pip:pytest"]},
-  "harness": "claude-code",
+  "harness": "cline",
   "backend": "openrouter",
   "requester": "@user:example.org",
   "source": {"kind": "matrix", "ref": "$event-id", "channel": "!room-id"}
@@ -593,12 +593,13 @@ Every `poll_interval` seconds the API asks the dejima host for the status of lau
 | `GET /v1/tasks/<id>/outputs/<seq>.zip` | an `output` event's archive (`size` 0 means it was rejected, and `summary` says why) |
 | `GET /v1/tasks/<id>/events` | a task's events so far, collected or not, in the same form, without acknowledging any; gone once the task is purged |
 | `POST /v1/events/<seq>/ack` | mark an event delivered |
+| `POST /v1/tasks/preview` | a `POST /v1/tasks` body, whose `task` may be empty: what it would launch, without launching it. `settings` are the agent settings it asks for, `from_configs` those its config sets gave, then `domains`, `internal_domains`, `dependencies`, `files` (names only) and `blurbs` (`{name, text}`). Refused as the task would be. Defaults are the catalog's |
 | `GET /v1/blurbs` | names of the available context blurbs |
 | `GET /v1/configs` | names of the available config sets |
 | `POST /v1/selftest` | `{requester, source}`: a finished task whose output, help request and waiting screen are hostile text, delivered through `/v1/events` like any task's; see [Checking a frontend](#checking-a-frontend) |
 | `GET /v1/blurbs/{name}` | a context blurb's text |
 | `GET /v1/configs/{name}` | what a config set applies, by keyword; `file` lists names only, never contents |
-| `GET /v1/catalog` | the dejima host's harnesses and backends, the launcher's default harness and its defaults for each, and under `options`, what each harness can be set to: its backends, effort levels, whether it takes a context window, and `[catalog]`'s models for each backend |
+| `GET /v1/catalog` | the dejima host's harnesses and backends, the default harness and each harness's defaults (dejima's own, from `dejima --print-config`, with the launcher's options in their place), and under `options`, what each harness can be set to: its backends, effort levels, whether it takes a context window, and `[catalog]`'s models for each backend |
 | `POST /v1/tasks/<id>/domains/<n>/allow` | `{requester}`: grant domain request `n` as it was shown, minus what policy refuses |
 | `POST /v1/tasks/<id>/domains/<n>/deny` | `{requester}`: refuse domain request `n` |
 | `GET /v1/tasks` | the client's open sessions, with what each is waiting on: `{id, target, link, requester, started, state, answerable, waiting: {answer, domains}}` |

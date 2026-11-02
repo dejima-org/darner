@@ -308,6 +308,13 @@ def _without_port(domain: object) -> object:
 
 
 def build_job(config: dict, body: object) -> tuple[dict, dict, str]:
+    job, source, requester, _, _ = _build(config, body)
+    return job, source, requester
+
+
+def _build(config: dict, body: object, read_files: bool = True) -> tuple[dict, dict, str, dict, list[tuple[str, str]]]:
+    """The job a request makes, its source and requester, and the combined config sets and blurbs it was made from.
+    Unless read_files, its config sets' files are checked but not read, and left empty."""
     if not isinstance(body, dict):
         raise RequestError(400, "body must be a JSON object")
     unknown = set(body) - REQUEST_KEYS
@@ -320,7 +327,7 @@ def build_job(config: dict, body: object) -> tuple[dict, dict, str]:
         raise RequestError(400, "grants must be an object with domains, internal and dependencies")
     try:
         sets = configsets.load(Path(config.get("configs_dir", "")), _list(body, "configs"))
-        files = configsets.load_files(Path(config.get("configs_dir", "")), sets["files"])
+        files = configsets.load_files(Path(config.get("configs_dir", "")), sets["files"], read_files)
     except (configsets.ConfigSetError, OSError) as e:
         raise RequestError(400, str(e))
     internal = _unique(_without_port(d) for d in sets["internal"] + _list(grants, "internal"))
@@ -356,7 +363,7 @@ def build_job(config: dict, body: object) -> tuple[dict, dict, str]:
     except JobError as e:
         raise RequestError(400, str(e))
     check_policy(config.get("policy", {}), job["domains"], job["internal_domains"], job["dependencies"])
-    return job, source, requester
+    return job, source, requester, sets, blurbs
 
 
 async def _read_capped(stream: asyncio.StreamReader, cap: int) -> bytes:
@@ -641,6 +648,36 @@ def _client(request: web.Request) -> str:
     if client is None:
         raise web.HTTPUnauthorized(text=json.dumps({"error": "unauthorized"}), content_type="application/json")
     return client
+
+
+async def preview_task(request: web.Request) -> web.Response:
+    """What POST /v1/tasks would launch for this body, without launching it: the
+    settings it asks for, those its config sets gave, and the blurbs, in full.
+    A task isn't needed yet. Refused as POST /v1/tasks would refuse it, defaults included."""
+    _client(request)
+    try:
+        body = await request.json()
+    except ValueError:
+        return web.json_response({"error": "body must be JSON"}, status=400)
+    if isinstance(body, dict) and not (isinstance(body.get("task"), str) and body["task"].strip()):
+        body = {**body, "task": "-"}
+    try:
+        job, _, _, sets, blurbs = _build(request.app[CONFIG], body, read_files=False)
+        await check_job_harness(request.app, job)
+    except RequestError as e:
+        return web.json_response({"error": str(e)}, status=e.status)
+    return web.json_response({
+        "settings": {key: job[key] for key in configsets.SINGLES if key in job},
+        "from_configs": {
+            key: int(value) if key == "context_window" and value.isdecimal() else value
+            for key, value in sets.items() if key in configsets.SINGLES and value is not None
+        },
+        "domains": job["domains"],
+        "internal_domains": job["internal_domains"],
+        "dependencies": job["dependencies"],
+        "files": [f["name"] for f in job["files"]],
+        "blurbs": [{"name": name, "text": text} for name, text in blurbs],
+    })
 
 
 async def create_task(request: web.Request) -> web.Response:
@@ -1062,6 +1099,7 @@ def make_app(config: dict, poll: bool = True) -> web.Application:
     app[STATUS_CACHE] = {}
     app[CATALOG_CACHE] = {}
     app.router.add_post("/v1/tasks", create_task)
+    app.router.add_post("/v1/tasks/preview", preview_task)
     app.router.add_post("/v1/selftest", create_selftest)
     app.router.add_get("/v1/events", list_events)
     app.router.add_get("/v1/blurbs", list_blurbs)

@@ -28,6 +28,23 @@ await page.fill("#task", "add this recipe");
 await page.check('input[name="blurbs"][value="mealie"]');
 await page.fill("#domains", "allrecipes.example.org");
 const offered = (id) => page.$$eval(`#${id} option`, (os) => os.map((o) => o.value));
+const shown = () => page.$$eval("#preview dt", (dts) => Object.fromEntries(dts.map((dt) => [dt.textContent, dt.nextElementSibling.textContent])));
+const firstLabel = (id) => page.$eval(`#${id} option`, (o) => o.textContent);
+await page.waitForFunction(() => document.querySelector("#preview dt"));
+result.preview = { before: await shown(), harness: await firstLabel("harness") };
+await page.check('input[name="configs"][value="recipes"]');
+await page.waitForFunction(() => document.querySelector("#preview dd")?.textContent.startsWith("cline"));
+result.preview.recipes = {
+  shown: await shown(), harness: await firstLabel("harness"), backends: await offered("backend"),
+  context_window: await page.getAttribute("#context_window", "placeholder"),
+  blurbs: await page.$$eval("#preview-blurbs details", (ds) => ds.map((d) => [d.querySelector("summary").textContent, d.open])),
+};
+await page.uncheck('input[name="configs"][value="recipes"]');
+await page.check('input[name="configs"][value="local"]');
+await page.waitForFunction(() => !document.querySelector(".preview .refusal").hidden);
+result.preview.local = await page.textContent(".preview .refusal");
+await page.uncheck('input[name="configs"][value="local"]');
+await page.waitForFunction(() => document.querySelector("#preview dd")?.textContent.startsWith("claude-code"));
 result.agent = { default: { backends: await offered("backend"), models: await offered("models") } };
 await page.selectOption("#harness", "cline");
 await page.selectOption("#backend", "self-hosted");
