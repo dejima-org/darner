@@ -2,7 +2,8 @@
 // Copyright (C) 2026 Brad Anderson
 //
 // Loads a darner-web page at a phone's width and prints, as JSON, whether each
-// given string is shown inside the timeline pane it's in, where it can be seen.
+// given string is shown inside both its timeline pane and the screen, and
+// whether the page scrolls sideways.
 // tests/test_web_browser.py runs it against a fake API and asserts on that.
 //
 //   node tests/browser/wrap.mjs <url> <string>...
@@ -24,10 +25,12 @@ const result = await page.evaluate((needles) => {
       range.setEnd(node, at + needle.length);
       const text = range.getBoundingClientRect();
       const pane = node.parentElement.closest(".event").getBoundingClientRect();
-      found[needle] = text.left >= pane.left && text.right <= pane.right && text.width > 0;
+      const screen = document.documentElement.clientWidth;
+      found[needle] = text.width > 0 && text.left >= Math.max(pane.left, 0) && text.right <= Math.min(pane.right, screen);
     }
   }
-  return found;
+  const root = document.documentElement;
+  return { found, scrolls_sideways: root.scrollWidth > root.clientWidth };
 }, needles);
 await browser.close();
 console.log(JSON.stringify(result));

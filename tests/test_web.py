@@ -673,7 +673,9 @@ async def test_an_answer_that_isn_t_json_is_an_error_page(aiohttp_server, aiohtt
 def test_the_vendored_static_files_are_the_recorded_ones():
     static = Path(__file__).parent.parent / "darner" / "web" / "static"
     recorded = dict(reversed(line.split("  ", 1)) for line in (static / "sources.sha256").read_text().splitlines())
-    present = {str(f.relative_to(static)) for f in static.rglob("*") if f.suffix in (".woff2", ".png")}
-    assert set(recorded) == present
+    # Text files are reviewed in diffs; anything else must be listed with its hash.
+    reviewed = {"app.css", "app.js", "README.md", "sources.sha256"}
+    present = {str(f.relative_to(static)) for f in static.rglob("*") if f.is_file() and "__pycache__" not in f.parts}
+    assert set(recorded) == {name for name in present if name not in reviewed and not name.startswith("fonts/LICENSE-")}
     for name, digest in recorded.items():
         assert hashlib.sha256((static / name).read_bytes()).hexdigest() == digest, name

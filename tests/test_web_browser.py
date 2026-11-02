@@ -130,7 +130,7 @@ async def test_agent_chosen_addresses_are_seen_whole_on_a_phone(aiohttp_server):
     try:
         script = Path(__file__).parent / "browser" / "wrap.mjs"
         proc = await asyncio.create_subprocess_exec(
-            "node", str(script), f"{origin}/sessions/dn-aaaaa", "github.com.example", "evil.example/x", "pypi.org.", ".evil.example",
+            "node", str(script), f"{origin}/sessions/dn-aaaaa", "github.com.example", "ghij.evil.example/x", "pypi.org.files", "opq.evil.example",
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         )
         out, err = await proc.communicate()
@@ -138,5 +138,6 @@ async def test_agent_chosen_addresses_are_seen_whole_on_a_phone(aiohttp_server):
         result = json.loads(out)
     finally:
         await server.close()
-    # Positive controls: each address's start is found and inside its pane, so a missing one can't pass.
-    assert result == {"github.com.example": True, "evil.example/x": True, "pypi.org.": True, ".evil.example": True}
+    # Positive controls: each address's start is found and inside its pane and the screen, so a missing one can't pass.
+    assert result["found"] == {"github.com.example": True, "ghij.evil.example/x": True, "pypi.org.files": True, "opq.evil.example": True}
+    assert not result["scrolls_sideways"]
