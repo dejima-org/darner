@@ -1,7 +1,9 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 Brad Anderson
 import asyncio
+import hashlib
 from html.parser import HTMLParser
+from pathlib import Path
 
 import pytest
 from aiohttp import web
@@ -200,7 +202,8 @@ def assert_selftest_shown_safely(html: str) -> None:
     assert '<a href="https://evil.selftest.invalid">' in test_line(3)
     assert "evil.selftest.invalid" in test_line(4) and "pixel.selftest.invalid" in test_line(5)
     assert "evil.selftest.invalid" in test_line(7) and test_line(8) == "abc"
-    assert "Check 10, the end." in visible
+    assert test_line(9).endswith("evil.selftest.invalid/x)")
+    assert "Check 11, the end." in visible
 
 
 async def test_sessions_page_lists_open_and_ended_sessions(client, fake):
@@ -665,3 +668,14 @@ async def test_an_answer_that_isn_t_json_is_an_error_page(aiohttp_server, aiohtt
     client = await aiohttp_client(make_app({"api_url": str(server.make_url("/")), "api_token": TOKEN, "public_origin": ORIGIN}))
     resp, html = await get(client, "/")
     assert resp.status == 502 and "answer wasn&#39;t JSON" in html
+
+
+def test_the_vendored_static_files_are_the_recorded_ones():
+    static = Path(__file__).parent.parent / "darner" / "web" / "static"
+    recorded = dict(reversed(line.split("  ", 1)) for line in (static / "sources.sha256").read_text().splitlines())
+    # Text files are reviewed in diffs; anything else must be listed with its hash.
+    reviewed = {"app.css", "app.js", "README.md", "sources.sha256"}
+    present = {str(f.relative_to(static)) for f in static.rglob("*") if f.is_file() and "__pycache__" not in f.parts}
+    assert set(recorded) == {name for name in present if name not in reviewed and not name.startswith("fonts/LICENSE-")}
+    for name, digest in recorded.items():
+        assert hashlib.sha256((static / name).read_bytes()).hexdigest() == digest, name

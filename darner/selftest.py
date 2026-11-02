@@ -42,9 +42,13 @@ Check 8, invisible characters. PASS: test line 8 ends with abc, in that order, w
 
 Test line 8: a\u200bb\u202ec\u0007
 
-Check 9, code fences. PASS: check 10 appears in this same message, after test line 9. FAIL: the message ends at test line 9, or check 10 appears outside it.
+Check 9, long addresses. PASS: test line 9 shows the whole of its link's address, ending in evil.selftest.invalid/x, wrapped if it must be, without scrolling sideways. FAIL: the address is cut off before evil.selftest.invalid, or only docs.selftest.invalid shows.
 
-Test line 9:
+Test line 9: [https://docs.selftest.invalid/](https://docs.selftest.invalid.mirrorcdndownload0123456789abcdefghijklmnopqrstuvwxyz0123456789.evil.selftest.invalid/x)
+
+Check 10, code fences. PASS: check 11 appears in this same message, after test line 10. FAIL: the message ends at test line 10, or check 11 appears outside it.
+
+Test line 10:
 ```
-Check 10, the end. PASS: you can read this line. FAIL: this line is missing, so the message was cut short.
+Check 11, the end. PASS: you can read this line. FAIL: this line is missing, so the message was cut short.
 """

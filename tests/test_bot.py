@@ -1325,7 +1325,8 @@ def assert_shown_safely(content: dict) -> None:
     assert "pixel.selftest.invalid" in test_line(5), "check 5"
     assert "evil.selftest.invalid" in test_line(7), "check 7"
     assert test_line(8) == "abc", "check 8"
-    assert "Check 10, the end." in visible and "Check 10, the end." in content["body"], "check 10: the message was cut short"
+    assert test_line(9).endswith("evil.selftest.invalid/x)"), "check 9"
+    assert "Check 11, the end." in visible and "Check 11, the end." in content["body"], "check 11: the message was cut short"
 
 
 async def test_selftest_is_shown_safely(maubot_plugin, maubot_test_bot, api):
@@ -1377,7 +1378,7 @@ def test_selftest_checks_hold_no_markup():
     from darner.selftest import PAYLOAD
 
     checks = [line for line in PAYLOAD.splitlines() if line.startswith(("Check ", "Frontend self-test"))]
-    assert len(checks) == 11
+    assert len(checks) == 12
     for line in checks:
         assert not any(mark in line for mark in ("<", ">", "](", "`", "*", "_", "@")), line
 

@@ -642,7 +642,7 @@ A pushed tag releases nothing; only these two branches do, so the forge must pro
 
 The API passes on what the agent wrote with control and invisible characters removed, and nothing more: making it safe to show is each frontend's job. `POST /v1/selftest`, or `@bot selftest` in Matrix, sends text written like a hostile agent's ([`darner/selftest.py`](darner/selftest.py)) as a finished task's output, help request and waiting screen. It arrives through `/v1/events` like any task's, so it goes down the same paths an agent's text does.
 
-Each check says what you see if the frontend is safe (PASS) and what you see if it isn't (FAIL), then gives a test line on its own: raw HTML, scripts and HTML links must show as characters; markdown and Slack links and markdown images must show where they really point, not just "click here"; `@room` and the like, in Matrix or Slack syntax, must notify nobody; and the last check must arrive, so a cut-off message shows.
+Each check says what you see if the frontend is safe (PASS) and what you see if it isn't (FAIL), then gives a test line on its own: raw HTML, scripts and HTML links must show as characters; markdown and Slack links and markdown images must show where they really point, not just "click here", and an address too long for the screen must wrap rather than be cut off; `@room` and the like, in Matrix or Slack syntax, must notify nobody; and the last check must arrive, so a cut-off message shows.
 
 For the Matrix bot, `assert_shown_safely` in `tests/test_bot.py` checks those lines on each message it sends for the self-test, and is shown to fail on unescaped HTML, plain markdown and missing `m.mentions`. A new frontend should get a test like it.
 

@@ -68,7 +68,7 @@ async def test_the_selftest_does_nothing_in_a_real_browser(aiohttp_server):
     # Positive controls: the page loaded, showed the whole self-test, and the
     # request listener saw the page's own requests, so an empty result means something.
     assert result["status"] == 200
-    assert "Check 10, the end." in result["text"] and "Test line 4:" in result["text"]
+    assert "Check 11, the end." in result["text"] and "Test line 4:" in result["text"]
     assert any(url.endswith("/static/app.js") for url in result["own_requests"])
     assert result["dialogs"] == [], "check 2: a script ran"
     assert result["hostile_requests"] == [], "checks 2 and 5: something loaded from the agent's addresses"
@@ -107,3 +107,37 @@ async def test_the_actions_work_under_the_csp(aiohttp_server):
     assert task["task"] == "add this recipe" and task["blurbs"] == ["mealie"] and task["grants"]["domains"] == ["allrecipes.example.org"]
     assert result["landed"] == f"{origin}/sessions/dn-ccccc"
     assert result["violations"] == [] and result["errors"] == []
+
+
+async def test_agent_chosen_addresses_are_seen_whole_on_a_phone(aiohttp_server):
+    # An address long enough to run past a phone's screen hides its real host
+    # unless it wraps: in a link's destination, and in a domain request above Allow.
+    link = "https://github.com.exampleprojectreleaseartifactsmirrorcdn.download0123456789abcdefghij.evil.example/x"
+    domain = "pypi.org.filespythonhostedmirrorcdndownload0123456789abcdefghijklmnopq.evil.example"
+    api = FakeApi()
+    api.events["dn-aaaaa"] = [
+        {"seq": 1, "id": "dn-aaaaa", "type": "output", "summary": f"See [https://github.com/example/project/releases]({link}).",
+         "size": 0, "signalled": True, "data": None},
+        {"seq": 2, "id": "dn-aaaaa", "type": "domains", "summary": "", "size": 0,
+         "data": {"request": 1, "rejected": 0, "domains": [{"domain": domain, "internal": False, "port": None, "denied": False}]}},
+    ]
+    api.server = await aiohttp_server(api.app())
+    port = _free_port()
+    origin = f"http://127.0.0.1:{port}"
+    config = {"api_url": str(api.server.make_url("/")), "api_token": TOKEN, "public_origin": origin}
+    server = TestServer(make_app(config), host="127.0.0.1", port=port)
+    await server.start_server()
+    try:
+        script = Path(__file__).parent / "browser" / "wrap.mjs"
+        proc = await asyncio.create_subprocess_exec(
+            "node", str(script), f"{origin}/sessions/dn-aaaaa", "github.com.example", "ghij.evil.example/x", "pypi.org.files", "opq.evil.example",
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        out, err = await proc.communicate()
+        assert proc.returncode == 0, err.decode()
+        result = json.loads(out)
+    finally:
+        await server.close()
+    # Positive controls: each address's start is found and inside its pane and the screen, so a missing one can't pass.
+    assert result["found"] == {"github.com.example": True, "ghij.evil.example/x": True, "pypi.org.files": True, "opq.evil.example": True}
+    assert not result["scrolls_sideways"]
