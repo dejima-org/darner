@@ -32,7 +32,7 @@ from pathlib import Path
 
 from darner import archive
 from darner.job import (
-    JobError, valid_context_window, valid_domain, valid_effort, valid_model, valid_name, valid_task_id, validate_job,
+    JobError, check_harness, valid_context_window, valid_domain, valid_effort, valid_model, valid_name, valid_task_id, validate_job,
 )
 
 FETCH_REJECTED = 3
@@ -114,6 +114,8 @@ def dejima_argv(args: argparse.Namespace, job, task_dir: Path, dejima: str) -> l
     model = job.model or dict(args.model).get(harness)
     effort = job.effort or dict(args.effort).get(harness)
     context_window = job.context_window or dict(args.context_window).get(harness)
+    # Checked again with the defaults filled in, which the API doesn't know.
+    check_harness(harness, backend, effort, context_window and int(context_window))
     argv = [dejima, "--isolated", "--no-pause", "--shared-path-file", str(task_dir / "shared-path")]
     if args.keep_records:
         argv.append("--keep-records")
@@ -143,6 +145,7 @@ def launch(args: argparse.Namespace, data: object) -> dict:
     if dejima is None:
         raise RuntimeError(f"{args.dejima} not found on PATH; pass --dejima with its full path")
     task_dir = args.tasks_dir / job.id
+    argv = dejima_argv(args, job, task_dir, dejima)
     args.tasks_dir.mkdir(parents=True, exist_ok=True)
     try:
         task_dir.mkdir(mode=0o700)
@@ -150,7 +153,7 @@ def launch(args: argparse.Namespace, data: object) -> dict:
         raise RuntimeError(f"{job.id} is already in use")
     (task_dir / "domains").write_text("".join(f"{d}\n" for d in job.domains))
     (task_dir / "dependencies").write_text("".join(f"{d}\n" for d in job.dependencies))
-    (task_dir / "argv.json").write_text(json.dumps(dejima_argv(args, job, task_dir, dejima)))
+    (task_dir / "argv.json").write_text(json.dumps(argv))
     try:
         _hold_files(job, task_dir)
         return _start_window(args, job, task_dir)
@@ -1163,7 +1166,7 @@ def stop(args: argparse.Namespace, task_id: str) -> None:
 
 
 def catalog(args: argparse.Namespace) -> dict:
-    """The harnesses and backends the configured dejima has, and this launcher's defaults.
+    """The harnesses and backends the configured dejima has, and this launcher's defaults for each harness.
 
     dejima keeps each as a directory beside its executable, holding a
     harness.conf or backend.conf.
@@ -1179,7 +1182,11 @@ def catalog(args: argparse.Namespace) -> dict:
             return []
         return sorted(p.name for p in directory.iterdir() if valid_name(p.name) and (p / f"{kind}.conf").is_file())
 
-    return {"harnesses": names("harness"), "backends": names("backend"), "default_harness": args.harness}
+    defaults = {}
+    for key in ("backend", "model", "effort", "context_window"):
+        for harness, value in getattr(args, key):
+            defaults.setdefault(harness, {})[key] = int(value) if key == "context_window" else value
+    return {"harnesses": names("harness"), "backends": names("backend"), "default_harness": args.harness, "defaults": defaults}
 
 
 def command(args: argparse.Namespace) -> list[str]:

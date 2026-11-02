@@ -143,6 +143,27 @@ def test_valid_efforts(effort):
     assert validate_job({"id": "dn-abc23", "prompt": "p", "effort": effort}).effort == effort
 
 
+@pytest.mark.parametrize("job", [
+    {"harness": "cline", "backend": "self-hosted", "context_window": 120000, "effort": "none"},
+    {"harness": "claude-code", "backend": "anthropic-api-key", "effort": "xhigh"},
+    {"harness": "other", "backend": "anything", "effort": "none", "context_window": 4096},
+    {"backend": "openrouter", "effort": "none"},
+])
+def test_settings_a_harness_can_take(job):
+    validate_job({"id": "dn-abc23", "prompt": "p", **job})
+
+
+@pytest.mark.parametrize("job", [
+    {"harness": "claude-code", "backend": "self-hosted"},
+    {"harness": "cline", "backend": "anthropic"},
+    {"harness": "claude-code", "effort": "none"},
+    {"harness": "claude-code", "context_window": 4096},
+])
+def test_settings_a_harness_can_t_take(job):
+    with pytest.raises(JobError):
+        validate_job({"id": "dn-abc23", "prompt": "p", **job})
+
+
 @pytest.mark.parametrize("network", ["named", "sealed"])
 def test_networks(network):
     assert validate_job({"id": "dn-abc23", "prompt": "p", "network": network}).network == network

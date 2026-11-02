@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+from darner.job import JobError
 from darner.launch import FETCH_REJECTED, launch, main, parse_args, status
 
 FAKE_TMUX = """#!/bin/sh
@@ -113,7 +114,7 @@ def test_no_grants_or_names_leaves_flags_out(env):
     "job,expected",
     [
         ({}, ["--harness", "claude-code", "--backend", "anthropic"]),
-        ({"backend": "openrouter"}, ["--harness", "claude-code", "--backend", "openrouter"]),
+        ({"backend": "anthropic-api-key"}, ["--harness", "claude-code", "--backend", "anthropic-api-key"]),
         ({"harness": "cline"}, ["--harness", "cline", "--backend", "self-hosted"]),
         ({"harness": "other"}, ["--harness", "other"]),
     ],
@@ -125,6 +126,19 @@ def test_harness_and_backend_resolution(env, job, expected):
     )
     launch(a, {"id": "dn-abc23", "prompt": "p", **job})
     assert written_argv(env, "dn-abc23")[5:-2] == ["--identity", "darner", *expected]
+
+
+@pytest.mark.parametrize("job,defaults", [
+    ({"backend": "openrouter"}, ["--harness", "claude-code"]),
+    ({"harness": "cline"}, ["--harness", "claude-code", "--backend", "cline=anthropic"]),
+    ({"effort": "none"}, ["--harness", "claude-code"]),
+    ({"context_window": 120000}, ["--harness", "claude-code"]),
+])
+def test_a_job_its_harness_can_t_take_with_the_defaults_is_refused(env, job, defaults):
+    # The API checks only what the job names; this is the pairing once the launcher's defaults fill in the rest.
+    with pytest.raises(JobError):
+        launch(args(env, *defaults), {"id": "dn-abc23", "prompt": "p", **job})
+    assert not (env / "tasks" / "dn-abc23").exists()
 
 
 @pytest.mark.parametrize("network,flag", [("named", "--drop-domains"), ("sealed", "--require-sealed")])
@@ -1218,10 +1232,14 @@ def test_catalog_lists_what_dejima_has(env):
         (root / f"{kind}s" / name).mkdir(parents=True)
         (root / f"{kind}s" / name / f"{kind}.conf").write_text("")
     (root / "backends" / "notes").mkdir()
-    code, out, _ = run(args(env), "--dejima", str(root / "bin" / "dejima"), "--harness", "claude-code", "catalog")
+    code, out, _ = run(
+        args(env), "--dejima", str(root / "bin" / "dejima"), "--harness", "claude-code", "--backend", "cline=self-hosted",
+        "--model", "cline=qwen3.5-4b", "--context-window", "cline=120000", "--effort", "claude-code=high", "catalog",
+    )
     assert code == 0
     assert json.loads(out) == {
         "harnesses": ["claude-code", "cline"], "backends": ["anthropic", "self-hosted"], "default_harness": "claude-code",
+        "defaults": {"cline": {"backend": "self-hosted", "model": "qwen3.5-4b", "context_window": 120000}, "claude-code": {"effort": "high"}},
     }
 
 

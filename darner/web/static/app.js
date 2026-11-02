@@ -104,3 +104,55 @@ for (const form of document.querySelectorAll("form[data-upload]")) {
     button.disabled = false;
   });
 }
+
+// The agent fields offer only what the harness and backend above them can take,
+// and a choice a change above no longer allows goes back to the default.
+const agent = document.querySelector("fieldset[data-catalog]");
+if (agent) {
+  const catalog = JSON.parse(agent.dataset.catalog);
+  const field = (id) => agent.querySelector(`#${id}`);
+  const [harness, backend, model, models, effort, contextWindow] =
+    ["harness", "backend", "model", "models", "effort", "context_window"].map(field);
+  const allEfforts = [...effort.options].slice(1).map((o) => o.value);
+  const named = (value) => (value ? `the harness's default (${value})` : "the harness's default");
+
+  function offered() {
+    const open = { backends: catalog.backends, efforts: allEfforts, context_window: true, defaults: {}, models: {} };
+    return catalog.options?.[harness.value || catalog.default_harness] ?? open;
+  }
+
+  function fill(select, values, label) {
+    const chosen = select.value;
+    select.replaceChildren(new Option(label, ""), ...values.map((v) => new Option(v)));
+    select.value = values.includes(chosen) ? chosen : "";
+  }
+
+  function listed() {
+    const o = offered();
+    return o.models[backend.value || o.defaults.backend] ?? [];
+  }
+
+  function update() {
+    const o = offered();
+    fill(backend, o.backends, named(o.defaults.backend));
+    fill(effort, o.efforts, named(o.defaults.effort));
+    const ids = listed();
+    models.replaceChildren(...ids.map((m) => new Option(m.context_window ? `${m.context_window} tokens` : "", m.id)));
+    model.placeholder = named(o.defaults.model);
+    if (model.value && !ids.some((m) => m.id === model.value)) {
+      model.value = "";
+      contextWindow.value = "";
+    }
+    contextWindow.disabled = !o.context_window;
+    if (!o.context_window) contextWindow.value = "";
+    contextWindow.placeholder = o.context_window ? named(o.defaults.context_window) : "not taken by this harness";
+  }
+
+  harness.addEventListener("change", update);
+  backend.addEventListener("change", update);
+  model.addEventListener("input", () => {
+    const found = listed().find((m) => m.id === model.value);
+    if (found?.context_window && !contextWindow.disabled) contextWindow.value = found.context_window;
+  });
+  update();
+}

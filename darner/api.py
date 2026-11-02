@@ -21,7 +21,10 @@ from pathlib import Path
 from aiohttp import web
 
 from darner import archive, configsets, selftest
-from darner.job import OUTPUT_INSTRUCTIONS, JobError, compose_prompt, new_task_id, valid_domain, valid_name, validate_job
+from darner.job import (
+    EFFORTS, HARNESSES, OUTPUT_INSTRUCTIONS, JobError, compose_prompt, new_task_id, valid_context_window, valid_domain, valid_model,
+    valid_name, validate_job,
+)
 from darner.launch import FETCH_REJECTED
 from darner.store import Store
 
@@ -62,6 +65,7 @@ DEFAULTS = {
     "output_retention": 604800,
     "policy": {},
     "limits": {},
+    "catalog": {},
 }
 
 
@@ -223,6 +227,38 @@ def check_policy_config(policy: object) -> None:
     unknown = set(policy.get("allow_dependency_kinds", ())) - set(DEPENDENCY_KINDS)
     if unknown:
         raise ValueError(f"unknown dependency kinds in allow_dependency_kinds: {', '.join(sorted(unknown))}")
+
+
+def check_catalog_config(catalog: object) -> dict:
+    """[catalog.HARNESS.BACKEND] models, each an id or an id and its context window,
+    as {harness: {backend: [{"id": ..., "context_window": ...}]}}. Refuses a pair or
+    a context window the harness can't take, which would only be offered to be refused."""
+    if not isinstance(catalog, dict):
+        raise ValueError("catalog must be a table")
+    found = {}
+    for harness, backends in catalog.items():
+        if not valid_name(harness) or not isinstance(backends, dict):
+            raise ValueError(f"catalog.{harness} must be a table of backends")
+        known = HARNESSES.get(harness)
+        for backend, table in backends.items():
+            where = f"catalog.{harness}.{backend}"
+            if not valid_name(backend) or not isinstance(table, dict) or set(table) - {"models"}:
+                raise ValueError(f"{where} must be a table with models")
+            if known and backend not in known["backends"]:
+                raise ValueError(f"{where}: {harness} can't use the {backend} backend, only {', '.join(known['backends'])}")
+            models = []
+            for entry in table.get("models", []):
+                model = {"id": entry} if isinstance(entry, str) else entry
+                if (
+                    not isinstance(model, dict) or set(model) - {"id", "context_window"} or not valid_model(model.get("id"))
+                    or ("context_window" in model and not valid_context_window(model["context_window"]))
+                ):
+                    raise ValueError(f"{where}: not a model, or an id and context_window: {entry!r}")
+                if "context_window" in model and known and not known["context_window"]:
+                    raise ValueError(f"{where}: {harness} takes no context window")
+                models.append(model)
+            found.setdefault(harness, {})[backend] = models
+    return found
 
 
 def _covers(parent: str, domain: str) -> bool:
@@ -937,7 +973,25 @@ async def get_catalog(request: web.Request) -> web.Response:
         return web.json_response({"error": f"catalog failed: {e}"}, status=502)
     if code:
         return web.json_response({"error": err or f"launcher exited {code}"}, status=502)
-    return web.json_response(json.loads(out))
+    return web.json_response(describe_catalog(json.loads(out), request.app[CONFIG]["catalog"]))
+
+
+def describe_catalog(found: dict, catalog: dict) -> dict:
+    """The launcher's catalog, with what each installed harness can be set to:
+    its backends, effort levels, whether it takes a context window, its defaults,
+    and the operator's models for each backend."""
+    options = {}
+    for harness in found.get("harnesses", []):
+        known = HARNESSES.get(harness, {})
+        backends = [b for b in found.get("backends", []) if b in known.get("backends", found.get("backends", []))]
+        options[harness] = {
+            "backends": backends,
+            "efforts": list(known.get("efforts", EFFORTS)),
+            "context_window": known.get("context_window", True),
+            "defaults": found.get("defaults", {}).get(harness, {}),
+            "models": {b: models for b, models in catalog.get(harness, {}).items() if b in backends},
+        }
+    return {**found, "options": options}
 
 
 async def ack_event(request: web.Request) -> web.Response:
@@ -967,6 +1021,7 @@ def make_app(config: dict, poll: bool = True) -> web.Application:
         config.setdefault(key, value)
     check_tokens(config["tokens"])
     check_policy_config(config.get("policy", {}))
+    config["catalog"] = check_catalog_config(config.get("catalog", {}))
     if config.get("remote_access_url") and not re.match(r"https?://", config["remote_access_url"]):
         raise ValueError("remote_access_url must start with http:// or https://")
     app = web.Application(client_max_size=256 * 1024)

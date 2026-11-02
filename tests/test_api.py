@@ -20,6 +20,8 @@ if command == ["status"]:
     if os.environ.get("STUB_STATUS_COUNT"):
         open(os.environ["STUB_STATUS_COUNT"], "a").write("status\\n")
     sys.stdout.write(open(os.environ["STUB_STATUS"]).read())
+elif command[:1] == ["catalog"]:
+    sys.stdout.write(os.environ["STUB_CATALOG"])
 elif command[:1] == ["help"]:
     sys.stdout.buffer.write(os.environ.get("STUB_HELP", "").encode())
 elif command[:1] == ["domains"]:
@@ -847,6 +849,70 @@ async def test_network_reaches_the_job_from_a_request_or_a_config_set(client, co
 async def test_bad_effort_is_refused(client):
     resp = await client.post("/v1/tasks", json=request(effort="max"), headers=AUTH)
     assert resp.status == 400 and "effort" in (await resp.json())["error"]
+
+
+@pytest.mark.parametrize("settings,refused", [
+    ({"harness": "claude-code", "backend": "openrouter"}, "claude-code can't use the openrouter backend"),
+    ({"harness": "cline", "backend": "anthropic"}, "cline can't use the anthropic backend"),
+    ({"harness": "claude-code", "effort": "none"}, "claude-code has no effort level none"),
+    ({"harness": "claude-code", "context_window": 32768}, "claude-code takes no context window"),
+])
+async def test_settings_the_harness_can_t_take_are_refused(client, tmp_path, settings, refused):
+    resp = await client.post("/v1/tasks", json=request(**settings), headers=AUTH)
+    assert resp.status == 400 and refused in (await resp.json())["error"]
+    assert launched(tmp_path) == []
+
+
+async def test_a_config_set_s_harness_is_held_to_its_backends(client, config, tmp_path):
+    configs = Path(config["blurbs_dir"]).parent / "configs"
+    configs.mkdir()
+    (configs / "hosted").write_text("backend: openrouter\n")
+    resp = await client.post("/v1/tasks", json=request(harness="claude-code", configs=["hosted"]), headers=AUTH)
+    assert resp.status == 400 and "can't use the openrouter backend" in (await resp.json())["error"]
+
+
+async def test_the_catalog_says_what_each_harness_can_take(aiohttp_client, config, monkeypatch):
+    monkeypatch.setenv("STUB_CATALOG", json.dumps({
+        "harnesses": ["claude-code", "cline", "other"], "backends": ["anthropic", "openrouter", "self-hosted"],
+        "default_harness": "claude-code", "defaults": {"cline": {"backend": "self-hosted"}},
+    }))
+    config["catalog"] = {
+        "claude-code": {"anthropic": {"models": ["claude-opus-5-5[1m]"]}},
+        "cline": {"self-hosted": {"models": [{"id": "qwen3.5-4b", "context_window": 120000}, "llama3:8b"]}},
+    }
+    client = await aiohttp_client(make_app(config, poll=False))
+    catalog = await (await client.get("/v1/catalog", headers=AUTH)).json()
+    assert catalog["harnesses"] == ["claude-code", "cline", "other"] and catalog["default_harness"] == "claude-code"
+    assert catalog["options"] == {
+        "claude-code": {
+            "backends": ["anthropic"], "efforts": ["low", "medium", "high", "xhigh"], "context_window": False,
+            "defaults": {}, "models": {"anthropic": [{"id": "claude-opus-5-5[1m]"}]},
+        },
+        "cline": {
+            "backends": ["openrouter", "self-hosted"], "efforts": ["none", "low", "medium", "high", "xhigh"], "context_window": True,
+            "defaults": {"backend": "self-hosted"},
+            "models": {"self-hosted": [{"id": "qwen3.5-4b", "context_window": 120000}, {"id": "llama3:8b"}]},
+        },
+        # A harness darner doesn't know is held to nothing.
+        "other": {
+            "backends": ["anthropic", "openrouter", "self-hosted"], "efforts": ["none", "low", "medium", "high", "xhigh"],
+            "context_window": True, "defaults": {}, "models": {},
+        },
+    }
+
+
+@pytest.mark.parametrize("catalog,refused", [
+    ({"claude-code": {"openrouter": {"models": ["z-ai/glm-5.3"]}}}, "claude-code can't use the openrouter backend"),
+    ({"claude-code": {"anthropic": {"models": [{"id": "opus", "context_window": 200000}]}}}, "takes no context window"),
+    ({"cline": {"self-hosted": {"models": [{"id": "qwen", "context_window": 100}]}}}, "not a model"),
+    ({"cline": {"self-hosted": {"models": [{"name": "qwen"}]}}}, "not a model"),
+    ({"cline": {"self-hosted": {"model": ["qwen"]}}}, "must be a table with models"),
+    ({"cline": ["qwen"]}, "must be a table of backends"),
+])
+def test_a_catalog_that_wouldn_t_work_is_refused(config, catalog, refused):
+    config["catalog"] = catalog
+    with pytest.raises(ValueError, match=refused):
+        make_app(config, poll=False)
 
 
 async def test_internal_grants_and_ports(client, tmp_path):
