@@ -10,21 +10,24 @@
 <textarea id="context" name="context" rows="3"></textarea>
 {% if configs %}
 <fieldset><legend>Config sets</legend>
-{% for name in configs %}<label class="choice"><input type="checkbox" name="configs" value="{{ name }}"> <a href="/configs/{{ name | urlencode }}">{{ name }}</a></label>{% endfor %}
+<div class="choices">{% for name in configs %}<label class="choice"><input type="checkbox" name="configs" value="{{ name }}"> <a href="/configs/{{ name | urlencode }}">{{ name }}</a></label>{% endfor %}</div>
 </fieldset>
 {% endif %}
 {% if blurbs %}
 <fieldset><legend>Context blurbs</legend>
-{% for name in blurbs %}<label class="choice"><input type="checkbox" name="blurbs" value="{{ name }}"> <a href="/blurbs/{{ name | urlencode }}">{{ name }}</a></label>{% endfor %}
+<div class="choices">{% for name in blurbs %}<label class="choice"><input type="checkbox" name="blurbs" value="{{ name }}"> <a href="/blurbs/{{ name | urlencode }}">{{ name }}</a></label>{% endfor %}</div>
 </fieldset>
 {% endif %}
+<fieldset><legend>Access</legend>
 <label for="domains">Domains it may reach</label>
 <input id="domains" name="domains" placeholder="pypi.org, files.pythonhosted.org">
 <label for="internal">Domains inside your network it may reach</label>
 <input id="internal" name="internal" placeholder="recipes.example.com:8443">
 <label for="dependencies">Dependencies (apt:, pip:, cargo:, npm:, tarball:)</label>
 <input id="dependencies" name="dependencies" placeholder="apt:jq pip:pytest-xdist">
+</fieldset>
 <fieldset><legend>Agent</legend>
+<div class="grid">
 <label for="harness">Harness</label>
 <select id="harness" name="harness"><option value="">the default{% if catalog.default_harness %} ({{ catalog.default_harness }}){% endif %}</option>{% for name in catalog.harnesses %}<option>{{ name }}</option>{% endfor %}</select>
 <label for="backend">Backend</label>
@@ -35,9 +38,10 @@
 <select id="effort" name="effort"><option value="">the harness's default</option>{% for level in ("none", "low", "medium", "high", "xhigh") %}<option>{{ level }}</option>{% endfor %}</select>
 <label for="context_window">Context window, in tokens</label>
 <input id="context_window" name="context_window" inputmode="numeric" placeholder="for a self-hosted model">
+</div>
 </fieldset>
 <p class="quiet">Files can be uploaded from the session's page once it's running.</p>
 <button type="submit">Start</button>
-<p class="error" role="alert" hidden></p>
+<p class="alert" role="alert" hidden></p>
 </form>
 {% endblock %}

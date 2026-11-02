@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}{{ name }} · darner{% endblock %}
 {% block main %}
-<h1>{{ name }} <span class="kind">blurb</span></h1>
-<p class="quiet">Added to the prompt of every task that names it. Read-only here: blurbs are edited on the API host.</p>
-<pre>{{ text }}</pre>
+<h1>{{ name }}<span class="kind">blurb</span></h1>
+<p class="lead">Added to the prompt of every task that names it. Read-only here: blurbs are edited on the API host.</p>
+<pre class="well">{{ text }}</pre>
 {% endblock %}

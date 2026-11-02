@@ -6,6 +6,6 @@
 {% for name in names %}<li><a href="/{{ kind }}/{{ name | urlencode }}">{{ name }}</a></li>{% endfor %}
 </ul>
 {% else %}
-<p class="quiet">None.</p>
+<p class="lead">None.</p>
 {% endif %}
 {% endblock %}

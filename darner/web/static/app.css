@@ -1,24 +1,246 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
-:root { color-scheme: light dark; --rule: #8884; --quiet: #888; --warn: #c60; }
-body { font: 15px/1.5 system-ui, sans-serif; margin: 0; }
-header { border-bottom: 1px solid var(--rule); }
-nav { display: flex; gap: 1.2em; padding: .7em 1em; flex-wrap: wrap; }
-nav .name { font-weight: 600; }
-main { max-width: 60em; padding: 1em; }
-a { color: inherit; }
-.quiet, .by, .kind { color: var(--quiet); }
-.by, .kind { font-size: .8em; font-weight: normal; }
-.untrusted, .error { color: var(--warn); }
-table { border-collapse: collapse; width: 100%; }
-th, td { text-align: left; padding: .35em .6em; border-bottom: 1px solid var(--rule); }
-pre { white-space: pre-wrap; overflow-wrap: anywhere; background: #8881; padding: .6em; }
-.timeline { list-style: none; padding: 0; }
-.event { border-left: 3px solid var(--rule); padding: .1em 0 .1em 1em; margin: 1em 0; }
-.event h2 { font-size: 1em; margin: .3em 0; }
-.agent { overflow-wrap: anywhere; }
-.actions { border: 1px solid var(--rule); padding: .6em 1em; margin: 1em 0; }
-form label, form legend { display: block; margin-top: .7em; font-weight: 600; }
-form .choice { display: inline-block; font-weight: normal; margin-right: 1em; }
-textarea, input:not([type=checkbox]), select { width: 100%; box-sizing: border-box; font: inherit; }
-fieldset { border: 1px solid var(--rule); margin-top: .8em; }
-button { margin-top: .5em; font: inherit; }
+/* dejima's look, from its landing page: gruvbox dark, the values dejima's marks
+   use, defined once here and referred to by semantic names below. */
+:root {
+  --gb-bg0-h: #1d2021;
+  --gb-bg0:   #282828;
+  --gb-bg0-s: #32302f;
+  --gb-bg1:   #3c3836;
+  --gb-bg2:   #504945;
+  --gb-gray:  #928374;
+  --gb-fg4:   #a89984;
+  --gb-fg1:   #ebdbb2;
+  --gb-orange: #fe8019;
+  --gb-yellow: #fabd2f;
+  --gb-aqua:   #8ec07c;
+  --gb-red:    #fb4934;
+
+  --bg: var(--gb-bg0);
+  --bg-well: var(--gb-bg0-h);
+  --bg-raise: var(--gb-bg0-s);
+  --rule: var(--gb-bg1);
+  --rule-strong: var(--gb-bg2);
+  --fg: var(--gb-fg1);
+  --fg-dim: var(--gb-fg4);
+  --fg-faint: var(--gb-gray);
+  /* One accent, the wordmark's orange, for anything you can act on. Aqua means
+     kept or allowed, red means refused or ended by force, yellow means waiting
+     on someone; none of them is decoration. */
+  --accent: var(--gb-orange);
+  --kept: var(--gb-aqua);
+  --refused: var(--gb-red);
+  --waiting: var(--gb-yellow);
+
+  --font-head: "Jost", "Futura", "Century Gothic", system-ui, sans-serif;
+  --font-body: "IBM Plex Serif", Georgia, serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  --wrap: 64rem;
+  --pad-x: clamp(1rem, 4vw, 2.5rem);
+  color-scheme: dark;
+}
+
+@font-face { font-family: "Jost"; src: url("fonts/jost-latin-400-normal.woff2") format("woff2"); font-weight: 400; font-display: swap; }
+@font-face { font-family: "Jost"; src: url("fonts/jost-latin-500-normal.woff2") format("woff2"); font-weight: 500; font-display: swap; }
+@font-face { font-family: "IBM Plex Serif"; src: url("fonts/ibm-plex-serif-latin-400-normal.woff2") format("woff2"); font-weight: 400; font-display: swap; }
+@font-face { font-family: "IBM Plex Serif"; src: url("fonts/ibm-plex-serif-latin-400-italic.woff2") format("woff2"); font-weight: 400; font-style: italic; font-display: swap; }
+@font-face { font-family: "IBM Plex Serif"; src: url("fonts/ibm-plex-serif-latin-600-normal.woff2") format("woff2"); font-weight: 600; font-display: swap; }
+@font-face { font-family: "JetBrains Mono"; src: url("fonts/jetbrains-mono-latin-400-normal.woff2") format("woff2"); font-weight: 400; font-display: swap; }
+
+/* --- base -------------------------------------------------------------- */
+
+*, *::before, *::after { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-body);
+  font-size: 1.05rem;
+  line-height: 1.65;
+  -webkit-font-smoothing: antialiased;
+}
+
+h1, h2, h3, legend, label, th, nav, button, .label {
+  font-family: var(--font-head);
+}
+h1, h2, h3 { font-weight: 500; line-height: 1.15; letter-spacing: -0.01em; margin: 0; text-wrap: balance; }
+h1 { font-size: clamp(1.9rem, 4vw, 2.5rem); margin-bottom: 0.4rem; }
+h2 { font-size: 1.3rem; margin: 2.25rem 0 0.9rem; }
+p { margin: 0 0 1em; }
+
+a { color: inherit; text-decoration-color: var(--accent); text-underline-offset: 0.2em; text-decoration-thickness: 1px; }
+a:hover { color: var(--accent); }
+
+code, pre, .id { font-family: var(--font-mono); }
+pre {
+  margin: 0;
+  font-size: 0.86rem;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 2px; }
+
+.quiet, .kind { color: var(--fg-dim); }
+.kind { font-family: var(--font-head); font-size: 0.55em; font-weight: 400; letter-spacing: 0; vertical-align: middle; margin-left: 0.4rem; }
+
+/* --- header ------------------------------------------------------------ */
+
+header {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background: color-mix(in srgb, var(--bg) 92%, transparent);
+  backdrop-filter: blur(8px);
+  border-bottom: 1px solid var(--rule);
+}
+nav { display: flex; align-items: center; gap: 1.5rem; max-width: var(--wrap); margin-inline: auto; padding: 0.7rem var(--pad-x); flex-wrap: wrap; }
+nav .brand img { height: 26px; width: auto; display: block; }
+nav .links { display: flex; gap: 1.3rem; flex-wrap: wrap; }
+nav .links a { color: var(--fg-dim); text-decoration: none; }
+nav .links a:hover, nav .links a[aria-current="page"] { color: var(--fg); }
+nav .new { margin-left: auto; }
+
+main { max-width: var(--wrap); margin-inline: auto; padding: 2.5rem var(--pad-x) 4rem; }
+.lead { color: var(--fg-dim); margin-bottom: 1.75rem; }
+
+/* --- buttons ----------------------------------------------------------- */
+
+button, .button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-weight: 500;
+  font-size: 1rem;
+  line-height: 1;
+  padding: 0.7rem 1.1rem;
+  border-radius: 4px;
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: var(--bg);
+  text-decoration: none;
+  cursor: pointer;
+}
+button:hover, .button:hover { background: var(--fg); border-color: var(--fg); color: var(--bg); }
+button:disabled { opacity: 0.55; cursor: progress; }
+.button.quiet, button.quiet { background: transparent; color: var(--fg); border-color: var(--rule-strong); }
+.button.quiet:hover, button.quiet:hover { color: var(--accent); border-color: var(--accent); background: transparent; }
+button.allow { background: transparent; color: var(--kept); border-color: var(--kept); }
+button.allow:hover { background: var(--kept); color: var(--bg); }
+button.refuse { background: transparent; color: var(--refused); border-color: var(--refused); }
+button.refuse:hover { background: var(--refused); color: var(--bg); border-color: var(--refused); }
+nav .new { padding: 0.5rem 0.9rem; font-size: 0.95rem; }
+
+/* --- the sessions list ------------------------------------------------- */
+
+table { width: 100%; border-collapse: collapse; font-size: 0.98rem; }
+th { font-weight: 500; text-align: left; color: var(--fg-dim); padding: 0 1rem 0.6rem 0; border-bottom: 1px solid var(--rule-strong); }
+td { padding: 0.7rem 1rem 0.7rem 0; border-bottom: 1px solid var(--rule); vertical-align: baseline; }
+td .id { font-size: 0.92rem; }
+
+.state, .label {
+  display: inline-block;
+  font-family: var(--font-head);
+  font-size: 0.82rem;
+  line-height: 1;
+  padding: 0.3rem 0.55rem;
+  border-radius: 3px;
+  border: 1px solid var(--rule-strong);
+  color: var(--fg-dim);
+  white-space: nowrap;
+}
+.state.running { color: var(--kept); border-color: color-mix(in srgb, var(--kept) 45%, transparent); }
+.state.starting { color: var(--waiting); border-color: color-mix(in srgb, var(--waiting) 45%, transparent); }
+.waits { color: var(--waiting); }
+
+.ended-list { list-style: none; padding: 0; margin: 0; display: grid; gap: 0.5rem; }
+.ended-list a { font-family: var(--font-mono); font-size: 0.95rem; }
+
+/* --- a session --------------------------------------------------------- */
+
+.summary { color: var(--fg-dim); }
+.summary strong { color: var(--fg); font-weight: 600; }
+
+.panel {
+  background: var(--bg-raise);
+  border: 1px solid var(--rule-strong);
+  border-radius: 6px;
+  padding: 1.25rem 1.4rem;
+  margin: 1.5rem 0;
+}
+.panel form + form { margin-top: 1.25rem; padding-top: 1.25rem; border-top: 1px solid var(--rule); }
+.panel .row { display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: center; margin-top: 1.25rem; }
+
+.untrusted { color: var(--fg-dim); border-left: 2px solid var(--accent); padding-left: 0.9rem; margin: 2rem 0 1rem; font-size: 0.95rem; }
+
+.timeline { list-style: none; padding: 0; margin: 0; display: grid; gap: 1rem; }
+.event { border: 1px solid var(--rule-strong); border-radius: 6px; overflow: hidden; background: var(--bg); }
+.event > h2 {
+  margin: 0;
+  padding: 0.5rem 1rem;
+  font-size: 0.95rem;
+  color: var(--fg-dim);
+  border-bottom: 1px solid var(--rule);
+  display: flex;
+  gap: 0.75rem;
+  align-items: baseline;
+  flex-wrap: wrap;
+}
+.event > h2 .by { color: var(--accent); font-size: 0.85rem; margin-left: auto; }
+.event .body { padding: 1rem 1.1rem 0.4rem; }
+.event .agent { background: var(--bg-well); }
+.event .agent pre, .event pre.agent { padding: 1rem 1.1rem; }
+.event .agent p:last-child { margin-bottom: 0.6rem; }
+.event .agent pre { background: none; }
+.event.ended > h2, .event.expired > h2 { border-bottom: 0; }
+.event.expired > h2 { color: var(--refused); }
+.event .footer { padding: 0 1.1rem 1rem; display: flex; gap: 0.75rem; flex-wrap: wrap; align-items: center; }
+.event .footer .quiet { font-size: 0.92rem; }
+.domains { list-style: none; padding: 0; margin: 0 0 0.75rem; display: grid; gap: 0.35rem; font-family: var(--font-mono); font-size: 0.92rem; }
+.domains .label { margin-left: 0.5rem; }
+.domains .refused { color: var(--refused); border-color: color-mix(in srgb, var(--refused) 45%, transparent); }
+
+/* --- forms ------------------------------------------------------------- */
+
+form label, legend { display: block; font-weight: 500; font-size: 0.98rem; margin: 1.1rem 0 0.4rem; }
+form > label:first-of-type, .panel form label:first-child { margin-top: 0; }
+textarea, input:not([type=checkbox]):not([type=file]):not([type=hidden]), select {
+  width: 100%;
+  font: inherit;
+  font-size: 1rem;
+  color: var(--fg);
+  background: var(--bg-well);
+  border: 1px solid var(--rule-strong);
+  border-radius: 4px;
+  padding: 0.6rem 0.75rem;
+}
+textarea { resize: vertical; line-height: 1.5; }
+textarea:focus, input:focus, select:focus { outline: none; border-color: var(--accent); }
+::placeholder { color: var(--fg-faint); }
+input[type=file] { font-family: var(--font-head); color: var(--fg-dim); }
+input[type=file]::file-selector-button {
+  font: inherit; color: var(--fg); background: transparent;
+  border: 1px solid var(--rule-strong); border-radius: 4px; padding: 0.45rem 0.8rem; margin-right: 0.8rem; cursor: pointer;
+}
+input[type=checkbox] { accent-color: var(--accent); }
+form button[type=submit] { margin-top: 1rem; }
+.panel form button[type=submit] { margin-top: 0.75rem; }
+
+fieldset { border: 1px solid var(--rule); border-radius: 6px; padding: 0.4rem 1.1rem 1.1rem; margin: 1.5rem 0 0; }
+legend { padding: 0 0.4rem; margin: 0; color: var(--fg-dim); }
+.choices { display: flex; flex-wrap: wrap; gap: 0.5rem 1.4rem; margin-top: 0.6rem; }
+.choice { display: inline-flex; align-items: baseline; gap: 0.45rem; font-family: var(--font-head); font-weight: 400; margin: 0; }
+.grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 1.25rem; }
+@media (max-width: 40rem) { .grid { grid-template-columns: 1fr; } }
+
+/* What an action said. A problem in red, anything else in aqua. */
+.alert { font-family: var(--font-head); color: var(--refused); margin: 1rem 0 0; }
+.alert.ok { color: var(--kept); }
+
+/* --- blurbs, config sets, the self-test -------------------------------- */
+
+.names { list-style: none; padding: 0; margin: 0; display: grid; gap: 0.5rem; }
+.names a { font-family: var(--font-mono); font-size: 0.98rem; }
+.well { background: var(--bg-well); border: 1px solid var(--rule-strong); border-radius: 6px; padding: 1.1rem 1.3rem; }

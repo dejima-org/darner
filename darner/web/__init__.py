@@ -181,6 +181,17 @@ class ApiError(Exception):
         self.answered = answered
 
 
+async def _json(resp: aiohttp.ClientResponse):
+    """A response's JSON, or None if it has none. darner-api answers some errors,
+    such as an unknown task's 404, in aiohttp's plain text."""
+    if resp.status == 204:
+        return None
+    try:
+        return await resp.json(content_type=None)
+    except ValueError:
+        return None
+
+
 async def api(request: web.Request, method: str, path: str, with_status: bool = False, **kwargs):
     """A JSON call to darner-api, as this frontend: its result, with its status if asked."""
     config = request.app[CONFIG]
@@ -189,10 +200,12 @@ async def api(request: web.Request, method: str, path: str, with_status: bool = 
             method, config["api_url"].rstrip("/") + path,
             headers={"Authorization": f"Bearer {config['api_token']}"}, **kwargs,
         ) as resp:
-            data = await resp.json(content_type=None) if resp.status != 204 else None
+            data = await _json(resp)
             if resp.status >= 400:
                 error = data.get("error") if isinstance(data, dict) else None
                 raise ApiError(resp.status, error or f"darner-api answered {resp.status}")
+            if data is None and resp.status != 204:
+                raise ApiError(502, "darner-api's answer wasn't JSON")
             return (resp.status, data) if with_status else data
     # First: aiohttp's socket timeouts are ClientErrors as well as TimeoutErrors.
     except TimeoutError:
@@ -430,7 +443,7 @@ async def upload_file(request: web.Request) -> web.Response:
             # The API answers only once it has passed the file to the dejima host, over ssh.
             timeout=aiohttp.ClientTimeout(total=None, sock_connect=10, sock_read=config["launch_timeout"]),
         ) as resp:
-            data = await resp.json(content_type=None)
+            data = await _json(resp)
             if resp.status >= 400:
                 error = data.get("error") if isinstance(data, dict) else None
                 return web.json_response({"error": error or f"darner-api answered {resp.status}"}, status=min(resp.status, 502))
