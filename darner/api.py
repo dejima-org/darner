@@ -23,10 +23,10 @@ from aiohttp import web
 from darner import archive, configsets, selftest
 from darner.job import (
     OUTPUT_INSTRUCTIONS, JobError, check_harness, compose_prompt, new_task_id, valid_context_window, valid_domain, valid_model,
-    valid_name, validate_job,
+    valid_name, valid_task_id, validate_job,
 )
 from darner.launch import FETCH_REJECTED
-from darner.store import Store
+from darner.store import NameTaken, Store
 
 log = logging.getLogger("darner.api")
 audit = logging.getLogger("darner.audit")
@@ -97,8 +97,11 @@ def session_link(config: dict, run_id: str | None) -> str | None:
 
 REQUEST_KEYS = {
     "task", "context", "blurbs", "configs", "grants", "harness", "backend", "model", "effort", "context_window", "network",
-    "requester", "source",
+    "requester", "source", "name",
 }
+# A session's name, which stands in for its id as dn-<name>. One shaped like an id can't be one.
+SESSION_NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,31}")
+NAME_RULE = "a session name is up to 32 lowercase letters, digits and hyphens, not shaped like a session id"
 MAX_TEXT = 32 * 1024
 
 CONFIG = web.AppKey("config", dict)
@@ -107,6 +110,10 @@ SHARE_ERRORS = web.AppKey("share_errors", dict)
 EXPIRE_FAILED = web.AppKey("expire_failed", set)
 STATUS_CACHE = web.AppKey("status_cache", dict)
 CATALOG_CACHE = web.AppKey("catalog_cache", dict)
+POLL_LOCK = web.AppKey("poll_lock", asyncio.Lock)
+LAST_CHECK = web.AppKey("last_check", dict)
+# Seconds between one client's checks, each a poll of every session.
+CHECK_INTERVAL = 15
 # What dejima's harnesses take changes only when dejima is upgraded.
 CATALOG_TTL = 300
 # How old a launcher status, or a failure to get one, a session listing may
@@ -616,9 +623,44 @@ async def _poll_forever(app: web.Application) -> None:
     while True:
         await asyncio.sleep(app[CONFIG].get("poll_interval", 30))
         try:
-            await poll_once(app)
+            async with app[POLL_LOCK]:
+                await poll_once(app)
         except Exception:
             log.exception("poll failed")
+
+
+async def check_task(request: web.Request) -> web.Response:
+    """Poll now rather than at the next poll_interval, and answer the session as it then is.
+
+    Each client may ask once every CHECK_INTERVAL seconds. A poll already
+    running is the check, so a slow dejima host never has polls queued up
+    behind it.
+    """
+    client, task_id = _client(request), _task_id(request)
+    if request.app[STORE].task_status(client, task_id) != "launched":
+        raise web.HTTPNotFound()
+    checked = request.app[LAST_CHECK]
+    wait = checked.get(client, -CHECK_INTERVAL) + CHECK_INTERVAL - time.monotonic()
+    if wait > 0:
+        return web.json_response(
+            {"error": f"checked in the last {CHECK_INTERVAL}s, perhaps by someone else on this frontend; try again in {int(wait) + 1}s"},
+            status=429, headers={"Retry-After": str(int(wait) + 1)},
+        )
+    checked[client] = time.monotonic()
+    lock = request.app[POLL_LOCK]
+    if lock.locked():
+        async with lock:
+            pass
+    else:
+        async with lock:
+            try:
+                await poll_once(request.app)
+            except Exception as e:
+                log.exception("check of %s failed", task_id)
+                return web.json_response({"error": f"check failed: {type(e).__name__}"}, status=502)
+    found = await _sessions(request, task_id)
+    # Gone from the open sessions means the check found it ended.
+    return web.json_response(found[0] if found else {"id": task_id, "ended": True})
 
 
 async def poller(app: web.Application):
@@ -637,6 +679,41 @@ def authorized(config: dict, header: str) -> str | None:
         if hmac.compare_digest(token.encode(errors="surrogateescape"), expected.encode()):
             return name
     return None
+
+
+def _session_name(body: dict) -> str | None:
+    """The name a request gives its session, without any dn- it was written with."""
+    name = body.get("name")
+    if name is None or name == "":
+        return None
+    if not isinstance(name, str):
+        raise RequestError(400, NAME_RULE)
+    name = name.strip().lower().removeprefix("dn-")
+    if not SESSION_NAME.fullmatch(name) or valid_task_id(f"dn-{name}"):
+        raise RequestError(400, NAME_RULE)
+    return name
+
+
+def _name_taken(store: Store, client: str, name: str) -> str | None:
+    """Why a name can't be given, if it's held: by an open session, or one ended but not yet cleared."""
+    held = store.named(client, name)
+    if held is None:
+        return None
+    if store.task_status(client, held) == "ended":
+        return f"dn-{name} is still held by {held}, which has ended; clear it to free the name"
+    return f"dn-{name} is already the name of an open session"
+
+
+def _task_id(request: web.Request) -> str:
+    """The task a path names: by its id, or as dn-<name> by the name of one of the
+    client's open sessions. Only an id goes any further, to the launcher least of all."""
+    given = request.match_info["id"]
+    if valid_task_id(given):
+        return given
+    found = request.app[STORE].named(_client(request), given.removeprefix("dn-"))
+    if found is None:
+        raise web.HTTPNotFound()
+    return found
 
 
 def _client(request: web.Request) -> str:
@@ -659,10 +736,14 @@ async def preview_task(request: web.Request) -> web.Response:
         body = {**body, "task": "-"}
     try:
         job, _, _, sets, blurbs = _build(request.app[CONFIG], body, read_files=False)
+        name = _session_name(body)
+        if name is not None and (taken := _name_taken(request.app[STORE], _client(request), name)):
+            raise RequestError(409, taken)
         await check_job_harness(request.app, job)
     except RequestError as e:
         return web.json_response({"error": str(e)}, status=e.status)
     return web.json_response({
+        "name": name,
         "settings": {key: job[key] for key in configsets.SINGLES if key in job},
         "from_configs": {
             key: int(value) if key == "context_window" and value.isdecimal() else value
@@ -685,6 +766,7 @@ async def create_task(request: web.Request) -> web.Response:
         return web.json_response({"error": "body must be JSON"}, status=400)
     try:
         job, source, requester, _, blurbs = _build(config, body)
+        name = _session_name(body)
         await check_job_harness(request.app, job)
     except RequestError as e:
         return web.json_response({"error": str(e)}, status=e.status)
@@ -698,11 +780,14 @@ async def create_task(request: web.Request) -> web.Response:
         **job, "files": [f["name"] for f in job["files"]], "configs": _list(body, "configs"),
         "blurbs": [name for name, _ in blurbs],
     }
-    task, new = store.claim(job["id"], client, source, requester, json.dumps(recorded))
+    try:
+        task, new = store.claim(job["id"], client, source, requester, json.dumps(recorded), name)
+    except NameTaken:
+        return web.json_response({"error": _name_taken(store, client, name)}, status=409)
     if not new:
         if task.status == "pending":
             return web.json_response({"error": f"{task.id} is already being launched"}, status=409)
-        return web.json_response({"id": task.id, "target": task.target, "link": session_link(config, task.run_id)})
+        return web.json_response({"id": task.id, "name": task.name, "target": task.target, "link": session_link(config, task.run_id)})
 
     try:
         result = await run_launcher(config, job)
@@ -720,7 +805,7 @@ async def create_task(request: web.Request) -> web.Response:
         store.set_run_id(job["id"], run_id)
     else:
         run_id = None
-    return web.json_response({"id": job["id"], "target": target, "link": session_link(config, run_id)}, status=201)
+    return web.json_response({"id": job["id"], "name": name, "target": target, "link": session_link(config, run_id)}, status=201)
 
 
 async def create_selftest(request: web.Request) -> web.Response:
@@ -760,7 +845,7 @@ def _event_json(config: dict, e) -> dict:
         "seq": e.seq, "id": e.id, "type": e.type, "summary": e.summary, "size": e.size,
         "answerable": e.answerable, "signalled": e.signalled, "data": e.data,
         "target": e.target, "link": session_link(config, e.run_id),
-        "source": e.source, "created": e.created,
+        "source": e.source, "created": e.created, "name": e.name,
     }
 
 
@@ -772,14 +857,14 @@ async def list_events(request: web.Request) -> web.Response:
 async def task_events(request: web.Request) -> web.Response:
     """A task's events so far, without acknowledging any. Gone with the task once it's purged."""
     client, store = _client(request), request.app[STORE]
-    task_id = request.match_info["id"]
+    task_id = _task_id(request)
     if store.task_status(client, task_id) is None:
         raise web.HTTPNotFound()
     return web.json_response([_event_json(request.app[CONFIG], e) for e in store.task_events(client, task_id)])
 
 
 async def get_output(request: web.Request) -> web.StreamResponse:
-    task_id, seq = request.match_info["id"], int(request.match_info["seq"])
+    task_id, seq = _task_id(request), int(request.match_info["seq"])
     event = request.app[STORE].event(_client(request), seq)
     path = Path(request.app[CONFIG]["results_dir"]) / task_id / f"{seq}.zip"
     if event is None or event.id != task_id or event.type != "output" or not event.size or not path.is_file():
@@ -805,9 +890,12 @@ async def message_task(request: web.Request) -> web.Response:
 async def _type_into(request: web.Request, command: str) -> web.Response:
     """Answer a help request, or send a message, by typing it into the session."""
     client = _client(request)
-    task_id = request.match_info["id"]
-    if request.app[STORE].task_status(client, task_id) is None:
+    task_id = _task_id(request)
+    status = request.app[STORE].task_status(client, task_id)
+    if status is None:
         raise web.HTTPNotFound()
+    if status == "ended":
+        return web.json_response({"error": f"{task_id} has ended"}, status=409)
     try:
         body = await request.json()
     except ValueError:
@@ -863,6 +951,7 @@ async def _sessions(request: web.Request, task_id: str | None = None) -> list[di
             waiting["domains"] = store.domain_request(client, task["id"], state["domain_request"])
         sessions.append({
             "id": task["id"],
+            "name": task["name"],
             "target": task["target"],
             "link": session_link(config, task["run_id"]),
             "requester": task["requester"],
@@ -880,7 +969,7 @@ async def list_sessions(request: web.Request) -> web.Response:
 
 
 async def get_session(request: web.Request) -> web.Response:
-    found = await _sessions(request, request.match_info["id"])
+    found = await _sessions(request, _task_id(request))
     if not found:
         raise web.HTTPNotFound()
     return web.json_response(found[0])
@@ -889,7 +978,7 @@ async def get_session(request: web.Request) -> web.Response:
 async def upload_file(request: web.Request) -> web.Response:
     """Pass a requester's file to the session's ~/shared/uploads."""
     client, store, config = _client(request), request.app[STORE], request.app[CONFIG]
-    task_id = request.match_info["id"]
+    task_id = _task_id(request)
     status = store.task_status(client, task_id)
     if status is None:
         raise web.HTTPNotFound()
@@ -921,7 +1010,7 @@ async def upload_file(request: web.Request) -> web.Response:
 
 async def stop_task(request: web.Request) -> web.Response:
     client = _client(request)
-    task_id = request.match_info["id"]
+    task_id = _task_id(request)
     status = request.app[STORE].task_status(client, task_id)
     if status is None:
         raise web.HTTPNotFound()
@@ -946,7 +1035,7 @@ async def decide_domains(request: web.Request) -> web.Response:
     """Allow or deny a task's domain request, as it was shown in its event."""
     client = _client(request)
     store, config = request.app[STORE], request.app[CONFIG]
-    task_id, number, verb = request.match_info["id"], int(request.match_info["n"]), request.match_info["verb"]
+    task_id, number, verb = _task_id(request), int(request.match_info["n"]), request.match_info["verb"]
     if store.task_status(client, task_id) is None:
         raise web.HTTPNotFound()
     shown = store.domain_request(client, task_id, number)
@@ -1104,6 +1193,8 @@ def make_app(config: dict, poll: bool = True) -> web.Application:
     app[EXPIRE_FAILED] = set()
     app[STATUS_CACHE] = {}
     app[CATALOG_CACHE] = {}
+    app[POLL_LOCK] = asyncio.Lock()
+    app[LAST_CHECK] = {}
     app.router.add_post("/v1/tasks", create_task)
     app.router.add_post("/v1/tasks/preview", preview_task)
     app.router.add_post("/v1/selftest", create_selftest)
@@ -1113,16 +1204,17 @@ def make_app(config: dict, poll: bool = True) -> web.Application:
     app.router.add_get("/v1/blurbs/{name}", get_blurb)
     app.router.add_get("/v1/configs", list_configs)
     app.router.add_get(r"/v1/configs/{name:[a-z0-9][a-z0-9_-]{0,63}}", describe_config)
-    app.router.add_get(r"/v1/tasks/{id:dn-[a-z2-7]{5}}/outputs/{seq:\d+}.zip", get_output)
+    app.router.add_get(r"/v1/tasks/{id:dn-[a-z0-9][a-z0-9-]{0,31}}/outputs/{seq:\d+}.zip", get_output)
     app.router.add_post(r"/v1/events/{seq:\d+}/ack", ack_event)
-    app.router.add_post(r"/v1/tasks/{id:dn-[a-z2-7]{5}}/answer", answer_help)
-    app.router.add_post(r"/v1/tasks/{id:dn-[a-z2-7]{5}}/stop", stop_task)
-    app.router.add_post(r"/v1/tasks/{id:dn-[a-z2-7]{5}}/message", message_task)
-    app.router.add_post(r"/v1/tasks/{id:dn-[a-z2-7]{5}}/files", upload_file)
+    app.router.add_post(r"/v1/tasks/{id:dn-[a-z0-9][a-z0-9-]{0,31}}/answer", answer_help)
+    app.router.add_post(r"/v1/tasks/{id:dn-[a-z0-9][a-z0-9-]{0,31}}/stop", stop_task)
+    app.router.add_post(r"/v1/tasks/{id:dn-[a-z0-9][a-z0-9-]{0,31}}/message", message_task)
+    app.router.add_post(r"/v1/tasks/{id:dn-[a-z0-9][a-z0-9-]{0,31}}/files", upload_file)
+    app.router.add_post(r"/v1/tasks/{id:dn-[a-z0-9][a-z0-9-]{0,31}}/check", check_task)
     app.router.add_get("/v1/tasks", list_sessions)
-    app.router.add_get(r"/v1/tasks/{id:dn-[a-z2-7]{5}}", get_session)
-    app.router.add_get(r"/v1/tasks/{id:dn-[a-z2-7]{5}}/events", task_events)
-    app.router.add_post(r"/v1/tasks/{id:dn-[a-z2-7]{5}}/domains/{n:\d{1,9}}/{verb:allow|deny}", decide_domains)
+    app.router.add_get(r"/v1/tasks/{id:dn-[a-z0-9][a-z0-9-]{0,31}}", get_session)
+    app.router.add_get(r"/v1/tasks/{id:dn-[a-z0-9][a-z0-9-]{0,31}}/events", task_events)
+    app.router.add_post(r"/v1/tasks/{id:dn-[a-z0-9][a-z0-9-]{0,31}}/domains/{n:\d{1,9}}/{verb:allow|deny}", decide_domains)
     if poll:
         app.cleanup_ctx.append(poller)
     return app

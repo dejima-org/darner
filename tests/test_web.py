@@ -46,6 +46,7 @@ class FakeApi:
             "requester": "<b>alice</b>", "started": 0, "state": "running", "answerable": True,
             "waiting": {"answer": "which db?", "domains": None},
             "started_with": {"configs": ["recipes"], "harness": "<i>cline</i>", "context_window": 30000, "domains": ["pypi.org"]},
+            "name": None,
         }]
         self.events = {
             "dn-aaaaa": [{"seq": 1, "id": "dn-aaaaa", "type": "output", "summary": SELFTEST, "size": 4, "signalled": True, "data": None},
@@ -61,6 +62,7 @@ class FakeApi:
         self.delay = 0
         self.create_status = 201
         self.upload_delay = 0
+        self.check_status = 200
 
     def app(self):
         async def record(request, result, status=200):
@@ -156,7 +158,7 @@ class FakeApi:
             if settings.get("harness", "claude-code") == "claude-code" and settings.get("backend") == "openrouter":
                 return web.json_response({"error": "claude-code can't use the openrouter backend, only anthropic"}, status=400)
             return web.json_response({
-                "settings": settings, "from_configs": from_configs, "domains": body["grants"]["domains"], "internal_domains": [],
+                "name": body.get("name"), "settings": settings, "from_configs": from_configs, "domains": body["grants"]["domains"], "internal_domains": [],
                 "dependencies": [], "files": ["token"] if "recipes" in body.get("configs", []) else [],
                 "blurbs": [{"name": n, "text": "Use <script>the API</script>.\n"} for n in body.get("blurbs", [])],
             })
@@ -179,6 +181,13 @@ class FakeApi:
         app.router.add_post("/v1/selftest", selftest)
         app.router.add_post("/v1/tasks/{id}/message", no_content)
         app.router.add_post("/v1/tasks/{id}/stop", no_content)
+
+        async def check(request):
+            if self.check_status != 200:
+                return await record(request, {"error": "checked in the last 15s, perhaps by someone else on this frontend; try again in 9s"}, self.check_status)
+            return await record(request, self.sessions[0])
+
+        app.router.add_post("/v1/tasks/{id}/check", check)
         app.router.add_post("/v1/tasks/{id}/domains/{n}/{verb}", action)
         app.router.add_post("/v1/events/{seq}/ack", ack)
         app.router.add_post("/v1/tasks/{id}/files", files)
@@ -614,6 +623,7 @@ async def test_starting_a_task_builds_the_request_as_chat_would(client, fake):
         "blurbs": ["mealie"], "configs": ["recipes"], "domains": "allrecipes.example.org, cdn.example.org",
         "internal": "recipes.example.com:8443", "dependencies": "pip:requests  apt:jq",
         "harness": "cline", "backend": "", "model": " qwen3 ", "effort": "", "context_window": "30000", "network": "sealed",
+        "name": " recipes ",
     }
     resp = await client.post("/tasks", headers=POST, json=body)
     assert resp.status == 200 and await resp.json() == {"location": "/sessions/dn-ccccc"}
@@ -623,8 +633,26 @@ async def test_starting_a_task_builds_the_request_as_chat_would(client, fake):
         "grants": {"domains": ["allrecipes.example.org", "cdn.example.org"], "internal": ["recipes.example.com:8443"],
                    "dependencies": ["pip:requests", "apt:jq"]},
         "requester": "web", "source": {"kind": "web", "ref": "a" * 32},
-        "harness": "cline", "model": "qwen3", "context_window": "30000", "network": "sealed",
+        "harness": "cline", "model": "qwen3", "context_window": "30000", "network": "sealed", "name": "recipes",
     }
+
+
+async def test_check_now_asks_the_api_and_says_when_it_can_t_yet(client, fake):
+    _, html = await get(client, "/sessions/dn-aaaaa")
+    assert 'data-post="/sessions/dn-aaaaa/check"' in html
+    resp = await client.post("/sessions/dn-aaaaa/check", headers=POST, json={})
+    assert resp.status == 200 and posted(fake) == [("/v1/tasks/dn-aaaaa/check", None)]
+    fake.check_status = 429
+    resp = await client.post("/sessions/dn-aaaaa/check", headers=POST, json={})
+    assert resp.status == 429 and "perhaps by someone else" in (await resp.json())["error"]
+
+
+async def test_a_named_session_goes_by_its_name(client, fake):
+    fake.sessions[0]["name"] = "recipes"
+    _, html = await get(client, "/")
+    assert '<a href="/sessions/dn-aaaaa" class="id">dn-recipes</a>' in html and '<p class="meta id">dn-aaaaa</p>' in html
+    _, html = await get(client, "/sessions/dn-aaaaa")
+    assert '<h1 class="id">dn-recipes</h1>' in html and "<title>dn-recipes · darner</title>" in html
 
 
 @pytest.mark.parametrize("body, message", [
@@ -637,7 +665,7 @@ async def test_a_task_without_a_task_or_a_proper_ref_isn_t_started(client, fake,
 
 
 @pytest.mark.parametrize("path", [
-    "/tasks", "/sessions/dn-aaaaa/message", "/sessions/dn-aaaaa/stop", "/sessions/dn-bbbbb/clear",
+    "/tasks", "/sessions/dn-aaaaa/message", "/sessions/dn-aaaaa/stop", "/sessions/dn-aaaaa/check", "/sessions/dn-bbbbb/clear",
     "/sessions/dn-aaaaa/files?name=x", "/sessions/dn-aaaaa/domains/1/allow",
 ])
 async def test_every_action_is_refused_cross_site(client, fake, path):

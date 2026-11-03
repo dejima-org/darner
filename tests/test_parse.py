@@ -54,7 +54,7 @@ def test_keyword_mid_line_is_context():
     assert req.domains == [] and req.blurbs == []
 
 
-@pytest.mark.parametrize("key", ["harness", "backend"])
+@pytest.mark.parametrize("key", ["harness", "backend", "name"])
 def test_single_value_keywords(key):
     assert getattr(parse(f"{key}: a\n{key}: a"), key) == "a"
     with pytest.raises(ParseError, match=f"{key} takes one value"):

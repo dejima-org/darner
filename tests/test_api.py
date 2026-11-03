@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from darner.api import STATUS_CACHE, STORE, make_app, poll_once
+from darner.api import POLL_LOCK, STATUS_CACHE, STORE, make_app, poll_once
 from darner.archive import MANIFEST_SLACK
 from darner.store import Store
 from tests.test_launch import FAKE_TMUX
@@ -889,6 +889,7 @@ async def test_a_preview_is_what_the_task_would_launch_without_launching_it(clie
     resp = await client.post("/v1/tasks/preview", json=body, headers=AUTH)
     assert resp.status == 200, await resp.text()
     assert await resp.json() == {
+        "name": None,
         "settings": {"harness": "cline", "backend": "self-hosted", "context_window": 30000},
         "from_configs": {"harness": "cline", "context_window": 30000},
         "domains": ["example.org", "pypi.org"], "internal_domains": [], "dependencies": [],
@@ -1732,3 +1733,77 @@ async def test_a_later_fetch_the_api_lost_doesn_t_change_which_zip_it_names(star
     status(state="exited", ready=False)
     await poll_once(app)
     assert ["forget-delivered", task_id, hashlib.sha256(first).hexdigest()] in fetches(tmp_path)
+
+
+async def test_a_named_session_is_found_by_its_name(client, tmp_path, config):
+    resp = await client.post("/v1/tasks", json=request(name="DN-Recipes"), headers=AUTH)
+    task_id = (await resp.json())["id"]
+    session = await (await client.get("/v1/tasks/dn-recipes", headers=AUTH)).json()
+    assert session["id"] == task_id and session["name"] == "recipes"
+    assert (await client.get("/v1/tasks/dn-recipes/events", headers=AUTH)).status == 200
+    # Only to the client that named it, and nothing but the id reaches the launcher.
+    config["tokens"]["other"] = "0ther-0123456789abcdef0123456789abcdef"
+    other = {"Authorization": "Bearer 0ther-0123456789abcdef0123456789abcdef"}
+    assert (await client.get("/v1/tasks/dn-recipes", headers=other)).status == 404
+    assert (await client.post("/v1/tasks/dn-recipes/stop", json={"requester": "@a:example.org"}, headers=AUTH)).status == 204
+    assert ["stop", task_id] in fetches(tmp_path)
+
+
+async def test_an_open_session_s_name_can_t_be_reused_until_it_ends(client, tmp_path):
+    first = await (await client.post("/v1/tasks", json=request(name="recipes"), headers=AUTH)).json()
+    source = {"kind": "matrix", "ref": "$event2", "channel": "!room:example.org"}
+    for path in ("/v1/tasks/preview", "/v1/tasks"):
+        resp = await client.post(path, json=request(name="recipes", source=source), headers=AUTH)
+        assert resp.status == 409 and (await resp.json())["error"] == "dn-recipes is already the name of an open session"
+    assert len(launched(tmp_path)) == 1
+    # Ended, it holds its name until it's purged, so a command repeated later can't reach a new session.
+    store = client.server.app[STORE]
+    store.end(first["id"])
+    resp = await client.post("/v1/tasks", json=request(name="recipes", source=source), headers=AUTH)
+    assert resp.status == 409 and (await resp.json())["error"] == (
+        f"dn-recipes is still held by {first['id']}, which has ended; clear it to free the name"
+    )
+    body = {"text": "deploy it", "requester": "@a:example.org"}
+    resp = await client.post("/v1/tasks/dn-recipes/message", json=body, headers=AUTH)
+    assert resp.status == 409 and (await resp.json())["error"] == f"{first['id']} has ended"
+    resp = await client.post("/v1/tasks/dn-recipes/files?name=x&requester=a", data=b"secret", headers=AUTH)
+    assert resp.status == 409
+    assert not any(f[0] in ("message", "upload") for f in fetches(tmp_path))
+    # Cleared, the name is free.
+    store.delete(first["id"])
+    resp = await client.post("/v1/tasks", json=request(name="recipes", source=source), headers=AUTH)
+    assert resp.status == 201 and (await resp.json())["name"] == "recipes"
+
+
+@pytest.mark.parametrize("name", ["abcde", "dn-k3x7q", "Has Space", "-lead", "a" * 33, "dn-", 7])
+async def test_a_name_that_isn_t_one_is_refused(client, tmp_path, name):
+    resp = await client.post("/v1/tasks", json=request(name=name), headers=AUTH)
+    assert resp.status == 400 and "a session name is" in (await resp.json())["error"]
+    assert launched(tmp_path) == []
+
+
+async def test_a_check_polls_now_and_answers_the_session(started, tmp_path, monkeypatch):
+    app, client, task_id, status, *_ = started
+    status(ready=False)
+    count = tmp_path / "status-count"
+    monkeypatch.setenv("STUB_STATUS_COUNT", str(count))
+    resp = await client.post(f"/v1/tasks/{task_id}/check", headers=AUTH)
+    assert resp.status == 200 and (await resp.json())["id"] == task_id
+    assert count.read_text().count("status") >= 1
+    # Once every CHECK_INTERVAL for each client.
+    resp = await client.post(f"/v1/tasks/{task_id}/check", headers=AUTH)
+    assert resp.status == 429 and "try again in" in (await resp.json())["error"] and resp.headers["Retry-After"]
+    assert (await client.post("/v1/tasks/dn-zzzzz/check", headers=AUTH)).status == 404
+
+
+async def test_a_poll_already_running_is_the_check(started, monkeypatch):
+    app, client, task_id, status, *_ = started
+    status(ready=False)
+    polled = []
+    monkeypatch.setattr("darner.api.poll_once", lambda app: polled.append(1) or asyncio.sleep(0))
+    async with app[POLL_LOCK]:
+        check = asyncio.ensure_future(client.post(f"/v1/tasks/{task_id}/check", headers=AUTH))
+        await asyncio.sleep(0.2)
+        assert not check.done()
+    # Answered once the running poll is done, without another.
+    assert (await check).status == 200 and polled == []

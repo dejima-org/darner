@@ -1,5 +1,6 @@
 {% extends "base.html" %}
-{% block title %}{{ task_id }} · darner{% endblock %}
+{% set title = "dn-" ~ session.name if session and session.name else task_id %}
+{% block title %}{{ title }} · darner{% endblock %}
 {% macro heading(e) -%}
 {% if e.type == "output" %}
 <h2>Output{% if e.signalled == false %}, collected without the agent's done signal{% endif %} <span class="by">the agent's</span></h2>
@@ -43,9 +44,9 @@
 {% endif %}
 {%- endmacro %}
 {% block main %}
-<h1 class="id">{{ task_id }}</h1>
+<h1 class="id">{{ title }}</h1>
 {% if session %}
-<p class="summary">Started by <strong>{{ session.requester }}</strong>, {{ session.started | age }} ago. <span class="state {{ session.state }}">{{ session.state }}</span>
+<p class="summary">{% if session.name %}<span class="id">{{ task_id }}</span>. {% endif %}Started by <strong>{{ session.requester }}</strong>, {{ session.started | age }} ago. <span class="state {{ session.state }}">{{ session.state }}</span>
 {% if session.link %} · <a href="{{ session.link }}" rel="noopener noreferrer">Open it in remote access</a>{% endif %}</p>
 {% else %}
 <p class="summary">Ended. Only its output is kept, until it's cleared.</p>
@@ -70,7 +71,8 @@
 <input id="upload" name="file" type="file" required>
 <button type="submit" class="quiet">Upload</button>
 </form>
-<div class="row"><button type="button" class="refuse" data-post="/sessions/{{ task_id }}/stop" data-confirm="Stop {{ task_id }}?">Stop the session</button></div>
+<div class="row"><button type="button" class="quiet" data-post="/sessions/{{ task_id }}/check" title="Look for output, a help request or a domain request now, rather than at the next poll">Check now</button>
+<button type="button" class="refuse" data-post="/sessions/{{ task_id }}/stop" data-confirm="Stop {{ title }}?">Stop the session</button></div>
 <p class="alert" role="alert" hidden></p>
 </section>
 {% if session.started_with %}

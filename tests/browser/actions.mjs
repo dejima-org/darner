@@ -61,6 +61,9 @@ result.agent.back = {
 await page.selectOption("#harness", "cline");
 await page.selectOption("#backend", "openrouter");
 await page.fill("#model", "z-ai/glm-5.3");
+await page.fill("#name", "recipes");
+await page.waitForFunction(() => document.querySelector("#preview dt")?.textContent === "Name");
+result.named = await shown();
 // A slow launch says it's still going.
 await page.route("**/tasks", async (route) => { await new Promise((r) => setTimeout(r, 1500)); await route.continue(); });
 const landing = page.waitForURL(`${origin}/sessions/dn-ccccc`);

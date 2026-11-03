@@ -44,6 +44,7 @@ class Task:
     target: str | None
     error: str | None
     run_id: str | None = None
+    name: str | None = None
 
 
 @dataclass
@@ -60,6 +61,11 @@ class Event:
     signalled: bool = True
     data: dict | None = None
     created: float | None = None
+    name: str | None = None
+
+
+class NameTaken(Exception):
+    pass
 
 
 class Store:
@@ -73,29 +79,41 @@ class Store:
             ("events", "data", "TEXT"),
             ("tasks", "typed", "REAL"),
             ("tasks", "ended", "REAL"),
+            ("tasks", "name", "TEXT"),
         ):
             if column not in {row[1] for row in self.db.execute(f"PRAGMA table_info({table})")}:
                 self.db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
-    def claim(self, task_id: str, client: str, source: dict, requester: str, job_json: str) -> tuple[Task, bool]:
+    def claim(
+        self, task_id: str, client: str, source: dict, requester: str, job_json: str, name: str | None = None,
+    ) -> tuple[Task, bool]:
         """Record a task for a source, or return the one already recorded.
 
         A failed launch is deleted when it fails, so resending retries it.
+        NameTaken if another of the client's open tasks has its name.
         """
         with self.db:
             self.db.execute("BEGIN IMMEDIATE")
             row = self.db.execute(
-                "SELECT id, status, target, error, run_id FROM tasks WHERE client = ? AND source_kind = ? AND source_ref = ?",
+                "SELECT id, status, target, error, run_id, name FROM tasks WHERE client = ? AND source_kind = ? AND source_ref = ?",
                 (client, source["kind"], source["ref"]),
             ).fetchone()
             if row:
                 return Task(*row), False
+            if name is not None and self.named(client, name):
+                raise NameTaken(name)
             self.db.execute(
-                "INSERT INTO tasks (id, client, source_kind, source_ref, source_json, requester, job_json, status, created)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)",
-                (task_id, client, source["kind"], source["ref"], json.dumps(source), requester, job_json, time.time()),
+                "INSERT INTO tasks (id, client, source_kind, source_ref, source_json, requester, job_json, status, created, name)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)",
+                (task_id, client, source["kind"], source["ref"], json.dumps(source), requester, job_json, time.time(), name),
             )
         return Task(task_id, "pending", None, None), True
+
+    def named(self, client: str, name: str) -> str | None:
+        """The id of the client's task with this name. An ended task holds its name until
+        it's purged, so a command repeated later can't reach a new session that took it."""
+        row = self.db.execute("SELECT id FROM tasks WHERE client = ? AND name = ?", (client, name)).fetchone()
+        return row[0] if row else None
 
     def fail_pending(self) -> None:
         """Delete tasks left pending by a previous run, so a resend retries them."""
@@ -207,11 +225,11 @@ class Store:
     def _events(self, where: str, params: tuple) -> list[Event]:
         rows = self.db.execute(
             "SELECT e.seq, e.task_id, e.type, e.summary, e.size, e.answerable, t.target, t.run_id, t.source_json, e.signalled, e.data,"
-            f" e.created FROM events e JOIN tasks t ON t.id = e.task_id WHERE {where} ORDER BY e.seq",
+            f" e.created, t.name FROM events e JOIN tasks t ON t.id = e.task_id WHERE {where} ORDER BY e.seq",
             params,
         )
         return [
-            Event(*row[:5], bool(row[5]), row[6], row[7], json.loads(row[8]), bool(row[9]), row[10] and json.loads(row[10]), row[11])
+            Event(*row[:5], bool(row[5]), row[6], row[7], json.loads(row[8]), bool(row[9]), row[10] and json.loads(row[10]), row[11], row[12])
             for row in rows
         ]
 
@@ -221,9 +239,9 @@ class Store:
         if task_id:
             where, params = where + " AND id = ?", [client, task_id]
         rows = self.db.execute(
-            f"SELECT id, target, requester, created, run_id, job_json FROM tasks WHERE {where} ORDER BY created", params
+            f"SELECT id, target, requester, created, run_id, name, job_json FROM tasks WHERE {where} ORDER BY created", params
         )
-        return [dict(zip(("id", "target", "requester", "created", "run_id"), row), job=json.loads(row[5])) for row in rows]
+        return [dict(zip(("id", "target", "requester", "created", "run_id", "name"), row), job=json.loads(row[6])) for row in rows]
 
     def latest_summary(self, client: str, task_id: str, type: str) -> str | None:
         found = self._events("t.client = ? AND e.task_id = ? AND e.type = ?", (client, task_id, type))

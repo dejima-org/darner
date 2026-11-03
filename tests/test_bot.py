@@ -871,6 +871,16 @@ async def test_stop_by_task_id(maubot_plugin, maubot_test_bot, api):
     assert api.stops == ["dn-7f3k2"]
 
 
+async def test_a_session_is_named_and_called_by_its_name(maubot_plugin, maubot_test_bot, api):
+    api.response = {**api.response, "name": "recipes"}  # as the API stored it
+    await send(maubot_test_bot, message("@dragonlet:example.org fix the import\nname: Recipes", reply_to=None))
+    assert api.requests[0][1]["name"] == "Recipes"
+    assert replies(maubot_test_bot) == ["Started dn-7f3k2, named dn-recipes → darner:dn-7f3k2"]
+    # dn-<name> goes to the API as given, which resolves it; it isn't refused as a mistyped id.
+    await send(maubot_test_bot, message("@dragonlet:example.org stop dn-recipes", reply_to=None))
+    assert api.stops == ["dn-recipes"]
+
+
 @pytest.mark.parametrize(
     "replied",
     [None, "foreign", "untagged"],
@@ -1021,13 +1031,13 @@ async def test_sessions_when_none_are_open(maubot_plugin, maubot_test_bot, sessi
 
 async def test_sessions_list_what_each_waits_on(maubot_plugin, maubot_test_bot, sessions):
     sessions.sessions = [
-        session(),
+        session(name="recipes"),
         session(id="dn-aaaaa", link="https://dejima.example.com/?arg=0123456789abcdef", waiting={"answer": "Which db?", "domains": None}),
     ]
     await send(maubot_test_bot, message("@dragonlet:example.org list", reply_to=None))
     assert replies(maubot_test_bot) == [
         "Open sessions:\n\n"
-        f"- dn-7f3k2: working, started 1h02m ago by {ALICE} (darner:dn-7f3k2)\n"
+        f"- dn-7f3k2 (dn-recipes): working, started 1h02m ago by {ALICE} (darner:dn-7f3k2)\n"
         f"- dn-aaaaa: waiting for an answer, started 1h02m ago by {ALICE} (https://dejima.example.com/?arg=0123456789abcdef)"
     ]
 

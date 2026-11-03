@@ -106,7 +106,8 @@ async def test_the_actions_work_under_the_csp(aiohttp_server):
     assert ("/v1/tasks/dn-aaaaa/message", {"text": "use postgres", "requester": "web"}) in posted
     [task] = [body for path, body in posted if path == "/v1/tasks"]
     assert task["task"] == "add this recipe" and task["blurbs"] == ["mealie"] and task["grants"]["domains"] == ["allrecipes.example.org"]
-    assert (task["harness"], task["backend"], task["model"]) == ("cline", "openrouter", "z-ai/glm-5.3")
+    assert (task["harness"], task["backend"], task["model"], task["name"]) == ("cline", "openrouter", "z-ai/glm-5.3", "recipes")
+    assert result["named"]["Name"] == "dn-recipes"
     assert "context_window" not in task and "effort" not in task
     preview = result["preview"]
     # With nothing chosen, the catalog's defaults.

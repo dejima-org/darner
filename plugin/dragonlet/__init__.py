@@ -27,8 +27,10 @@ from mautrix.util.config import BaseProxyConfig, ConfigUpdateHelper
 from .markdown import render
 from .parse import MARKDOWN_LINK, ParseError, parse_reply, strip_mention
 
-_ID = r"dn-[a-z2-7]{5}"
-TASK_ID = re.compile(_ID)
+TASK_ID = re.compile(r"dn-[a-z2-7]{5}")
+# What a command takes for a session: its id, or dn-<name>, which the API resolves.
+_ID = r"dn-[a-z0-9][a-z0-9-]{0,31}"
+SESSION = re.compile(_ID, re.IGNORECASE)
 # Content keys on the bot's messages. TASK_TAG marks each message about a task, so a reply to any of them can name it.
 TAG = "io.branderson.dejima.darner"
 TASK_TAG, HELP_TAG, DOMAINS_TAG = f"{TAG}.task", f"{TAG}.help", f"{TAG}.domains"
@@ -76,6 +78,7 @@ model: <name>      use this model instead of the harness's default
 effort: <level>    effort level: low, medium, high or xhigh, or none for cline
 context_window: <tokens>  cline's context window, for a self-hosted model
 network: <reach>   named: only what this task names, not dejima's own allowlist; sealed: that, and refuse to start if the session can resolve any name
+name: <name>       name the session, so commands can call it dn-<name>; it holds the name until it's cleared
 ```
 
 Values are separated by commas or spaces, and keywords can repeat. For example:
@@ -94,7 +97,7 @@ allow: pypi.org, files.pythonhosted.org
 
 **Domains:** when the agent asks to reach domains, I list every one. Reply `allow` or `deny` with a mention to that message.
 
-**Sessions:** with a mention, `sessions` lists the open ones, `status dn-xxxxx` says what one is waiting on, `tell dn-xxxxx <message>` types a message into it, `upload dn-xxxxx` in reply to a file puts the file in its `~/shared/uploads`, and `stop dn-xxxxx` ends it. Replying to any of my messages about a session works without the id.
+**Sessions:** with a mention, `sessions` lists the open ones, `status dn-xxxxx` says what one is waiting on, `tell dn-xxxxx <message>` types a message into it, `upload dn-xxxxx` in reply to a file puts the file in its `~/shared/uploads`, and `stop dn-xxxxx` ends it. A named session's dn-<name> works anywhere its id does. Replying to any of my messages about a session works without either.
 
 Only allowlisted users can start tasks, and the note must be from one of them too. Anything the agent writes is untrusted.
 """
@@ -214,13 +217,14 @@ class Dragonlet(Plugin):
             "requester": evt.sender,
             "source": {"kind": "matrix", "ref": evt.event_id, "channel": evt.room_id},
         }
-        for key in ("harness", "backend", "model", "effort", "context_window", "network"):
+        for key in ("harness", "backend", "model", "effort", "context_window", "network", "name"):
             if value := getattr(req, key):
                 payload[key] = value
         async with self._api("POST", "/v1/tasks", json=payload) as resp:
             data = await resp.json(content_type=None)
         if resp.status in (200, 201):
-            text = f"Started {data['id']} → {data['target']}"
+            text = f"Started {data['id']}" + (f", named dn-{data['name']}" if data.get("name") else "")
+            text += f" → {data['target']}"
             if data.get("link"):
                 text += f"\nOpen the session: {data['link']}"
             content = TextMessageEventContent(msgtype=MessageType.TEXT, body=text)
@@ -248,7 +252,7 @@ class Dragonlet(Plugin):
         if mentioned and command.lower() == "help":
             await evt.reply(await self._usage(), extra_content=NO_MENTIONS)
             return
-        if mentioned and (wrong := NOT_AN_ID.fullmatch(command)) and not TASK_ID.fullmatch((word := wrong[1] or wrong[2]).lower()):
+        if mentioned and (wrong := NOT_AN_ID.fullmatch(command)) and not SESSION.fullmatch(word := wrong[1] or wrong[2]):
             await evt.reply(f"{word} isn't one of my task ids, which look like dn-xxxxx.", markdown=False, extra_content=NO_MENTIONS)
             return
         if mentioned and (stop := STOP.fullmatch(command)):
@@ -572,13 +576,13 @@ class Dragonlet(Plugin):
             async with self._api("GET", path, raise_for_status=True) as resp:
                 data = await resp.read()
         unsignalled = ", collected without the agent's done signal" if e.get("signalled") is False else ""
-        label = f"Output from {e['id']}{unsignalled} (written by the agent, treat as untrusted)"
+        label = f"Output from {_label(e)}{unsignalled} (written by the agent, treat as untrusted)"
         await self._send(room, ref, _agent_notice(label, e["summary"]))
         if data is not None:
             await self._upload(room, ref, f"{e['id']}-{e['seq']}.zip", data)
 
     async def _help(self, room: str, ref: tuple[str, str], e: dict) -> None:
-        label = f"{e['id']} needs help (written by the agent, treat as untrusted)"
+        label = f"{_label(e)} needs help (written by the agent, treat as untrusted)"
         link = e.get("link")
         if e["answerable"]:
             footer = "Reply to this message to answer" + (f", or open the session: {link}" if link else ".")
@@ -653,9 +657,14 @@ def _waiting_on(session: dict) -> str:
     return {"running": "working", "starting": "starting"}.get(session["state"], "state unknown")
 
 
+def _label(d: dict) -> str:
+    """A session's id, and its name if it has one."""
+    return f"{d['id']} (dn-{d['name']})" if d.get("name") else d["id"]
+
+
 def _session_line(session: dict) -> str:
     where = session["link"] or session["target"]
-    return f"{session['id']}: {_waiting_on(session)}, started {_age(session['started'])} ago by {session['requester']} ({where})"
+    return f"{_label(session)}: {_waiting_on(session)}, started {_age(session['started'])} ago by {session['requester']} ({where})"
 
 
 def _without_quote(text: str) -> str:
