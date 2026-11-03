@@ -33,12 +33,30 @@ def test_parse_refuses(text, message):
         parse("x", text)
 
 
-def test_load_combines_in_order(tmp_path):
+def test_load_combines_lists_and_agreeing_values(tmp_path):
     (tmp_path / "mealie").write_text(MEALIE)
-    (tmp_path / "strong").write_text("harness: claude-code\nmodel: opus\nallow: pypi.org\nctx: mealie\n")
+    (tmp_path / "strong").write_text("harness: cline\neffort: high\nallow: pypi.org\nctx: mealie\n")
     combined = load(tmp_path, ["mealie", "strong"])
-    assert combined["harness"] == "claude-code" and combined["model"] == "opus" and combined["backend"] == "self-hosted"
+    assert combined["harness"] == "cline" and combined["effort"] == "high" and combined["backend"] == "self-hosted"
     assert combined["blurbs"] == ["mealie"] and combined["domains"] == ["pypi.org"]
+
+
+def test_config_sets_that_disagree_are_refused_whatever_their_order(tmp_path):
+    (tmp_path / "mealie").write_text(MEALIE)
+    (tmp_path / "strong").write_text("harness: claude-code\n")
+    (tmp_path / "local").write_text("harness: cline\n")
+    for names in (["mealie", "strong", "local"], ["strong", "local", "mealie"]):
+        with pytest.raises(ConfigSetError) as e:
+            load(tmp_path, names)
+        assert "disagree on harness" in str(e.value) and "strong gives claude-code" in str(e.value)
+        assert "give cline" in str(e.value) and "Set harness for the task to choose" in str(e.value)
+
+
+def test_a_disagreement_the_request_settles_is_left_to_it(tmp_path):
+    (tmp_path / "mealie").write_text(MEALIE)
+    (tmp_path / "strong").write_text("harness: claude-code\n")
+    combined = load(tmp_path, ["mealie", "strong"], overridden={"harness"})
+    assert combined["harness"] is None and combined["backend"] == "self-hosted"
 
 
 def test_unknown_config_set_lists_the_available_ones(tmp_path):

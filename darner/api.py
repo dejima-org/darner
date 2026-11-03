@@ -321,7 +321,8 @@ def _build(config: dict, body: object, read_files: bool = True) -> tuple[dict, d
     if not isinstance(grants, dict) or set(grants) - {"domains", "internal", "dependencies"}:
         raise RequestError(400, "grants must be an object with domains, internal and dependencies")
     try:
-        sets = configsets.load(Path(config.get("configs_dir", "")), _list(body, "configs"))
+        overridden = {key for key in configsets.SINGLES if body.get(key) is not None}
+        sets = configsets.load(Path(config.get("configs_dir", "")), _list(body, "configs"), overridden)
         files = configsets.load_files(Path(config.get("configs_dir", "")), sets["files"], read_files)
     except (configsets.ConfigSetError, OSError) as e:
         raise RequestError(400, str(e))

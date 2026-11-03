@@ -425,7 +425,7 @@ The note is the task. The rest of the reply, minus the mention and the keyword l
 
 | keyword | meaning |
 |---|---|
-| `config:` | config sets to use, by name: saved keyword lines for a recurring task. Anything else in the message overrides them: a single value replaces theirs, a list adds to theirs |
+| `config:` | config sets to use, by name: saved keyword lines for a recurring task. Their lists combine. Two that give a single value differently, such as `harness:`, are refused, whatever their order, unless the message gives that value itself. Anything else in the message overrides them: a single value replaces theirs, a list adds to theirs |
 | `ctx:` | context blurbs to add, by name |
 | `allow:` | domains the session may reach |
 | `internal:` | domains inside your network the session may reach, passed to dejima as `--internal-domain` as well as allowed |

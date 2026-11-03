@@ -5,6 +5,9 @@
 A config set is a file of the keyword lines a chat request takes, one per
 line, with # comments. Comment lines at its top are its description. A request names config sets, and its own values
 override theirs: a single value replaces theirs, and a list adds to theirs.
+Config sets' lists combine. Two giving different single values conflict, which
+is refused unless the request gives that value itself, so no order between
+them decides it.
 """
 
 import re
@@ -81,9 +84,11 @@ def description(text: str) -> str | None:
     return " ".join(line for line in lines if line) or None
 
 
-def load(configs_dir: Path, names: list) -> dict:
-    """The named config sets combined in order, a later one's single values replacing an earlier one's."""
+def load(configs_dir: Path, names: list, overridden=()) -> dict:
+    """The named config sets combined, their lists joined. A single value two of them
+    give differently is refused, unless it's in overridden, when it's left unset."""
     combined = {field: [] for field in LISTS.values()} | {key: None for key in SINGLES}
+    given = {}
     choices = available(configs_dir)
     for name in names:
         if not isinstance(name, str) or name not in choices:
@@ -92,5 +97,12 @@ def load(configs_dir: Path, names: list) -> dict:
         for field in LISTS.values():
             combined[field] += [v for v in found[field] if v not in combined[field]]
         for key in SINGLES:
-            combined[key] = found[key] or combined[key]
+            if found[key] is not None:
+                given.setdefault(key, {}).setdefault(found[key], []).append(name)
+    for key, values in given.items():
+        if len(values) == 1:
+            combined[key] = next(iter(values))
+        elif key not in overridden:
+            sides = "; ".join(f"{', '.join(sets)} {'give' if len(sets) > 1 else 'gives'} {value}" for value, sets in values.items())
+            raise ConfigSetError(f"config sets disagree on {key}: {sides}. Set {key} for the task to choose")
     return combined

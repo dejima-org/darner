@@ -8,6 +8,7 @@ Each release names the dejima release it was released against: the one it was te
 
 Released against dejima: N/A
 
+- **Config sets that disagree are refused:** two config sets giving a single value differently, such as `harness:`, are refused, naming each set and its value, unless the request gives that value itself. A later set used to win, and darner-web sent them in alphabetical order, so which won there was an accident.
 - **darner-web, easier to read and on a phone:** Start says it's starting the session, and for how long, until the session's page opens. Sessions are cards, and the header stays one line. A session's page leads with what it's waiting on you for, or its newest event, then the answer box and what it was started with, and its history follows, newest first and folded, with Expand all. The API's sessions gain `started_with`, and its events `created`.
 - **Output a file tool can't misplace:** the agent's instructions say that `~/shared` is in its home directory, to give file-editing tools its full path, and to make the signal files in a shell and check they're there. Cline's file tools took `~/shared/.done` as a directory named `~` under the working directory, so the requester never heard the session had finished.
 - **Config set descriptions:** comment lines at the top of a config set are its description, shown by `describe` in chat and on darner-web's config set page.
