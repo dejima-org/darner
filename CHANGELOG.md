@@ -8,6 +8,7 @@ Each release names the dejima release it was released against: the one it was te
 
 Released against dejima: N/A
 
+- **Output a file tool can't misplace:** the agent's instructions say that `~/shared` is in its home directory, to give file-editing tools its full path, and to make the signal files in a shell and check they're there. Cline's file tools took `~/shared/.done` as a directory named `~` under the working directory, so the requester never heard the session had finished.
 - **Config set descriptions:** comment lines at the top of a config set are its description, shown by `describe` in chat and on darner-web's config set page.
 - **Harness settings that fit:** a task asking for a backend, effort level or context window its harness can't take is refused, on every frontend, rather than failing inside dejima, from what dejima's own manifests say each harness takes. darner-web lists every harness dejima has, which it didn't, and offers only what fits the harness and backend above each field, and the models `[catalog]` in `api.toml` lists for them, with a self-hosted model's context window filled in.
 - **Defaults are your dejima host's:** the catalog reports dejima's own default harness and each harness's settings, with the launcher's options in their place, a task naming no harness is held to dejima's default, and the README's launcher setup no longer pins `--harness claude-code`. If yours has it and you want dejima's default, redo step 4 without it.
