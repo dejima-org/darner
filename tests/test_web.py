@@ -45,6 +45,7 @@ class FakeApi:
             "id": "dn-aaaaa", "target": "darner:dn-aaaaa", "link": "https://dejima.example.com/?arg=x",
             "requester": "<b>alice</b>", "started": 0, "state": "running", "answerable": True,
             "waiting": {"answer": "which db?", "domains": None},
+            "started_with": {"configs": ["recipes"], "harness": "<i>cline</i>", "context_window": 30000, "domains": ["pypi.org"]},
         }]
         self.events = {
             "dn-aaaaa": [{"seq": 1, "id": "dn-aaaaa", "type": "output", "summary": SELFTEST, "size": 4, "signalled": True, "data": None},
@@ -245,7 +246,7 @@ def assert_selftest_shown_safely(html: str) -> None:
 async def test_sessions_page_lists_open_and_ended_sessions(client, fake):
     resp, html = await get(client, "/")
     assert resp.status == 200
-    assert 'href="/sessions/dn-aaaaa"' in html and "a help request" in html
+    assert '<li class="card">' in html and 'href="/sessions/dn-aaaaa"' in html and "Waiting on a help request" in html
     assert 'href="/sessions/dn-bbbbb"' in html and "Ended, not yet cleared" in html
     assert "&lt;b&gt;alice&lt;/b&gt;" in html and "<b>alice" not in html
     assert 'href="https://dejima.example.com/?arg=x" rel="noopener noreferrer"' in html
@@ -254,9 +255,36 @@ async def test_sessions_page_lists_open_and_ended_sessions(client, fake):
 async def test_session_page_shows_the_selftest_safely(client):
     resp, html = await get(client, "/sessions/dn-aaaaa")
     assert resp.status == 200
-    for section in html.split('<li class="event ')[1:4]:
+    sections = html.split('class="event ')[1:]
+    assert [s.split('"')[0] for s in sections] == ["help", "domains", "waiting", "output"]
+    for section in sections[:1] + sections[2:]:
         assert_selftest_shown_safely(section)
     assert 'href="/sessions/dn-aaaaa/outputs/1.zip"' in html and "pypi.org" in html
+
+
+async def test_a_session_page_leads_with_what_it_waits_on_then_the_rest_newest_first(client, fake):
+    resp, html = await get(client, "/sessions/dn-aaaaa")
+    latest, rest = html.split('<section class="latest"', 1)[1].split('<section class="history">', 1)
+    # Waiting on a help answer, so the help request leads, above the answer box.
+    assert latest.index('class="event help"') < latest.index('id="message"')
+    assert [int(x.split('"')[0]) for x in rest.split('data-seq="')[1:]] == [4, 3, 1]
+    assert "<details" in rest and "<details class=\"event domains\" data-seq=\"4\" open" not in rest
+    # Waiting on a domain decision, the request leads, with its buttons.
+    fake.sessions[0]["waiting"] = {"answer": None, "domains": {"request": 1}}
+    resp, html = await get(client, "/sessions/dn-aaaaa")
+    latest = html.split('<section class="latest"', 1)[1].split("</section>", 1)[0]
+    assert 'class="event domains"' in latest and "/domains/1/allow" in latest
+    # Waiting on nothing, the newest leads.
+    fake.sessions[0]["waiting"] = {"answer": None, "domains": None}
+    resp, html = await get(client, "/sessions/dn-aaaaa")
+    assert 'class="event domains"' in html.split('<section class="latest"', 1)[1].split("</section>", 1)[0]
+
+
+async def test_a_session_page_says_what_it_was_started_with(client):
+    resp, html = await get(client, "/sessions/dn-aaaaa")
+    started = html.split('<section class="well started">', 1)[1].split("</section>", 1)[0]
+    assert "<dt>Config sets</dt><dd>recipes</dd>" in started and "<dt>Context window</dt><dd>30000</dd>" in started
+    assert "&lt;i&gt;cline&lt;/i&gt;" in started and "<i>" not in started
 
 
 async def test_the_selftest_check_catches_unsafe_html():
@@ -268,6 +296,8 @@ async def test_the_selftest_check_catches_unsafe_html():
 async def test_an_ended_session_shows_its_output_and_a_purged_one_is_gone(client):
     resp, html = await get(client, "/sessions/dn-bbbbb")
     assert resp.status == 200 and "Only its output is kept" in html and "done" in html
+    # It leads with the output, not the ended notice the summary already gives.
+    assert 'class="event output"' in html.split('<section class="latest"', 1)[1].split("</section>", 1)[0]
     resp, html = await get(client, "/sessions/dn-zzzzz")
     assert resp.status == 404 and "darner keeps nothing about a session once it's cleared" in html
 

@@ -67,8 +67,9 @@ async def test_the_selftest_does_nothing_in_a_real_browser(aiohttp_server):
     result = await _load_selftest(aiohttp_server)
     # Positive controls: the page loaded, showed the whole self-test, and the
     # request listener saw the page's own requests, so an empty result means something.
-    assert result["status"] == 200
-    assert "Check 11, the end." in result["text"] and "Test line 4:" in result["text"]
+    assert result["status"] == 200 and result["expand"] == "Collapse all"
+    # Once in the help request leading the page, and once in each of the two in its history.
+    assert result["text"].count("Check 11, the end.") == 3 and "Test line 4:" in result["text"]
     assert any(url.endswith("/static/app.js") for url in result["own_requests"])
     assert result["dialogs"] == [], "check 2: a script ran"
     assert result["hostile_requests"] == [], "checks 2 and 5: something loaded from the agent's addresses"
@@ -132,6 +133,7 @@ async def test_the_actions_work_under_the_csp(aiohttp_server):
     }
     # Back to a harness that can't take them, the backend, model and context window go back to its defaults.
     assert agent["back"] == {"backend": "", "model": "", "context_window": "", "disabled": True}
+    assert result["starting"]["button"] == "Starting the session" and "s so far." in result["starting"]["status"]
     assert result["landed"] == f"{origin}/sessions/dn-ccccc"
     assert result["violations"] == [] and result["errors"] == []
 
@@ -167,4 +169,4 @@ async def test_agent_chosen_addresses_are_seen_whole_on_a_phone(aiohttp_server):
         await server.close()
     # Positive controls: each address's start is found and inside its pane and the screen, so a missing one can't pass.
     assert result["found"] == {"github.com.example": True, "ghij.evil.example/x": True, "pypi.org.files": True, "opq.evil.example": True}
-    assert not result["scrolls_sideways"]
+    assert not result["scrolls_sideways"] and result["header_lines"] == 1

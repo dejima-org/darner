@@ -13,6 +13,8 @@ const [url, ...needles] = process.argv.slice(2);
 const browser = await chromium.launch();
 const page = await browser.newPage({ viewport: { width: 390, height: 800 } });
 await page.goto(url, { waitUntil: "networkidle" });
+// Unfolded, so what's checked is what's on show.
+if (await page.$("button[data-expand]")) await page.click("button[data-expand]");
 const result = await page.evaluate((needles) => {
   const found = {};
   const walker = document.createTreeWalker(document.querySelector("main"), NodeFilter.SHOW_TEXT);
@@ -30,7 +32,12 @@ const result = await page.evaluate((needles) => {
     }
   }
   const root = document.documentElement;
-  return { found, scrolls_sideways: root.scrollWidth > root.clientWidth };
+  // The header is one line: everything in it is vertically centred on the same line.
+  const middles = [...document.querySelector("nav").children].map((c) => {
+    const box = c.getBoundingClientRect();
+    return Math.round(box.top + box.height / 2);
+  });
+  return { found, scrolls_sideways: root.scrollWidth > root.clientWidth, header_lines: new Set(middles).size };
 }, needles);
 await browser.close();
 console.log(JSON.stringify(result));

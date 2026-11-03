@@ -5,21 +5,16 @@
 <p class="lead">No sessions. <a href="/new">Start a task</a>.</p>
 {% endif %}
 {% if sessions %}
-<table class="sessions">
-<thead><tr><th>Session</th><th>Started by</th><th>Age</th><th>State</th><th>Waiting on</th><th></th></tr></thead>
-<tbody>
+<ul class="cards">
 {% for s in sessions %}
-<tr>
-<td><a href="/sessions/{{ s.id }}" class="id">{{ s.id }}</a></td>
-<td>{{ s.requester }}</td>
-<td>{{ s.started | age }}</td>
-<td><span class="state {{ s.state }}">{{ s.state }}</span></td>
-<td>{% if s.waiting.answer is not none %}<span class="waits">a help request</span>{% elif s.waiting.domains is not none %}<span class="waits">a domain request</span>{% else %}<span class="quiet">nothing</span>{% endif %}</td>
-<td>{% if s.link %}<a href="{{ s.link }}" rel="noopener noreferrer">remote access</a>{% endif %}</td>
-</tr>
+<li class="card">
+<div class="card-head"><a href="/sessions/{{ s.id }}" class="id">{{ s.id }}</a><span class="state {{ s.state }}">{{ s.state }}</span></div>
+<p class="meta">{{ s.requester }} · {{ s.started | age }} ago</p>
+<p class="meta">{% if s.waiting.answer is not none %}<span class="waits">Waiting on a help request</span>{% elif s.waiting.domains is not none %}<span class="waits">Waiting on a domain request</span>{% else %}<span class="quiet">Waiting on nothing</span>{% endif %}</p>
+{% if s.link %}<p class="meta"><a href="{{ s.link }}" rel="noopener noreferrer" class="remote">Remote access</a></p>{% endif %}
+</li>
 {% endfor %}
-</tbody>
-</table>
+</ul>
 {% endif %}
 {% if ended %}
 <h2>Ended, not yet cleared</h2>

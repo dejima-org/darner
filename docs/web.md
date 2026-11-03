@@ -72,6 +72,8 @@ The nginx example uses `Host $http_host`, not `$host`, because darner-web checks
 
 darner-web sees and acts on only the sessions it started, as each frontend does. A session started from Matrix is followed up in Matrix.
 
+A session's page leads with what it's waiting on you for, a domain request or a help request, or else its newest event, with the answer box below it, then what it was started with. Its history follows, newest first, each event folded until you open it.
+
 An ended session stays on its page, showing its output and zips, until someone presses **Clear**. That acknowledges its last events, and the API deletes it. Uncleared output is deleted after the API's `output_retention`, 7 days by default. Files are uploaded from a running session's page, not when starting a task, since a session's `~/shared` doesn't exist until it's running.
 
 ## What it keeps

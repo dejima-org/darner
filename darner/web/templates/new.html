@@ -51,7 +51,8 @@
 <div id="preview-blurbs"></div>
 <p class="refusal" hidden></p>
 </section>
-<button type="submit">Start</button>
+<button type="submit" data-busy="Starting the session">Start</button>
+<p class="status" role="status" hidden data-text="dejima is building the sandbox and starting the agent, which can take a minute. The session's page opens when it's ready."></p>
 <p class="alert" role="alert" hidden></p>
 </form>
 {% endblock %}

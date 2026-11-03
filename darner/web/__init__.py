@@ -70,6 +70,12 @@ HEADERS = {
     "Cross-Origin-Resource-Policy": "same-origin",
 }
 TASK_ID = "{id:dn-[a-z2-7]{5}}"
+# What a session was started with, as its page labels it, in order.
+SETTING_LABELS = {
+    "configs": "Config sets", "blurbs": "Blurbs", "harness": "Harness", "backend": "Backend", "model": "Model",
+    "effort": "Effort", "context_window": "Context window", "network": "Reach", "domains": "Domains",
+    "internal_domains": "Internal domains", "dependencies": "Dependencies", "files": "Files",
+}
 
 
 def check_config(config: dict) -> dict:
@@ -255,7 +261,32 @@ async def session_page(request: web.Request) -> web.Response:
         if e.status == 404:
             return page(request, "gone.html", status=404, task_id=task_id)
         raise
-    return page(request, "session.html", state=f"/state/sessions/{task_id}", version=_version(data), task_id=task_id, **data)
+    latest, history = _latest(data["session"], data["events"])
+    return page(
+        request, "session.html", state=f"/state/sessions/{task_id}", version=_version(data), task_id=task_id,
+        latest=latest, history=history, **data,
+    )
+
+
+def _latest(session: dict | None, events: list[dict]) -> tuple[dict | None, list[dict]]:
+    """The event a session's page leads with, and the rest, newest first.
+
+    That's what the session is waiting on you for, a domain request or else a
+    help request, or failing that the newest event, passing over the ended
+    notice the page already says in its summary.
+    """
+    waiting = session["waiting"] if session else {"answer": None, "domains": None}
+
+    def newest(match) -> dict | None:
+        return next((e for e in reversed(events) if match(e)), None)
+
+    chosen = (
+        (waiting["domains"] and newest(lambda e: e["type"] == "domains" and e["data"]["request"] == waiting["domains"]["request"]))
+        or (waiting["answer"] is not None and newest(lambda e: e["type"] == "help"))
+        or newest(lambda e: e["type"] != "ended")
+        or (events[-1] if events else None)
+    )
+    return chosen, [e for e in reversed(events) if e is not chosen]
 
 
 async def state(request: web.Request) -> web.Response:
@@ -563,6 +594,7 @@ def make_app(config: dict) -> web.Application:
     )
     templates.filters["agent"] = render
     templates.filters["age"] = _age
+    templates.globals["SETTING_LABELS"] = SETTING_LABELS
     app[TEMPLATES] = templates
 
     async def client(app: web.Application):
