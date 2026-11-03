@@ -64,7 +64,9 @@ class Api:
         self.stops = []
         self.stop_status = 204
         self.selftests = []
-        self.configs = {"recipes": {"ctx": ["myapp"], "file": ["recipes-token"], "harness": "cline", "context_window": "30000"}}
+        self.configs = {"recipes": {
+            "ctx": ["myapp"], "file": ["recipes-token"], "harness": "cline", "context_window": "30000", "description": "Adds <b>recipes</b>.",
+        }}
 
     async def selftest(self, request):
         self.selftests.append(await request.json())
@@ -1235,7 +1237,8 @@ async def test_waiting_notice(maubot_plugin, maubot_test_bot, api, summary):
 async def test_describe_shows_a_config_set(maubot_plugin, maubot_test_bot, api):
     await send(maubot_test_bot, message("@dragonlet:example.org describe recipes", reply_to=None))
     [msg] = [r for r in maubot_test_bot.responded if r.event_type == EventType.ROOM_MESSAGE]
-    assert "ctx: myapp\n    file: recipes-token\n    harness: cline\n    context_window: 30000" in msg.content.body
+    assert "recipes (config set)\n\nAdds <b>recipes</b>.\n\n    ctx: myapp\n    file: recipes-token\n    harness: cline\n    context_window: 30000\n\n" in msg.content.body
+    assert "<p>Adds &lt;b&gt;recipes&lt;/b&gt;.</p><pre>" in msg.content.formatted_body and "description:" not in msg.content.body
     assert "<pre><code>ctx: myapp\nfile: recipes-token" in msg.content.formatted_body
     assert "contents aren't shown" in msg.content.body
     assert api.requests == []

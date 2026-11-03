@@ -2,7 +2,7 @@
 # Copyright (C) 2026 Brad Anderson
 import pytest
 
-from darner.configsets import ConfigSetError, available, load, parse
+from darner.configsets import ConfigSetError, available, description, load, parse
 
 MEALIE = """# Adding a recipe to Mealie
 ctx: mealie
@@ -73,3 +73,15 @@ def test_file_errors_name_no_host_path(tmp_path):
     with pytest.raises(ConfigSetError) as e:
         load_files(tmp_path, ["missing"])
     assert str(tmp_path) not in str(e.value)
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("# Recipes, from Mealie\nharness: cline\n", "Recipes, from Mealie"),
+    ("# Recipes,\n#  from Mealie\n#\nharness: cline\n", "Recipes, from Mealie"),
+    ("harness: cline\n# not a description\n", None),
+    ("\n# not at the top\n", None),
+    ("#\nharness: cline\n", None),
+])
+def test_description_is_the_comment_lines_at_the_top(text, expected):
+    assert description(text) == expected
+    parse("x", text)

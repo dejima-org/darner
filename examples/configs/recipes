@@ -1,5 +1,8 @@
-# A recurring task on a self-hosted model, with the context and access it
-# always needs. A request names it with `config: recipes` and adds only what
+# Recipe imports into Mealie, on the self-hosted model.
+
+# Comment lines at the top are the description, shown with the set; a blank
+# line ends it. A recurring task on a self-hosted model, with the context and
+# access it always needs. A request names it with `config: recipes` and adds only what
 # changes, such as `allow:` for the recipe's website.
 ctx: myapp
 harness: cline

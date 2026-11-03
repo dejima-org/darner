@@ -417,7 +417,7 @@ To manage open sessions, mention the bot with one of these. Replying to any of t
 
 Replying to one of the bot's messages about a session with anything else, with a mention, sends it to the session like `tell`.
 
-To see what config sets and context blurbs there are, mention the bot with `list configs` or `list blurbs`. `describe <names>` shows each named config set's keyword lines, with the names of any files it gives a session but not their contents, then each named blurb's text. A name that's both a config set and a blurb shows both, config set first. Up to 10 names at once. A blurb is cut at 20 lines or 1000 characters, so a reply doesn't fill the room; the whole text is in the blurbs directory.
+To see what config sets and context blurbs there are, mention the bot with `list configs` or `list blurbs`. `describe <names>` shows each named config set's description and keyword lines, with the names of any files it gives a session but not their contents, then each named blurb's text. A name that's both a config set and a blurb shows both, config set first. Up to 10 names at once. A blurb is cut at 20 lines or 1000 characters, so a reply doesn't fill the room; the whole text is in the blurbs directory.
 
 To end a session, reply `@dragonlet stop` to any of the bot's messages about it, or send `@dragonlet stop dn-xxxxx`. The launcher stops the session's sandbox container, so dejima exits and cleans up as usual, then closes its tmux window.
 
@@ -550,7 +550,7 @@ Grants use `dejima --domains FILE` and `--dependencies FILE`, and output collect
 | `output_retention` | seconds an ended session's output is kept for a frontend that hasn't collected it (default 604800, 7 days; 0 deletes it when the session ends) |
 | `max_session_age` | seconds a session may run before it's stopped, so none is left running forgotten (default 86400, a day; 0 never stops one). A task the launcher no longer knows about is marked ended at the same age. A session stuck starting counts too, and one whose output can never be fetched is ended at that age, with the reason posted |
 | `waiting_screen` | whether that notice includes the end of the session's screen (default true) |
-| `configs_dir` | config sets, by default `configs` beside `blurbs_dir`; one file per set named as it's used, holding keyword lines (see [`examples/configs`](examples/configs)); read per request. A set's `file: <name>` lines give each of its sessions `configs_dir/files/<name>` (up to 1 MiB) in `~/shared/uploads` |
+| `configs_dir` | config sets, by default `configs` beside `blurbs_dir`; one file per set named as it's used, holding keyword lines (see [`examples/configs`](examples/configs)); read per request. Comment lines at a set's top are its description, shown wherever the set is described. A set's `file: <name>` lines give each of its sessions `configs_dir/files/<name>` (up to 1 MiB) in `~/shared/uploads` |
 | `default_blurbs` | blurb names added to every task's prompt, before any it names with `ctx:`; each must exist |
 | `results_dir` | collected output archives, until their frontend collects them |
 | `poll_interval` | seconds between checks on the dejima host |
