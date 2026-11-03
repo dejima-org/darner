@@ -609,7 +609,7 @@ Every `poll_interval` seconds the API asks the dejima host for the status of lau
 | `POST /v1/tasks/<id>/message` | `{text, requester}`: type a message into the session; 409 with the reason if the host refuses |
 | `POST /v1/tasks/<id>/files?name=&requester=` | the request body is a file for the session's `~/shared/uploads`; 413 over `max_upload` |
 | `POST /v1/tasks/<id>/check` | poll now rather than at the next `poll_interval`, and answer the session as it then is, or `{id, ended: true}`. A poll covers every session, so each client may check once every 15 seconds (429, with `Retry-After`), and a poll already running is the check |
-| `POST /v1/tasks/<id>/stop` | `{requester}`: end the task's session and close its tmux window; 409 if it isn't running |
+| `POST /v1/tasks/<id>/stop` | `{requester}`: end the task's session and close its tmux window, then poll, so a session that has exited is normally shown ended by the time it answers. A failed poll is logged and doesn't fail the stop; 409 if it isn't running |
 | `POST /v1/tasks/<id>/answer` | `{text, requester}`: answer the task's outstanding help request; 409 with the reason if the host refuses |
 
 `source` is echoed back as given, so a client knows where to reply without keeping state.

@@ -8,6 +8,7 @@ Each release names the dejima release it was released against: the one it was te
 
 Released against dejima: N/A
 
+- **Stopping shows it's stopping:** darner-web's Stop says it's stopping the session, and for how long, and the page shows the session ended as soon as it has, rather than up to a poll later. `POST /v1/tasks/<id>/stop` now polls before it answers, so its end is recorded by then, from any frontend. darner-web's new-task form drops Extra context, which in chat is the reply to a note and on the web only duplicated Task.
 - **Keywords spelled out:** `ctx:` is now `blurb:` and `deps:` is `dependency:`, in chat and in config sets. The old spellings still work, so existing config sets needn't change. `GET /v1/configs/{name}` describes a config set with the new keywords.
 - **Named sessions:** `name: <name>` in chat, or Name in darner-web, names a session, and `dn-<name>` then works anywhere its id does. A session holds its name until it's cleared, even once it has ended, so a command repeated later can't reach a new session that took it.
 - **Check now:** a session's page in darner-web can have the API look for output and requests now, rather than at the next poll, at most once every 15 seconds for each frontend. `POST /v1/tasks/<id>/check` does it for any frontend.

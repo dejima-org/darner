@@ -58,10 +58,14 @@ for (const button of document.querySelectorAll("button[data-post]")) {
   button.addEventListener("click", async () => {
     if (button.dataset.confirm && !confirm(button.dataset.confirm)) return;
     button.disabled = true;
+    const done = button.dataset.busy ? busy(button) : () => {};
     const json = { "Content-Type": "application/json" };
     const sent = await send(button.dataset.post, { headers: json, body: "{}" }, button);
     if (sent === true) location.reload();
-    else if (!sent) button.disabled = false;
+    else if (!sent) {
+      done();
+      button.disabled = false;
+    }
   });
 }
 
@@ -79,7 +83,7 @@ function fields(form) {
 // A slow action says it's still going, and for how long, until it's answered.
 function busy(button) {
   const label = button.textContent;
-  const status = button.form.querySelector(".status");
+  const status = button.closest("form, section").querySelector(".status");
   const started = Date.now();
   button.classList.add("busy");
   button.textContent = button.dataset.busy;
