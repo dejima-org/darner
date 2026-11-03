@@ -76,16 +76,64 @@ function fields(form) {
   return data;
 }
 
+// A slow action says it's still going, and for how long, until it's answered.
+function busy(button) {
+  const label = button.textContent;
+  const status = button.form.querySelector(".status");
+  const started = Date.now();
+  button.classList.add("busy");
+  button.textContent = button.dataset.busy;
+  const tick = () => {
+    status.textContent = `${status.dataset.text} ${Math.round((Date.now() - started) / 1000)}s so far.`;
+  };
+  tick();
+  status.hidden = false;
+  const timer = setInterval(tick, 1000);
+  return () => {
+    clearInterval(timer);
+    button.classList.remove("busy");
+    button.textContent = label;
+    status.hidden = true;
+  };
+}
+
 for (const form of document.querySelectorAll("form[data-action]")) {
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     const button = form.querySelector("button[type=submit]");
     button.disabled = true;
+    const done = button.dataset.busy ? busy(button) : () => {};
     const json = { "Content-Type": "application/json" };
     const sent = await send(form.dataset.action, { headers: json, body: JSON.stringify(fields(form)) }, form);
     if (sent) form.reset();
     if (sent === true) location.reload();
-    if (!sent) button.disabled = false;
+    if (!sent) {
+      done();
+      button.disabled = false;
+    }
+  });
+}
+
+// A session's history: folded, with what was unfolded kept across the page's reloads.
+for (const button of document.querySelectorAll("button[data-expand]")) {
+  const list = document.querySelector(button.dataset.expand);
+  const all = [...list.querySelectorAll("details[data-seq]")];
+  const key = `open:${location.pathname}`;
+  const opened = new Set(JSON.parse(sessionStorage.getItem(key) ?? "[]"));
+  const label = () => {
+    button.textContent = all.every((d) => d.open) ? "Collapse all" : "Expand all";
+  };
+  for (const d of all) {
+    d.open = opened.has(d.dataset.seq);
+    d.addEventListener("toggle", () => {
+      sessionStorage.setItem(key, JSON.stringify(all.filter((x) => x.open).map((x) => x.dataset.seq)));
+      label();
+    });
+  }
+  label();
+  button.addEventListener("click", () => {
+    const open = !all.every((d) => d.open);
+    for (const d of all) d.open = open;
   });
 }
 

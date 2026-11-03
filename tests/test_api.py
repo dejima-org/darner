@@ -746,6 +746,22 @@ async def test_sessions_list_what_each_waits_on(started, tmp_path, monkeypatch, 
     assert session["waiting"] == {"answer": "Which branch?", "domains": None}
     single = await (await client.get(f"/v1/tasks/{task_id}", headers=AUTH)).json()
     assert single == session
+    # What the request asked for, never the prompt.
+    assert session["started_with"] == {"domains": ["pypi.org"], "dependencies": ["pip:pytest"]}
+    [help_event] = await (await client.get(f"/v1/tasks/{task_id}/events", headers=AUTH)).json()
+    assert help_event["created"] > 0
+
+
+async def test_a_session_says_the_config_sets_and_blurbs_it_was_started_with(client, config):
+    configs = Path(config["blurbs_dir"]).parent / "configs"
+    configs.mkdir()
+    (configs / "recipes").write_text("harness: cline\ncontext_window: 30000\nctx: myapp\n")
+    task_id = (await (await client.post("/v1/tasks", json=request(configs=["recipes"]), headers=AUTH)).json())["id"]
+    session = await (await client.get(f"/v1/tasks/{task_id}", headers=AUTH)).json()
+    assert session["started_with"] == {
+        "configs": ["recipes"], "blurbs": ["myapp"], "harness": "cline", "context_window": 30000,
+        "domains": ["pypi.org"], "dependencies": ["pip:pytest"],
+    }
 
 
 async def test_session_waiting_on_domains(requested, tmp_path, monkeypatch):

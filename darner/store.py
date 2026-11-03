@@ -59,6 +59,7 @@ class Event:
     source: dict
     signalled: bool = True
     data: dict | None = None
+    created: float | None = None
 
 
 class Store:
@@ -205,12 +206,12 @@ class Store:
 
     def _events(self, where: str, params: tuple) -> list[Event]:
         rows = self.db.execute(
-            "SELECT e.seq, e.task_id, e.type, e.summary, e.size, e.answerable, t.target, t.run_id, t.source_json, e.signalled, e.data"
-            f" FROM events e JOIN tasks t ON t.id = e.task_id WHERE {where} ORDER BY e.seq",
+            "SELECT e.seq, e.task_id, e.type, e.summary, e.size, e.answerable, t.target, t.run_id, t.source_json, e.signalled, e.data,"
+            f" e.created FROM events e JOIN tasks t ON t.id = e.task_id WHERE {where} ORDER BY e.seq",
             params,
         )
         return [
-            Event(*row[:5], bool(row[5]), row[6], row[7], json.loads(row[8]), bool(row[9]), row[10] and json.loads(row[10]))
+            Event(*row[:5], bool(row[5]), row[6], row[7], json.loads(row[8]), bool(row[9]), row[10] and json.loads(row[10]), row[11])
             for row in rows
         ]
 
@@ -220,9 +221,9 @@ class Store:
         if task_id:
             where, params = where + " AND id = ?", [client, task_id]
         rows = self.db.execute(
-            f"SELECT id, target, requester, created, run_id FROM tasks WHERE {where} ORDER BY created", params
+            f"SELECT id, target, requester, created, run_id, job_json FROM tasks WHERE {where} ORDER BY created", params
         )
-        return [dict(zip(("id", "target", "requester", "created", "run_id"), row)) for row in rows]
+        return [dict(zip(("id", "target", "requester", "created", "run_id"), row), job=json.loads(row[5])) for row in rows]
 
     def latest_summary(self, client: str, task_id: str, type: str) -> str | None:
         found = self._events("t.client = ? AND e.task_id = ? AND e.type = ?", (client, task_id, type))

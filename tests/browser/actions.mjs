@@ -61,7 +61,13 @@ result.agent.back = {
 await page.selectOption("#harness", "cline");
 await page.selectOption("#backend", "openrouter");
 await page.fill("#model", "z-ai/glm-5.3");
-await Promise.all([page.waitForURL(`${origin}/sessions/dn-ccccc`), page.click("form[data-action] button[type=submit]")]);
+// A slow launch says it's still going.
+await page.route("**/tasks", async (route) => { await new Promise((r) => setTimeout(r, 1500)); await route.continue(); });
+const landing = page.waitForURL(`${origin}/sessions/dn-ccccc`);
+await page.click("form[data-action] button[type=submit]");
+await page.waitForFunction(() => !document.querySelector(".status").hidden);
+result.starting = { button: await page.textContent("button[type=submit]"), status: await page.textContent(".status") };
+await landing;
 result.landed = page.url();
 result.violations.push(...(await page.evaluate(() => window.__violations)));
 await browser.close();

@@ -590,7 +590,7 @@ Every `poll_interval` seconds the API asks the dejima host for the status of lau
 
 | endpoint | |
 |---|---|
-| `GET /v1/events` | unacknowledged events, oldest first: `{seq, id, type, summary, size, answerable, target, source}`, `type` is `output`, `help`, `domains`, `waiting`, `expired` or `ended`; `data` holds a domain request, a waiting session's `quiet` seconds, or a stopped session's `age` |
+| `GET /v1/events` | unacknowledged events, oldest first: `{seq, id, type, summary, size, answerable, target, source, created}`, `type` is `output`, `help`, `domains`, `waiting`, `expired` or `ended`; `data` holds a domain request, a waiting session's `quiet` seconds, or a stopped session's `age` |
 | `GET /v1/tasks/<id>/outputs/<seq>.zip` | an `output` event's archive (`size` 0 means it was rejected, and `summary` says why) |
 | `GET /v1/tasks/<id>/events` | a task's events so far, collected or not, in the same form, without acknowledging any; gone once the task is purged |
 | `POST /v1/events/<seq>/ack` | mark an event delivered |
@@ -603,7 +603,7 @@ Every `poll_interval` seconds the API asks the dejima host for the status of lau
 | `GET /v1/catalog` | the dejima host's harnesses and backends, the default harness and each harness's defaults (dejima's own, from `dejima --print-config`, with the launcher's options in their place), and under `options`, what each harness can be set to: its backends, effort levels, whether it takes a context window, and `[catalog]`'s models for each backend |
 | `POST /v1/tasks/<id>/domains/<n>/allow` | `{requester}`: grant domain request `n` as it was shown, minus what policy refuses |
 | `POST /v1/tasks/<id>/domains/<n>/deny` | `{requester}`: refuse domain request `n` |
-| `GET /v1/tasks` | the client's open sessions, with what each is waiting on: `{id, target, link, requester, started, state, answerable, waiting: {answer, domains}}` |
+| `GET /v1/tasks` | the client's open sessions, with what each is waiting on: `{id, target, link, requester, started, state, answerable, waiting: {answer, domains}, started_with}`. `started_with` is what the request asked for, without the prompt: its `configs`, `blurbs`, agent settings, grants and file names |
 | `GET /v1/tasks/<id>` | one open session, in the same form |
 | `POST /v1/tasks/<id>/message` | `{text, requester}`: type a message into the session; 409 with the reason if the host refuses |
 | `POST /v1/tasks/<id>/files?name=&requester=` | the request body is a file for the session's `~/shared/uploads`; 413 over `max_upload` |

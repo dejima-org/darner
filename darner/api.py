@@ -307,11 +307,6 @@ def _without_port(domain: object) -> object:
     return host if sep and port.isascii() and port.isdigit() and 0 < int(port) < 65536 else domain.lower()
 
 
-def build_job(config: dict, body: object) -> tuple[dict, dict, str]:
-    job, source, requester, _, _ = _build(config, body)
-    return job, source, requester
-
-
 def _build(config: dict, body: object, read_files: bool = True) -> tuple[dict, dict, str, dict, list[tuple[str, str]]]:
     """The job a request makes, its source and requester, and the combined config sets and blurbs it was made from.
     Unless read_files, its config sets' files are checked but not read, and left empty."""
@@ -688,7 +683,7 @@ async def create_task(request: web.Request) -> web.Response:
     except ValueError:
         return web.json_response({"error": "body must be JSON"}, status=400)
     try:
-        job, source, requester = build_job(config, body)
+        job, source, requester, _, blurbs = _build(config, body)
         await check_job_harness(request.app, job)
     except RequestError as e:
         return web.json_response({"error": str(e)}, status=e.status)
@@ -698,7 +693,10 @@ async def create_task(request: web.Request) -> web.Response:
     while store.known(job["id"]):
         job["id"] = new_task_id()
     # File contents may be credentials, so the stored job keeps only their names.
-    recorded = {**job, "files": [f["name"] for f in job["files"]]}
+    recorded = {
+        **job, "files": [f["name"] for f in job["files"]], "configs": _list(body, "configs"),
+        "blurbs": [name for name, _ in blurbs],
+    }
     task, new = store.claim(job["id"], client, source, requester, json.dumps(recorded))
     if not new:
         if task.status == "pending":
@@ -761,7 +759,7 @@ def _event_json(config: dict, e) -> dict:
         "seq": e.seq, "id": e.id, "type": e.type, "summary": e.summary, "size": e.size,
         "answerable": e.answerable, "signalled": e.signalled, "data": e.data,
         "target": e.target, "link": session_link(config, e.run_id),
-        "source": e.source,
+        "source": e.source, "created": e.created,
     }
 
 
@@ -837,6 +835,12 @@ async def list_blurbs(request: web.Request) -> web.Response:
     return web.json_response(available_blurbs(Path(request.app[CONFIG]["blurbs_dir"])))
 
 
+# What a session's view says it was started with: what was asked for, never the prompt.
+STARTED_WITH = (
+    "configs", "blurbs", *configsets.SINGLES, "domains", "internal_domains", "dependencies", "files",
+)
+
+
 async def _sessions(request: web.Request, task_id: str | None = None) -> list[dict]:
     """The client's open sessions, with what each is waiting on, asked of the dejima host now."""
     client, store, config = _client(request), request.app[STORE], request.app[CONFIG]
@@ -865,6 +869,7 @@ async def _sessions(request: web.Request, task_id: str | None = None) -> list[di
             "state": state.get("state", "unknown"),
             "answerable": bool(state.get("answerable")),
             "waiting": waiting,
+            "started_with": {key: task["job"][key] for key in STARTED_WITH if task["job"].get(key)},
         })
     return sessions
 

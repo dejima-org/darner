@@ -26,6 +26,9 @@ await page.addInitScript(() => {
 
 const response = await page.goto(url, { waitUntil: "networkidle" });
 result.status = response.status();
+// History is folded; unfolded, everything the agent wrote is on show.
+await page.click("button[data-expand]");
+result.expand = await page.textContent("button[data-expand]");
 result.violations = await page.evaluate(() => window.__violations);
 result.text = await page.locator("main").innerText();
 result.bold_test_line = await page.locator("main .agent b, main .agent strong").count();

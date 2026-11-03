@@ -96,12 +96,24 @@ header {
   backdrop-filter: blur(8px);
   border-bottom: 1px solid var(--rule);
 }
-nav { display: flex; align-items: center; gap: 1.5rem; max-width: var(--wrap); margin-inline: auto; padding: 0.7rem var(--pad-x); flex-wrap: wrap; }
+/* One line at any width: the links scroll sideways rather than wrap. */
+nav { display: flex; align-items: center; gap: 1.5rem; max-width: var(--wrap); margin-inline: auto; padding: 0.7rem var(--pad-x); }
+nav .brand { flex: none; }
 nav .brand img { height: 26px; width: auto; display: block; }
-nav .links { display: flex; gap: 1.3rem; flex-wrap: wrap; }
+nav .links {
+  display: flex; gap: 1.3rem; flex: 1 1 auto; min-width: 0; overflow-x: auto; scrollbar-width: none; white-space: nowrap;
+  mask-image: linear-gradient(to right, #000 calc(100% - 1.5rem), transparent);
+}
+nav .links::-webkit-scrollbar { display: none; }
 nav .links a { color: var(--fg-dim); text-decoration: none; }
 nav .links a:hover, nav .links a[aria-current="page"] { color: var(--fg); }
-nav .new { margin-left: auto; }
+nav .new { margin-left: auto; flex: none; }
+@media (max-width: 40rem) {
+  nav { gap: 0.9rem; }
+  nav .brand img { height: 20px; }
+  nav .links { gap: 0.9rem; font-size: 0.95rem; }
+  nav .wide { display: none; }
+}
 
 /* Agent-chosen text, such as a link's destination or a requested domain, must
    wrap rather than run out of sight: nothing in main may clip it. */
@@ -127,6 +139,15 @@ button, .button {
 }
 button:hover, .button:hover { background: var(--fg); border-color: var(--fg); color: var(--bg); }
 button:disabled { opacity: 0.55; cursor: progress; }
+/* An action still going: the button stays readable, with a spinner. */
+button.busy:disabled { opacity: 1; }
+button.busy::before {
+  content: ""; width: 0.9em; height: 0.9em; border-radius: 50%;
+  border: 2px solid currentColor; border-right-color: transparent; animation: spin 0.8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(1turn); } }
+@media (prefers-reduced-motion: reduce) { button.busy::before { animation-duration: 2.4s; } }
+.status { font-family: var(--font-head); color: var(--waiting); margin: 1rem 0 0; }
 .button.quiet, button.quiet { background: transparent; color: var(--fg); border-color: var(--rule-strong); }
 .button.quiet:hover, button.quiet:hover { color: var(--accent); border-color: var(--accent); background: transparent; }
 button.allow { background: transparent; color: var(--kept); border-color: var(--kept); }
@@ -137,10 +158,15 @@ nav .new { padding: 0.5rem 0.9rem; font-size: 0.95rem; }
 
 /* --- the sessions list ------------------------------------------------- */
 
-table { width: 100%; border-collapse: collapse; font-size: 0.98rem; }
-th { font-weight: 500; text-align: left; color: var(--fg-dim); padding: 0 1rem 0.6rem 0; border-bottom: 1px solid var(--rule-strong); }
-td { padding: 0.7rem 1rem 0.7rem 0; border-bottom: 1px solid var(--rule); vertical-align: baseline; }
-td .id { font-size: 0.92rem; }
+.cards { list-style: none; padding: 0; margin: 0; display: grid; gap: 1rem; grid-template-columns: repeat(auto-fill, minmax(min(100%, 19rem), 1fr)); }
+/* The whole card opens the session; links inside it sit above that. */
+.card { position: relative; background: var(--bg-raise); border: 1px solid var(--rule-strong); border-radius: 6px; padding: 1rem 1.1rem; }
+.card:hover { border-color: var(--accent); }
+.card-head { display: flex; justify-content: space-between; align-items: center; gap: 0.75rem; margin-bottom: 0.5rem; }
+.card-head .id { font-size: 1rem; text-decoration: none; }
+.card-head .id::after { content: ""; position: absolute; inset: 0; }
+.card .meta { margin: 0.15rem 0 0; font-size: 0.95rem; color: var(--fg-dim); }
+.card .remote { position: relative; }
 
 .state, .label {
   display: inline-block;
@@ -175,6 +201,23 @@ td .id { font-size: 0.92rem; }
 .panel form + form { margin-top: 1.25rem; padding-top: 1.25rem; border-top: 1px solid var(--rule); }
 .panel .row { display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: center; margin-top: 1.25rem; }
 
+.latest { margin: 1.5rem 0; }
+.started { margin: 1.5rem 0; }
+.started h2 { margin: 0 0 0.75rem; font-size: 1.05rem; }
+.started dl, .preview dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 0.35rem 1.25rem; margin: 0; }
+.started dt, .preview dt { font-family: var(--font-head); color: var(--fg-dim); }
+.started dd, .preview dd { margin: 0; font-family: var(--font-mono); font-size: 0.92rem; }
+
+.history-head { display: flex; justify-content: space-between; align-items: center; gap: 1rem; margin: 2.25rem 0 0.9rem; }
+.history-head h2 { margin: 0; }
+.history-head button { padding: 0.45rem 0.8rem; font-size: 0.92rem; }
+.event > summary { list-style: none; cursor: pointer; display: flex; align-items: baseline; gap: 0.75rem; padding-right: 1rem; }
+.event > summary::-webkit-details-marker { display: none; }
+.event > summary::before { content: "▸"; color: var(--fg-faint); padding-left: 1rem; }
+.event[open] > summary::before { content: "▾"; }
+.event[open] > summary { border-bottom: 1px solid var(--rule); }
+.event .when { color: var(--fg-faint); font-family: var(--font-head); font-size: 0.85rem; white-space: nowrap; }
+
 .untrusted { color: var(--fg-dim); border-left: 2px solid var(--accent); padding-left: 0.9rem; margin: 2rem 0 1rem; font-size: 0.95rem; }
 
 .timeline { list-style: none; padding: 0; margin: 0; display: grid; gap: 1rem; }
@@ -182,7 +225,7 @@ td .id { font-size: 0.92rem; }
 .event > :first-child { border-radius: 5px 5px 0 0; }
 .event > :last-child { border-radius: 0 0 5px 5px; }
 .event > :only-child { border-radius: 5px; }
-.event > h2 {
+.event > h2, .event > summary > h2 {
   margin: 0;
   padding: 0.5rem 1rem;
   font-size: 0.95rem;
@@ -193,7 +236,8 @@ td .id { font-size: 0.92rem; }
   align-items: baseline;
   flex-wrap: wrap;
 }
-.event > h2 .by { color: var(--accent); font-size: 0.85rem; margin-left: auto; }
+.event > h2 .by, .event > summary > h2 .by { color: var(--accent); font-size: 0.85rem; margin-left: auto; }
+.event > summary > h2 { flex: 1; padding-left: 0; border-bottom: 0; }
 .event .body { padding: 1rem 1.1rem 0.4rem; }
 .event .agent { background: var(--bg-well); }
 .event .agent pre, .event pre.agent { padding: 1rem 1.1rem; }
@@ -203,7 +247,7 @@ td .id { font-size: 0.92rem; }
 .event.expired > h2 { color: var(--refused); }
 .event .footer { padding: 0 1.1rem 1rem; display: flex; gap: 0.75rem; flex-wrap: wrap; align-items: center; }
 .event .footer .quiet { font-size: 0.92rem; }
-.domains { list-style: none; padding: 0; margin: 0 0 0.75rem; display: grid; gap: 0.35rem; font-family: var(--font-mono); font-size: 0.92rem; }
+ul.domains { list-style: none; padding: 0; margin: 0 0 0.75rem; display: grid; gap: 0.35rem; font-family: var(--font-mono); font-size: 0.92rem; }
 .domains .label { margin-left: 0.5rem; }
 .domains .refused { color: var(--refused); border-color: color-mix(in srgb, var(--refused) 45%, transparent); }
 
@@ -254,9 +298,6 @@ legend { padding: 0 0.4rem; margin: 0; color: var(--fg-dim); }
 
 .preview { margin-top: 1.5rem; }
 .preview h2 { margin: 0 0 0.75rem; font-size: 1.05rem; }
-.preview dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 0.35rem 1.25rem; margin: 0; }
-.preview dt { font-family: var(--font-head); color: var(--fg-dim); }
-.preview dd { margin: 0; font-family: var(--font-mono); font-size: 0.92rem; }
 .preview dd .quiet { font-family: var(--font-head); margin-left: 0.5rem; }
 .preview details { margin-top: 0.75rem; }
 .preview summary { cursor: pointer; font-family: var(--font-head); }
