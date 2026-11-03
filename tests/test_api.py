@@ -971,6 +971,14 @@ async def test_a_failing_catalog_is_asked_for_once_at_a_time(aiohttp_client, con
     assert [f for f in fetches(tmp_path) if f == ["catalog"]] == [["catalog"]]
 
 
+async def test_previews_share_a_failing_catalog(aiohttp_client, config, monkeypatch, tmp_path):
+    monkeypatch.delenv("STUB_CATALOG")
+    client = await aiohttp_client(make_app(config, poll=False))
+    for _ in range(5):
+        assert (await client.post("/v1/tasks/preview", json=request(), headers=AUTH)).status == 200
+    assert [f for f in fetches(tmp_path) if f == ["catalog"]] == [["catalog"]]
+
+
 async def test_the_catalog_says_what_each_harness_can_take(aiohttp_client, config, monkeypatch):
     monkeypatch.setenv("STUB_CATALOG", json.dumps({**CATALOG, "defaults": {"cline": {"backend": "self-hosted"}}}))
     config["catalog"] = {
