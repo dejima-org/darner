@@ -32,6 +32,8 @@ esac
 
 FAKE_DEJIMA = """#!/usr/bin/env python3
 import json, os, sys
+if sys.argv[-1] == "--print-config":
+    sys.exit(sys.stdout.write(os.environ.get("FAKE_DEJIMA_CONFIG", "")) and 0)
 open(os.environ["FAKE_DEJIMA_LOG"], "w").write(json.dumps(sys.argv[1:]))
 """
 
@@ -1274,6 +1276,60 @@ def test_catalog_lists_what_dejima_has(env):
 def test_a_harness_dejima_has_no_manifest_for_is_left_to_dejima(env):
     launch(args(env), {"id": "dn-abc23", "prompt": "p", "harness": "other", "backend": "anything", "effort": "max"})
     assert "--effort" in written_argv(env, "dn-abc23")
+
+
+def test_catalog_defaults_are_dejima_s_own_with_the_launcher_s_flags_in_their_place(env):
+    root = env / "dejima-install"
+    (root / "bin").mkdir(parents=True)
+    (root / "harnesses" / "cline").mkdir(parents=True)
+    (root / "harnesses" / "cline" / "harness.conf").write_text("")
+    # Prints what dejima --print-config does, recording how it was asked.
+    (root / "bin" / "dejima").write_text(f"""#!/bin/sh
+echo "$@" > {env}/print-config-args
+cat <<'END'
+core.harness=cline
+core.identity=
+harness.cline.backend=self-hosted
+harness.cline.model=qwen3.5-4b
+harness.cline.context_window=120000
+harness.cline.state_dir=/home/operator/.local/share/dejima/cline
+harness.claude-code.effort=
+backend.self-hosted.base_url=http://192.0.2.10:8000/v1
+END
+""")
+    (root / "bin" / "dejima").chmod(0o755)
+    code, out, _ = run(args(env), "--dejima", str(root / "bin" / "dejima"), "--identity", "darner", "--model", "cline=llama3:8b", "catalog")
+    assert code == 0
+    catalog = json.loads(out)
+    assert catalog["default_harness"] == "cline"
+    # Only the settings a task can override, never the rest of the config, which holds host paths.
+    assert catalog["defaults"] == {"cline": {"backend": "self-hosted", "model": "llama3:8b", "context_window": 120000}}
+    assert (env / "print-config-args").read_text().split() == ["--identity", "darner", "--print-config"]
+
+
+def test_catalog_still_answers_when_dejima_can_t_print_its_config(env):
+    root = env / "dejima-install"
+    (root / "bin").mkdir(parents=True)
+    (root / "bin" / "dejima").write_text("#!/bin/sh\nexit 1\n")
+    (root / "bin" / "dejima").chmod(0o755)
+    code, out, _ = run(args(env), "--dejima", str(root / "bin" / "dejima"), "--harness", "cline", "catalog")
+    assert code == 0 and json.loads(out)["default_harness"] == "cline" and json.loads(out)["defaults"] == {}
+
+@pytest.mark.parametrize("job", [{"backend": "openrouter"}, {"effort": "none"}, {"context_window": 120000}])
+def test_a_job_dejima_s_default_harness_can_t_take_is_refused(env, monkeypatch, job):
+    monkeypatch.setenv("FAKE_DEJIMA_CONFIG", "core.harness=claude-code\n")
+    with pytest.raises(JobError, match="claude-code"):
+        launch(args(env), {"id": "dn-abc23", "prompt": "p", **job})
+    assert not (env / "tasks" / "dn-abc23").exists()
+
+
+def test_dejima_s_own_defaults_are_checked_and_left_to_it(env, monkeypatch):
+    monkeypatch.setenv("FAKE_DEJIMA_CONFIG", "core.harness=claude-code\nharness.claude-code.backend=openrouter\n")
+    with pytest.raises(JobError, match="claude-code can't use the openrouter backend"):
+        launch(args(env), {"id": "dn-abc23", "prompt": "p"})
+    launch(args(env, "--backend", "cline=self-hosted"), {"id": "dn-abc23", "prompt": "p", "harness": "cline"})
+    argv = written_argv(env, "dn-abc23")
+    assert argv[argv.index("--harness"):argv.index("--")] == ["--harness", "cline", "--backend", "self-hosted"]
 
 
 def b64(data: bytes) -> str:

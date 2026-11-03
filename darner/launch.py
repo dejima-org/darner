@@ -108,14 +108,21 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 
 def dejima_argv(args: argparse.Namespace, job, task_dir: Path, dejima: str) -> list[str]:
     harness = job.harness or args.harness
+    # Left out of argv when neither names one, but checked as the harness dejima picks.
+    default_harness, defaults = launch_defaults(args, dejima)
+    used = harness or default_harness
     # Each default is the one for the harness actually used, so overriding
     # the harness never pairs it with another harness's setting.
-    backend = job.backend or dict(args.backend).get(harness)
-    model = job.model or dict(args.model).get(harness)
-    effort = job.effort or dict(args.effort).get(harness)
-    context_window = job.context_window or dict(args.context_window).get(harness)
-    # Checked again with the defaults filled in, which the API doesn't know.
-    check_harness(harness_options(dejima_root(dejima)), harness, backend, effort, context_window and int(context_window))
+    backend = job.backend or dict(args.backend).get(used)
+    model = job.model or dict(args.model).get(used)
+    effort = job.effort or dict(args.effort).get(used)
+    context_window = job.context_window or dict(args.context_window).get(used)
+    # Checked again with dejima's own defaults filled in too, which the argv leaves to it.
+    d = defaults.get(used, {})
+    check_harness(
+        harness_options(dejima_root(dejima)), used, backend or d.get("backend"), effort or d.get("effort"),
+        int(context_window) if context_window else d.get("context_window"),
+    )
     argv = [dejima, "--isolated", "--no-pause", "--shared-path-file", str(task_dir / "shared-path")]
     if args.keep_records:
         argv.append("--keep-records")
@@ -1217,19 +1224,51 @@ def harness_options(root: Path) -> dict:
     return options
 
 
+_SETTING = re.compile(r"harness\.([a-z0-9][a-z0-9_-]{0,63})\.(backend|model|effort|context_window)")
+_SETTING_CHECKS = {"backend": valid_name, "model": valid_model, "effort": valid_effort, "context_window": _context_window}
+
+
+def dejima_defaults(args: argparse.Namespace, dejima: str) -> tuple[str | None, dict]:
+    """dejima's own default harness and each harness's settings, from --print-config.
+
+    Only those keys are read, since the rest of the config holds host paths.
+    Nothing, if this dejima can't say.
+    """
+    argv = [dejima, *(["--identity", args.identity] if args.identity else []), "--print-config"]
+    try:
+        out = subprocess.run(argv, capture_output=True, text=True, timeout=30, check=True).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None, {}
+    harness, defaults = None, {}
+    for line in out.splitlines():
+        key, _, value = line.partition("=")
+        if key == "core.harness" and valid_name(value):
+            harness = value
+        elif (m := _SETTING.fullmatch(key)) and _SETTING_CHECKS[m[2]](value):
+            defaults.setdefault(m[1], {})[m[2]] = int(value) if m[2] == "context_window" else value
+    return harness, defaults
+
+
+def launch_defaults(args: argparse.Namespace, dejima: str) -> tuple[str | None, dict]:
+    """The harness a launch gets when its job names none, and each harness's settings:
+    dejima's own, with this launcher's flags in their place."""
+    default_harness, defaults = dejima_defaults(args, dejima)
+    for key in ("backend", "model", "effort", "context_window"):
+        for harness, value in getattr(args, key):
+            defaults.setdefault(harness, {})[key] = int(value) if key == "context_window" else value
+    return args.harness or default_harness, defaults
+
+
 def catalog(args: argparse.Namespace) -> dict:
     """The harnesses and backends the configured dejima has, what each harness can be
-    set to, and this launcher's defaults for each harness."""
+    set to, and the defaults a launch gets."""
     dejima = shutil.which(args.dejima)
     if dejima is None:
         raise RuntimeError(f"{args.dejima} not found on PATH; pass --dejima with its full path")
     root = dejima_root(dejima)
-    defaults = {}
-    for key in ("backend", "model", "effort", "context_window"):
-        for harness, value in getattr(args, key):
-            defaults.setdefault(harness, {})[key] = int(value) if key == "context_window" else value
+    default_harness, defaults = launch_defaults(args, dejima)
     return {
-        "harnesses": _names(root, "harness"), "backends": _names(root, "backend"), "default_harness": args.harness,
+        "harnesses": _names(root, "harness"), "backends": _names(root, "backend"), "default_harness": default_harness,
         "defaults": defaults, "options": harness_options(root),
     }
 

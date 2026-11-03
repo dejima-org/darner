@@ -27,8 +27,9 @@ def available(configs_dir: Path) -> list[str]:
     return sorted(p.name for p in configs_dir.iterdir() if valid_name(p.name) and p.is_file())
 
 
-def load_files(configs_dir: Path, names: list[str]) -> list[tuple[str, bytes]]:
-    """The files config sets give a session, from configs_dir/files."""
+def load_files(configs_dir: Path, names: list[str], read: bool = True) -> list[tuple[str, bytes]]:
+    """The files config sets give a session, from configs_dir/files. Unless read, each is
+    checked as it would be, and its contents left empty."""
     from darner.archive import upload_name
     from darner.job import MAX_FILE_BYTES
 
@@ -39,10 +40,11 @@ def load_files(configs_dir: Path, names: list[str]) -> list[tuple[str, bytes]]:
         if upload_name(name) != name or not path.is_file():
             raise ConfigSetError(f"config set file {name!r} isn't available")
         try:
-            data = path.read_bytes()
+            data = path.read_bytes() if read else b""
+            size = len(data) if read else path.stat().st_size
         except OSError:
             raise ConfigSetError(f"couldn't read config set file {name!r}")
-        if len(data) > MAX_FILE_BYTES:
+        if size > MAX_FILE_BYTES:
             raise ConfigSetError(f"config set file {name!r} is over {MAX_FILE_BYTES} bytes")
         files.append((name, data))
     return files

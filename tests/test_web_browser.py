@@ -107,6 +107,22 @@ async def test_the_actions_work_under_the_csp(aiohttp_server):
     assert task["task"] == "add this recipe" and task["blurbs"] == ["mealie"] and task["grants"]["domains"] == ["allrecipes.example.org"]
     assert (task["harness"], task["backend"], task["model"]) == ("cline", "openrouter", "z-ai/glm-5.3")
     assert "context_window" not in task and "effort" not in task
+    preview = result["preview"]
+    # With nothing chosen, the catalog's defaults.
+    assert preview["harness"] == "No change: claude-code, default"
+    assert preview["before"]["Harness"] == "claude-codedefault" and preview["before"]["Backend"] == "anthropicdefault"
+    assert preview["before"]["Model"] == "dejima decides" and "Context window" not in preview["before"]
+    # A config set's values are what No change means, and narrow what's offered below them.
+    recipes = preview["recipes"]
+    assert recipes["harness"] == "No change: cline, from config sets"
+    assert recipes["backends"] == ["", "openrouter", "self-hosted"]
+    assert recipes["context_window"] == "No change: 30000, from config sets"
+    assert recipes["shown"]["Harness"] == "clinefrom config sets" and recipes["shown"]["Backend"] == "self-hosteddefault"
+    assert recipes["shown"]["Context window"] == "30000from config sets" and recipes["shown"]["Files"] == "token"
+    # Blurbs are there to read, folded.
+    assert recipes["blurbs"] == [["Blurb: mealie", False]]
+    # A config set's backend the default harness can't use is refused before Start.
+    assert preview["local"] == "Start would be refused: claude-code can't use the openrouter backend, only anthropic"
     agent = result["agent"]
     # With no harness chosen, the default harness's.
     assert agent["default"] == {"backends": ["", "anthropic"], "models": ["claude-opus-5-5[1m]"]}

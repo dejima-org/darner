@@ -3,6 +3,7 @@
 import asyncio
 import io
 import json
+import os
 import sys
 import time
 import zipfile
@@ -863,6 +864,54 @@ async def test_network_reaches_the_job_from_a_request_or_a_config_set(client, co
     assert resp.status == 400 and "network" in (await resp.json())["error"]
 
 
+async def test_a_preview_is_what_the_task_would_launch_without_launching_it(client, config, tmp_path):
+    configs = Path(config["blurbs_dir"]).parent / "configs"
+    (configs / "files").mkdir(parents=True)
+    (configs / "files" / "token").write_text("secret")
+    (configs / "recipes").write_text("harness: cline\ncontext_window: 30000\nctx: myapp\nfile: token\nallow: example.org\n")
+    body = request(task="", configs=["recipes"], backend="self-hosted", grants={"domains": ["pypi.org"]})
+    resp = await client.post("/v1/tasks/preview", json=body, headers=AUTH)
+    assert resp.status == 200, await resp.text()
+    assert await resp.json() == {
+        "settings": {"harness": "cline", "backend": "self-hosted", "context_window": 30000},
+        "from_configs": {"harness": "cline", "context_window": 30000},
+        "domains": ["example.org", "pypi.org"], "internal_domains": [], "dependencies": [],
+        # A file's name only: its contents may be a credential.
+        "files": ["token"],
+        "blurbs": [{"name": "myapp", "text": "Repo: example/myapp\n"}],
+    }
+    assert launched(tmp_path) == []
+    assert client.server.app[STORE].open_tasks("maubot") == []
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root reads any file")
+async def test_a_preview_doesn_t_read_config_set_files(client, config):
+    configs = Path(config["blurbs_dir"]).parent / "configs"
+    (configs / "files").mkdir(parents=True)
+    (configs / "files" / "token").write_text("secret")
+    (configs / "files" / "token").chmod(0)
+    (configs / "tokened").write_text("file: token\n")
+    body = request(configs=["tokened"])
+    resp = await client.post("/v1/tasks/preview", json=body, headers=AUTH)
+    assert resp.status == 200 and (await resp.json())["files"] == ["token"]
+    resp = await client.post("/v1/tasks", json=body, headers=AUTH)
+    assert resp.status == 400 and "couldn't read config set file 'token'" in (await resp.json())["error"]
+
+
+async def test_a_preview_refuses_what_the_task_would_be_refused(client, config, tmp_path):
+    resp = await client.post("/v1/tasks/preview", json=request(harness="claude-code", backend="openrouter"), headers=AUTH)
+    assert resp.status == 400 and "can't use the openrouter backend" in (await resp.json())["error"]
+    configs = Path(config["blurbs_dir"]).parent / "configs"
+    configs.mkdir()
+    (configs / "hosted").write_text("backend: openrouter\n")
+    # No harness named, so the default's.
+    resp = await client.post("/v1/tasks/preview", json=request(configs=["hosted"]), headers=AUTH)
+    assert resp.status == 400 and "claude-code can't use the openrouter backend" in (await resp.json())["error"]
+    resp = await client.post("/v1/tasks/preview", json=request(grants={"domains": ["example.net"]}), headers=AUTH)
+    assert resp.status == 403
+    assert (await client.post("/v1/tasks/preview", json=request())).status == 401
+
+
 async def test_bad_effort_is_refused(client):
     resp = await client.post("/v1/tasks", json=request(effort="max"), headers=AUTH)
     assert resp.status == 400 and "effort" in (await resp.json())["error"]
@@ -919,6 +968,14 @@ async def test_a_failing_catalog_is_asked_for_once_at_a_time(aiohttp_client, con
     responses = await asyncio.gather(*(post(n) for n in range(3)))
     responses += [await post(n) for n in range(3, 6)]
     assert [r.status for r in responses] == [201] * 6
+    assert [f for f in fetches(tmp_path) if f == ["catalog"]] == [["catalog"]]
+
+
+async def test_previews_share_a_failing_catalog(aiohttp_client, config, monkeypatch, tmp_path):
+    monkeypatch.delenv("STUB_CATALOG")
+    client = await aiohttp_client(make_app(config, poll=False))
+    for _ in range(5):
+        assert (await client.post("/v1/tasks/preview", json=request(), headers=AUTH)).status == 200
     assert [f for f in fetches(tmp_path) if f == ["catalog"]] == [["catalog"]]
 
 
