@@ -5,7 +5,7 @@ import pytest
 from darner.configsets import ConfigSetError, available, description, load, parse
 
 MEALIE = """# Adding a recipe to Mealie
-ctx: mealie
+blurb: mealie
 harness: cline
 backend: self-hosted
 model: qwen3-14b
@@ -35,7 +35,7 @@ def test_parse_refuses(text, message):
 
 def test_load_combines_lists_and_agreeing_values(tmp_path):
     (tmp_path / "mealie").write_text(MEALIE)
-    (tmp_path / "strong").write_text("harness: cline\neffort: high\nallow: pypi.org\nctx: mealie\n")
+    (tmp_path / "strong").write_text("harness: cline\neffort: high\nallow: pypi.org\nblurb: mealie\n")
     combined = load(tmp_path, ["mealie", "strong"])
     assert combined["harness"] == "cline" and combined["effort"] == "high" and combined["backend"] == "self-hosted"
     assert combined["blurbs"] == ["mealie"] and combined["domains"] == ["pypi.org"]
@@ -57,6 +57,11 @@ def test_a_disagreement_the_request_settles_is_left_to_it(tmp_path):
     (tmp_path / "strong").write_text("harness: claude-code\n")
     combined = load(tmp_path, ["mealie", "strong"], overridden={"harness"})
     assert combined["harness"] is None and combined["backend"] == "self-hosted"
+
+
+def test_the_earlier_spellings_still_work():
+    found = parse("x", "ctx: a\nblurb: b\ndeps: pip:x\ndependency: apt:y\n")
+    assert found["blurbs"] == ["a", "b"] and found["dependencies"] == ["pip:x", "apt:y"]
 
 
 def test_unknown_config_set_lists_the_available_ones(tmp_path):

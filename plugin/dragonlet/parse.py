@@ -5,9 +5,14 @@ from dataclasses import dataclass, field
 from urllib.parse import unquote
 
 MARKDOWN_LINK = re.compile(r"\[([^\]\n]*)\]\(([^)\s]+)\)")
-KEYWORD = re.compile(r"^\s*(config|ctx|allow|internal|deps|harness|backend|model|effort|context_window|network|name)\s*:(.*)$", re.IGNORECASE)
+KEYWORD = re.compile(
+    r"^\s*(config|blurb|ctx|allow|internal|dependency|deps|harness|backend|model|effort|context_window|network|name)\s*:(.*)$",
+    re.IGNORECASE,
+)
+# Earlier spellings, still read.
+ALIASES = {"ctx": "blurb", "deps": "dependency"}
 SINGLE = ("harness", "backend", "model", "effort", "context_window", "network", "name")
-FIELDS = {"config": "configs", "ctx": "blurbs", "allow": "domains", "internal": "internal_domains", "deps": "dependencies"}
+FIELDS = {"config": "configs", "blurb": "blurbs", "allow": "domains", "internal": "internal_domains", "dependency": "dependencies"}
 
 
 class ParseError(ValueError):
@@ -70,7 +75,7 @@ def parse_reply(body: str, bot_names: list[str]) -> Request:
     for line in lines:
         line = strip_mention(line, bot_names)
         if m := KEYWORD.match(line):
-            seen = values[m[1].lower()]
+            seen = values[ALIASES.get(m[1].lower(), m[1].lower())]
             seen += [v for v in dict.fromkeys(re.split(r"[,\s]+", m[2])) if v and v not in seen]
         else:
             context.append(re.sub(mention, "", line, flags=re.IGNORECASE) if mention else line)

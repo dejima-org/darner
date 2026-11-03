@@ -68,10 +68,10 @@ USAGE = """\
 
 ```
 config: <names>    use saved sets of these keywords{configs}; anything else you give overrides them, and settles any they disagree on
-ctx: <names>       add context blurbs{blurbs}
+blurb: <names>     add context blurbs{blurbs}
 allow: <domains>   let the session reach these domains
 internal: <domains>  let it reach these domains inside your network
-deps: <specs>      install dependencies (apt:, pip:, cargo:, npm:, tarball:)
+dependency: <specs>  install dependencies (apt:, pip:, cargo:, npm:, tarball:)
 harness: <name>    use this harness instead of the default{harnesses}
 backend: <name>    use this backend instead of the harness's default{backends}
 model: <name>      use this model instead of the harness's default
@@ -85,7 +85,7 @@ Values are separated by commas or spaces, and keywords can repeat. For example:
 
 ```
 {bot} find out why the import job fails since the deploy
-ctx: myapp
+blurb: myapp
 allow: pypi.org, files.pythonhosted.org
 ```
 

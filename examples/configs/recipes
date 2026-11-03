@@ -4,7 +4,7 @@
 # line ends it. A recurring task on a self-hosted model, with the context and
 # access it always needs. A request names it with `config: recipes` and adds only what
 # changes, such as `allow:` for the recipe's website.
-ctx: myapp
+blurb: myapp
 harness: cline
 backend: self-hosted
 model: qwen3-14b

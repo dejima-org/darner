@@ -15,7 +15,9 @@ from pathlib import Path
 
 from darner.job import valid_name
 
-LISTS = {"ctx": "blurbs", "allow": "domains", "internal": "internal", "deps": "dependencies", "file": "files"}
+LISTS = {"blurb": "blurbs", "allow": "domains", "internal": "internal", "dependency": "dependencies", "file": "files"}
+# Earlier spellings, still read so existing config sets keep working.
+ALIASES = {"ctx": "blurb", "deps": "dependency"}
 SINGLES = ("harness", "backend", "model", "effort", "context_window", "network")
 _LINE = re.compile(r"\s*([A-Za-z_]+)\s*:(.*)")
 
@@ -60,7 +62,7 @@ def parse(name: str, text: str) -> dict:
         if not line.strip():
             continue
         m = _LINE.fullmatch(line)
-        key = m and m[1].lower()
+        key = m and ALIASES.get(m[1].lower(), m[1].lower())
         if key not in LISTS and key not in SINGLES:
             raise ConfigSetError(f"config set {name!r} line {number}: expected one of {', '.join([*LISTS, *SINGLES])}")
         values = [v for v in re.split(r"[,\s]+", m[2]) if v]

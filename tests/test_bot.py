@@ -65,7 +65,7 @@ class Api:
         self.stop_status = 204
         self.selftests = []
         self.configs = {"recipes": {
-            "ctx": ["myapp"], "file": ["recipes-token"], "harness": "cline", "context_window": "30000", "description": "Adds <b>recipes</b>.",
+            "blurb": ["myapp"], "file": ["recipes-token"], "harness": "cline", "context_window": "30000", "description": "Adds <b>recipes</b>.",
         }}
 
     async def selftest(self, request):
@@ -497,7 +497,7 @@ async def test_parse_error(maubot_plugin, maubot_test_bot, api):
 
 async def test_api_error(maubot_plugin, maubot_test_bot, api):
     api.status, api.response = 400, {"error": "unknown blurb nope; available: myapp"}
-    await send(maubot_test_bot, message("@dragonlet:example.org go\nctx: nope"))
+    await send(maubot_test_bot, message("@dragonlet:example.org go\nblurb: nope"))
     assert replies(maubot_test_bot) == ["Failed: unknown blurb nope; available: myapp"]
     assert reactions(maubot_test_bot) == ["⏳", "❌"]
     assert maubot_test_bot.redacted == ["$sent1"]
@@ -746,7 +746,7 @@ async def test_help_command_shows_usage(maubot_plugin, maubot_test_bot, api, bod
     await send(maubot_test_bot, message(body, reply_to=None))
     [text] = replies(maubot_test_bot)
     assert text.startswith("**darner** starts an isolated dejima session")
-    assert "ctx: <names>       add context blurbs (available: loki, myapp)" in text
+    assert "blurb: <names>     add context blurbs (available: loki, myapp)" in text
     assert "\n@dragonlet:example.org find out why" in text
     assert api.requests == []
     [msg] = sent(maubot_test_bot)
@@ -757,7 +757,7 @@ async def test_help_command_without_blurbs_listing(maubot_plugin, maubot_test_bo
     api.blurbs = None
     await send(maubot_test_bot, message("@dragonlet:example.org help", reply_to=None))
     [text] = replies(maubot_test_bot)
-    assert "ctx: <names>       add context blurbs\n" in text
+    assert "blurb: <names>     add context blurbs\n" in text
 
 
 async def test_help_command_as_reply_to_note_shows_usage(maubot_plugin, maubot_test_bot, api):
@@ -780,7 +780,7 @@ NO_TASK = "Tell me the task after the mention, or reply to a note to make it the
 
 
 async def test_message_that_is_not_a_reply_is_the_task(maubot_plugin, maubot_test_bot, api):
-    body = "@dragonlet:example.org find out why the import job fails\nallow: pypi.org\nctx: myapp"
+    body = "@dragonlet:example.org find out why the import job fails\nallow: pypi.org\nblurb: myapp"
     await send(maubot_test_bot, message(body, reply_to=None))
     payload = api.requests[0][1]
     assert payload["task"] == "find out why the import job fails"
@@ -1247,9 +1247,9 @@ async def test_waiting_notice(maubot_plugin, maubot_test_bot, api, summary):
 async def test_describe_shows_a_config_set(maubot_plugin, maubot_test_bot, api):
     await send(maubot_test_bot, message("@dragonlet:example.org describe recipes", reply_to=None))
     [msg] = [r for r in maubot_test_bot.responded if r.event_type == EventType.ROOM_MESSAGE]
-    assert "recipes (config set)\n\nAdds <b>recipes</b>.\n\n    ctx: myapp\n    file: recipes-token\n    harness: cline\n    context_window: 30000\n\n" in msg.content.body
+    assert "recipes (config set)\n\nAdds <b>recipes</b>.\n\n    blurb: myapp\n    file: recipes-token\n    harness: cline\n    context_window: 30000\n\n" in msg.content.body
     assert "<p>Adds &lt;b&gt;recipes&lt;/b&gt;.</p><pre>" in msg.content.formatted_body and "description:" not in msg.content.body
-    assert "<pre><code>ctx: myapp\nfile: recipes-token" in msg.content.formatted_body
+    assert "<pre><code>blurb: myapp\nfile: recipes-token" in msg.content.formatted_body
     assert "contents aren't shown" in msg.content.body
     assert api.requests == []
 
