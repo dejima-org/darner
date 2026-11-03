@@ -755,7 +755,7 @@ async def test_sessions_list_what_each_waits_on(started, tmp_path, monkeypatch, 
 async def test_a_session_says_the_config_sets_and_blurbs_it_was_started_with(client, config):
     configs = Path(config["blurbs_dir"]).parent / "configs"
     configs.mkdir()
-    (configs / "recipes").write_text("harness: cline\ncontext_window: 30000\nctx: myapp\n")
+    (configs / "recipes").write_text("harness: cline\ncontext_window: 30000\nblurb: myapp\n")
     task_id = (await (await client.post("/v1/tasks", json=request(configs=["recipes"]), headers=AUTH)).json())["id"]
     session = await (await client.get(f"/v1/tasks/{task_id}", headers=AUTH)).json()
     assert session["started_with"] == {
@@ -884,7 +884,7 @@ async def test_a_preview_is_what_the_task_would_launch_without_launching_it(clie
     configs = Path(config["blurbs_dir"]).parent / "configs"
     (configs / "files").mkdir(parents=True)
     (configs / "files" / "token").write_text("secret")
-    (configs / "recipes").write_text("harness: cline\ncontext_window: 30000\nctx: myapp\nfile: token\nallow: example.org\n")
+    (configs / "recipes").write_text("harness: cline\ncontext_window: 30000\nblurb: myapp\nfile: token\nallow: example.org\n")
     body = request(task="", configs=["recipes"], backend="self-hosted", grants={"domains": ["pypi.org"]})
     resp = await client.post("/v1/tasks/preview", json=body, headers=AUTH)
     assert resp.status == 200, await resp.text()
@@ -1092,7 +1092,8 @@ async def test_config_sets_expand_and_the_request_overrides(aiohttp_client, conf
     (configs / "mealie").write_text((configs / "mealie").read_text() + "file: token\ncontext_window: 30000\n")
     described = await (await client.get("/v1/configs/mealie", headers=AUTH)).json()
     assert described == {
-        "ctx": ["myapp"], "internal": ["recipes.example.com:8443"], "file": ["token"],
+        # Written with the earlier ctx:, described with blurb:.
+        "blurb": ["myapp"], "internal": ["recipes.example.com:8443"], "file": ["token"],
         "harness": "cline", "backend": "self-hosted", "model": "qwen3-14b", "context_window": "30000",
     }
     (configs / "mealie").write_text("# Recipes, from Mealie\n#   on the home server\n\n# not this\n" + (configs / "mealie").read_text())

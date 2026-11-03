@@ -388,9 +388,9 @@ Reply to a note with a message that mentions the bot:
 
 ```
 @dragonlet the import job started failing after the deploy, find out why
-ctx: myapp
+blurb: myapp
 allow: pypi.org, files.pythonhosted.org
-deps: apt:jq pip:pytest-xdist
+dependency: apt:jq pip:pytest-xdist
 harness: cline
 backend: openrouter
 ```
@@ -426,10 +426,10 @@ The note is the task. The rest of the reply, minus the mention and the keyword l
 | keyword | meaning |
 |---|---|
 | `config:` | config sets to use, by name: saved keyword lines for a recurring task. Their lists combine. Two that give a single value differently, such as `harness:`, are refused, whatever their order, unless the message gives that value itself. Anything else in the message overrides them: a single value replaces theirs, a list adds to theirs |
-| `ctx:` | context blurbs to add, by name |
+| `blurb:` | context blurbs to add, by name. `ctx:` is an older spelling, still read |
 | `allow:` | domains the session may reach |
 | `internal:` | domains inside your network the session may reach, passed to dejima as `--internal-domain` as well as allowed |
-| `deps:` | dependencies to install, in `dejima-dep` syntax: `apt:`, `pip:`, `cargo:`, `npm:` or `tarball:` |
+| `dependency:` | dependencies to install, in `dejima-dep` syntax: `apt:`, `pip:`, `cargo:`, `npm:` or `tarball:`. `deps:` is an older spelling, still read |
 | `harness:` | harness for this task, overriding the default |
 | `backend:` | backend for this task, overriding the harness's default |
 | `model:` | model for this task, overriding the harness's default |
@@ -555,7 +555,7 @@ Grants use `dejima --domains FILE` and `--dependencies FILE`, and output collect
 | `max_session_age` | seconds a session may run before it's stopped, so none is left running forgotten (default 86400, a day; 0 never stops one). A task the launcher no longer knows about is marked ended at the same age. A session stuck starting counts too, and one whose output can never be fetched is ended at that age, with the reason posted |
 | `waiting_screen` | whether that notice includes the end of the session's screen (default true) |
 | `configs_dir` | config sets, by default `configs` beside `blurbs_dir`; one file per set named as it's used, holding keyword lines (see [`examples/configs`](examples/configs)); read per request. Comment lines at a set's top are its description, shown wherever the set is described. A set's `file: <name>` lines give each of its sessions `configs_dir/files/<name>` (up to 1 MiB) in `~/shared/uploads` |
-| `default_blurbs` | blurb names added to every task's prompt, before any it names with `ctx:`; each must exist |
+| `default_blurbs` | blurb names added to every task's prompt, before any it names with `blurb:`; each must exist |
 | `results_dir` | collected output archives, until their frontend collects them |
 | `poll_interval` | seconds between checks on the dejima host |
 | `launch_command` | how to reach the launcher; the command is appended, and over ssh arrives as `SSH_ORIGINAL_COMMAND` |

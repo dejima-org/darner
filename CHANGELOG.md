@@ -8,6 +8,7 @@ Each release names the dejima release it was released against: the one it was te
 
 Released against dejima: N/A
 
+- **Keywords spelled out:** `ctx:` is now `blurb:` and `deps:` is `dependency:`, in chat and in config sets. The old spellings still work, so existing config sets needn't change. `GET /v1/configs/{name}` describes a config set with the new keywords.
 - **Named sessions:** `name: <name>` in chat, or Name in darner-web, names a session, and `dn-<name>` then works anywhere its id does. A session holds its name until it's cleared, even once it has ended, so a command repeated later can't reach a new session that took it.
 - **Check now:** a session's page in darner-web can have the API look for output and requests now, rather than at the next poll, at most once every 15 seconds for each frontend. `POST /v1/tasks/<id>/check` does it for any frontend.
 - **Config sets that disagree are refused:** two config sets giving a single value differently, such as `harness:`, are refused, naming each set and its value, unless the request gives that value itself. A later set used to win, and darner-web sent them in alphabetical order, so which won there was an accident.

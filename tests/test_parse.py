@@ -14,9 +14,9 @@ def parse(body):
 def test_design_example():
     req = parse(
         "@dragonlet fix the flaky tests, use pytest-xdist\n"
-        "ctx: myapp\n"
+        "blurb: myapp\n"
         "allow: pypi.org, files.pythonhosted.org\n"
-        "deps: apt:python3-venv pip:pytest-xdist\n"
+        "dependency: apt:python3-venv pip:pytest-xdist\n"
         "harness: claude-code\n"
         "backend: openrouter\n"
     )
@@ -38,8 +38,13 @@ def test_mixed_lines_and_case():
     assert req.harness is None and req.backend is None
 
 
+def test_the_earlier_spellings_still_work():
+    req = parse("blurb: a\nCTX: b\ndependency: pip:x\ndeps: apt:y")
+    assert req.blurbs == ["a", "b"] and req.dependencies == ["pip:x", "apt:y"]
+
+
 def test_repeated_keywords_append_and_dedup():
-    req = parse("allow: a.org b.org\nallow: b.org, c.org,a.org\nctx: x\nctx: x y")
+    req = parse("allow: a.org b.org\nallow: b.org, c.org,a.org\nblurb: x\nblurb: x y")
     assert req.domains == ["a.org", "b.org", "c.org"]
     assert req.blurbs == ["x", "y"]
 
@@ -49,8 +54,8 @@ def test_empty_keyword_value():
 
 
 def test_keyword_mid_line_is_context():
-    req = parse("please do not allow: evil.org here\nnote ctx: nope")
-    assert req.context == "please do not allow: evil.org here\nnote ctx: nope"
+    req = parse("please do not allow: evil.org here\nnote blurb: nope")
+    assert req.context == "please do not allow: evil.org here\nnote blurb: nope"
     assert req.domains == [] and req.blurbs == []
 
 

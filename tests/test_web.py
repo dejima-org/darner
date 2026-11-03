@@ -117,7 +117,7 @@ class FakeApi:
 
         async def config(request):
             sets = {
-                "recipes": {"ctx": ["mealie"], "harness": "<i>cline</i>", "file": ["token"], "description": "Adds <b>recipes</b>."},
+                "recipes": {"blurb": ["mealie"], "harness": "<i>cline</i>", "file": ["token"], "description": "Adds <b>recipes</b>."},
                 "local": {"backend": "openrouter"},
             }
             if request.match_info["name"] not in sets:
@@ -318,7 +318,7 @@ async def test_blurbs_and_config_sets_are_read_only_and_escaped(client):
     assert resp.status == 200 and "Use &lt;script&gt;the API&lt;/script&gt;." in html
     assert (await get(client, "/blurbs/nope"))[0].status == 404
     _, html = await get(client, "/configs/recipes")
-    assert "harness: &lt;i&gt;cline&lt;/i&gt;" in html and "ctx: mealie" in html and "contents aren" in html
+    assert "harness: &lt;i&gt;cline&lt;/i&gt;" in html and "blurb: mealie" in html and "contents aren" in html
     # The description is shown as such, not as a keyword.
     assert "<p>Adds &lt;b&gt;recipes&lt;/b&gt;.</p>" in html and "description:" not in html
 
