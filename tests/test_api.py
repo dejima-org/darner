@@ -1756,8 +1756,23 @@ async def test_an_open_session_s_name_can_t_be_reused_until_it_ends(client, tmp_
         resp = await client.post(path, json=request(name="recipes", source=source), headers=AUTH)
         assert resp.status == 409 and (await resp.json())["error"] == "dn-recipes is already the name of an open session"
     assert len(launched(tmp_path)) == 1
-    client.server.app[STORE].end(first["id"])
-    assert (await client.post("/v1/tasks", json=request(name="recipes", source=source), headers=AUTH)).status == 201
+    # Ended, it holds its name until it's purged, so a command repeated later can't reach a new session.
+    store = client.server.app[STORE]
+    store.end(first["id"])
+    resp = await client.post("/v1/tasks", json=request(name="recipes", source=source), headers=AUTH)
+    assert resp.status == 409 and (await resp.json())["error"] == (
+        f"dn-recipes is still held by {first['id']}, which has ended; clear it to free the name"
+    )
+    body = {"text": "deploy it", "requester": "@a:example.org"}
+    resp = await client.post("/v1/tasks/dn-recipes/message", json=body, headers=AUTH)
+    assert resp.status == 409 and (await resp.json())["error"] == f"{first['id']} has ended"
+    resp = await client.post("/v1/tasks/dn-recipes/files?name=x&requester=a", data=b"secret", headers=AUTH)
+    assert resp.status == 409
+    assert not any(f[0] in ("message", "upload") for f in fetches(tmp_path))
+    # Cleared, the name is free.
+    store.delete(first["id"])
+    resp = await client.post("/v1/tasks", json=request(name="recipes", source=source), headers=AUTH)
+    assert resp.status == 201 and (await resp.json())["name"] == "recipes"
 
 
 @pytest.mark.parametrize("name", ["abcde", "dn-k3x7q", "Has Space", "-lead", "a" * 33, "dn-", 7])

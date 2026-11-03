@@ -78,7 +78,7 @@ model: <name>      use this model instead of the harness's default
 effort: <level>    effort level: low, medium, high or xhigh, or none for cline
 context_window: <tokens>  cline's context window, for a self-hosted model
 network: <reach>   named: only what this task names, not dejima's own allowlist; sealed: that, and refuse to start if the session can resolve any name
-name: <name>       name the session, so commands can call it dn-<name>; no two open sessions share one
+name: <name>       name the session, so commands can call it dn-<name>; it holds the name until it's cleared
 ```
 
 Values are separated by commas or spaces, and keywords can repeat. For example:
@@ -223,7 +223,7 @@ class Dragonlet(Plugin):
         async with self._api("POST", "/v1/tasks", json=payload) as resp:
             data = await resp.json(content_type=None)
         if resp.status in (200, 201):
-            text = f"Started {data['id']}" + (f", named dn-{req.name.lower().removeprefix('dn-')}" if req.name else "")
+            text = f"Started {data['id']}" + (f", named dn-{data['name']}" if data.get("name") else "")
             text += f" → {data['target']}"
             if data.get("link"):
                 text += f"\nOpen the session: {data['link']}"

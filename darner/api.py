@@ -643,7 +643,8 @@ async def check_task(request: web.Request) -> web.Response:
     wait = checked.get(client, -CHECK_INTERVAL) + CHECK_INTERVAL - time.monotonic()
     if wait > 0:
         return web.json_response(
-            {"error": f"checked just now; try again in {int(wait) + 1}s"}, status=429, headers={"Retry-After": str(int(wait) + 1)},
+            {"error": f"checked in the last {CHECK_INTERVAL}s, perhaps by someone else on this frontend; try again in {int(wait) + 1}s"},
+            status=429, headers={"Retry-After": str(int(wait) + 1)},
         )
     checked[client] = time.monotonic()
     lock = request.app[POLL_LOCK]
@@ -693,6 +694,16 @@ def _session_name(body: dict) -> str | None:
     return name
 
 
+def _name_taken(store: Store, client: str, name: str) -> str | None:
+    """Why a name can't be given, if it's held: by an open session, or one ended but not yet cleared."""
+    held = store.named(client, name)
+    if held is None:
+        return None
+    if store.task_status(client, held) == "ended":
+        return f"dn-{name} is still held by {held}, which has ended; clear it to free the name"
+    return f"dn-{name} is already the name of an open session"
+
+
 def _task_id(request: web.Request) -> str:
     """The task a path names: by its id, or as dn-<name> by the name of one of the
     client's open sessions. Only an id goes any further, to the launcher least of all."""
@@ -726,8 +737,8 @@ async def preview_task(request: web.Request) -> web.Response:
     try:
         job, _, _, sets, blurbs = _build(request.app[CONFIG], body, read_files=False)
         name = _session_name(body)
-        if name is not None and request.app[STORE].named(_client(request), name):
-            raise RequestError(409, f"dn-{name} is already the name of an open session")
+        if name is not None and (taken := _name_taken(request.app[STORE], _client(request), name)):
+            raise RequestError(409, taken)
         await check_job_harness(request.app, job)
     except RequestError as e:
         return web.json_response({"error": str(e)}, status=e.status)
@@ -772,11 +783,11 @@ async def create_task(request: web.Request) -> web.Response:
     try:
         task, new = store.claim(job["id"], client, source, requester, json.dumps(recorded), name)
     except NameTaken:
-        return web.json_response({"error": f"dn-{name} is already the name of an open session"}, status=409)
+        return web.json_response({"error": _name_taken(store, client, name)}, status=409)
     if not new:
         if task.status == "pending":
             return web.json_response({"error": f"{task.id} is already being launched"}, status=409)
-        return web.json_response({"id": task.id, "target": task.target, "link": session_link(config, task.run_id)})
+        return web.json_response({"id": task.id, "name": task.name, "target": task.target, "link": session_link(config, task.run_id)})
 
     try:
         result = await run_launcher(config, job)
@@ -794,7 +805,7 @@ async def create_task(request: web.Request) -> web.Response:
         store.set_run_id(job["id"], run_id)
     else:
         run_id = None
-    return web.json_response({"id": job["id"], "target": target, "link": session_link(config, run_id)}, status=201)
+    return web.json_response({"id": job["id"], "name": name, "target": target, "link": session_link(config, run_id)}, status=201)
 
 
 async def create_selftest(request: web.Request) -> web.Response:
@@ -880,8 +891,11 @@ async def _type_into(request: web.Request, command: str) -> web.Response:
     """Answer a help request, or send a message, by typing it into the session."""
     client = _client(request)
     task_id = _task_id(request)
-    if request.app[STORE].task_status(client, task_id) is None:
+    status = request.app[STORE].task_status(client, task_id)
+    if status is None:
         raise web.HTTPNotFound()
+    if status == "ended":
+        return web.json_response({"error": f"{task_id} has ended"}, status=409)
     try:
         body = await request.json()
     except ValueError:

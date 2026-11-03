@@ -872,6 +872,7 @@ async def test_stop_by_task_id(maubot_plugin, maubot_test_bot, api):
 
 
 async def test_a_session_is_named_and_called_by_its_name(maubot_plugin, maubot_test_bot, api):
+    api.response = {**api.response, "name": "recipes"}  # as the API stored it
     await send(maubot_test_bot, message("@dragonlet:example.org fix the import\nname: Recipes", reply_to=None))
     assert api.requests[0][1]["name"] == "Recipes"
     assert replies(maubot_test_bot) == ["Started dn-7f3k2, named dn-recipes → darner:dn-7f3k2"]

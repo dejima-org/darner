@@ -436,7 +436,7 @@ The note is the task. The rest of the reply, minus the mention and the keyword l
 | `effort:` | effort level for this task: `low`, `medium`, `high` or `xhigh`, or `none` for cline, which dejima passes to cline as `--thinking` |
 | `context_window:` | context window for this task, in tokens, for a harness that has the setting (cline). Set it a little under what the model's server allows, so cline compacts before the server refuses |
 | `network:` | `named`: the session reaches only what this task names and its model, not dejima's own allowlist (dejima's `--drop-domains`). `sealed`: that, and the session doesn't start if it could look up any name, so only addresses are reachable (`--require-sealed`). A sealed session needs its model reached by address, such as a self-hosted one, and a domain request can't grant it a name later |
-| `name:` | a name for the session, so commands can call it `dn-<name>` in place of its id. Lowercase letters, digits and hyphens, up to 32, and no two open sessions share one |
+| `name:` | a name for the session, so commands can call it `dn-<name>` in place of its id. Lowercase letters, digits and hyphens, up to 32. A session holds its name until it's cleared, even once it has ended |
 
 darner refuses a task asking for a backend, effort level or context window its harness can't take, as dejima's own manifests declare them: the backends speaking one of the harness's `api_styles`, the levels of its `effort` key, and whether it has a `context_window` key. A task naming no harness is held to the one dejima will pick, with its defaults. The API checks against the launcher's catalog, fetched at most every five minutes, and the launcher checks again, with its and dejima's defaults filled in.
 
@@ -585,7 +585,7 @@ Grants use `dejima --domains FILE` and `--dependencies FILE`, and output collect
 }
 ```
 
-It returns `201 {"id", "target"}`. An optional `name` names the session: up to 32 lowercase letters, digits and hyphens, not shaped like a session id, and not the name of another of the client's open sessions (409). Any `<id>` below can be `dn-<name>` instead. A name is free again once its session ends, so `dn-<name>` then means whichever open session took it next. A repeat of the same `source` returns the existing task with `200` while it's kept. A failed launch is deleted, so repeating it retries. Errors are `{"error": "..."}`.
+It returns `201 {"id", "target"}`. An optional `name` names the session: up to 32 lowercase letters, digits and hyphens, not shaped like a session id, and not held by another of the client's sessions (409). An ended session holds its name until it's cleared or purged, so a command repeated later gets "has ended" rather than reaching a new session that took the name. Any `<id>` below can be `dn-<name>` instead. A repeat of the same `source` returns the existing task with `200` while it's kept. A failed launch is deleted, so repeating it retries. Errors are `{"error": "..."}`.
 
 Every `poll_interval` seconds the API asks the dejima host for the status of launched tasks, collects output that is ready, and records events. A client sees only the events of tasks it created. Every `requester` is a label for who acted, up to 255 characters with no control or invisible characters; the audit log records it with the frontend's token name. `GET /v1/tasks` reuses a launcher status up to 5 seconds old, so open frontends don't each reach the dejima host:
 

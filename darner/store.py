@@ -44,6 +44,7 @@ class Task:
     target: str | None
     error: str | None
     run_id: str | None = None
+    name: str | None = None
 
 
 @dataclass
@@ -94,7 +95,7 @@ class Store:
         with self.db:
             self.db.execute("BEGIN IMMEDIATE")
             row = self.db.execute(
-                "SELECT id, status, target, error, run_id FROM tasks WHERE client = ? AND source_kind = ? AND source_ref = ?",
+                "SELECT id, status, target, error, run_id, name FROM tasks WHERE client = ? AND source_kind = ? AND source_ref = ?",
                 (client, source["kind"], source["ref"]),
             ).fetchone()
             if row:
@@ -109,10 +110,9 @@ class Store:
         return Task(task_id, "pending", None, None), True
 
     def named(self, client: str, name: str) -> str | None:
-        """The id of the client's open task with this name."""
-        row = self.db.execute(
-            "SELECT id FROM tasks WHERE client = ? AND name = ? AND status IN ('pending', 'launched')", (client, name)
-        ).fetchone()
+        """The id of the client's task with this name. An ended task holds its name until
+        it's purged, so a command repeated later can't reach a new session that took it."""
+        row = self.db.execute("SELECT id FROM tasks WHERE client = ? AND name = ?", (client, name)).fetchone()
         return row[0] if row else None
 
     def fail_pending(self) -> None:
@@ -129,7 +129,7 @@ class Store:
         with self.db:
             self.db.execute("BEGIN IMMEDIATE")
             self.db.execute(
-                "UPDATE tasks SET status = 'ended', ended = ?, job_json = '{}', requester = '', name = NULL, target = NULL,"
+                "UPDATE tasks SET status = 'ended', ended = ?, job_json = '{}', requester = '', target = NULL,"
                 " run_id = NULL, error = NULL, typed = NULL WHERE id = ?",
                 (time.time(), task_id),
             )

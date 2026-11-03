@@ -184,7 +184,7 @@ class FakeApi:
 
         async def check(request):
             if self.check_status != 200:
-                return await record(request, {"error": "checked just now; try again in 9s"}, self.check_status)
+                return await record(request, {"error": "checked in the last 15s, perhaps by someone else on this frontend; try again in 9s"}, self.check_status)
             return await record(request, self.sessions[0])
 
         app.router.add_post("/v1/tasks/{id}/check", check)
@@ -644,7 +644,7 @@ async def test_check_now_asks_the_api_and_says_when_it_can_t_yet(client, fake):
     assert resp.status == 200 and posted(fake) == [("/v1/tasks/dn-aaaaa/check", None)]
     fake.check_status = 429
     resp = await client.post("/sessions/dn-aaaaa/check", headers=POST, json={})
-    assert resp.status == 429 and (await resp.json())["error"] == "checked just now; try again in 9s"
+    assert resp.status == 429 and "perhaps by someone else" in (await resp.json())["error"]
 
 
 async def test_a_named_session_goes_by_its_name(client, fake):

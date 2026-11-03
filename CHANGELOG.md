@@ -8,7 +8,7 @@ Each release names the dejima release it was released against: the one it was te
 
 Released against dejima: N/A
 
-- **Named sessions:** `name: <name>` in chat, or Name in darner-web, names a session, and `dn-<name>` then works anywhere its id does. No two of a frontend's open sessions share a name.
+- **Named sessions:** `name: <name>` in chat, or Name in darner-web, names a session, and `dn-<name>` then works anywhere its id does. A session holds its name until it's cleared, even once it has ended, so a command repeated later can't reach a new session that took it.
 - **Check now:** a session's page in darner-web can have the API look for output and requests now, rather than at the next poll, at most once every 15 seconds for each frontend. `POST /v1/tasks/<id>/check` does it for any frontend.
 - **Config sets that disagree are refused:** two config sets giving a single value differently, such as `harness:`, are refused, naming each set and its value, unless the request gives that value itself. A later set used to win, and darner-web sent them in alphabetical order, so which won there was an accident.
 - **darner-web, easier to read and on a phone:** Start says it's starting the session, and for how long, until the session's page opens. Sessions are cards, and the header stays one line. A session's page leads with what it's waiting on you for, or its newest event, then the answer box and what it was started with, and its history follows, newest first and folded, with Expand all. The API's sessions gain `started_with`, and its events `created`.
