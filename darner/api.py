@@ -112,7 +112,7 @@ STATUS_CACHE = web.AppKey("status_cache", dict)
 CATALOG_CACHE = web.AppKey("catalog_cache", dict)
 POLL_LOCK = web.AppKey("poll_lock", asyncio.Lock)
 LAST_CHECK = web.AppKey("last_check", dict)
-# Seconds between checks a client asks for, each a poll of every session.
+# Seconds between one client's checks, each a poll of every session.
 CHECK_INTERVAL = 15
 # What dejima's harnesses take changes only when dejima is upgraded.
 CATALOG_TTL = 300
@@ -632,24 +632,31 @@ async def _poll_forever(app: web.Application) -> None:
 async def check_task(request: web.Request) -> web.Response:
     """Poll now rather than at the next poll_interval, and answer the session as it then is.
 
-    A poll covers every session, so it's held to one every CHECK_INTERVAL
-    seconds across all clients, and never runs beside another poll.
+    Each client may ask once every CHECK_INTERVAL seconds. A poll already
+    running is the check, so a slow dejima host never has polls queued up
+    behind it.
     """
     client, task_id = _client(request), _task_id(request)
     if request.app[STORE].task_status(client, task_id) != "launched":
         raise web.HTTPNotFound()
-    wait = request.app[LAST_CHECK].get("at", -CHECK_INTERVAL) + CHECK_INTERVAL - time.monotonic()
+    checked = request.app[LAST_CHECK]
+    wait = checked.get(client, -CHECK_INTERVAL) + CHECK_INTERVAL - time.monotonic()
     if wait > 0:
         return web.json_response(
             {"error": f"checked just now; try again in {int(wait) + 1}s"}, status=429, headers={"Retry-After": str(int(wait) + 1)},
         )
-    request.app[LAST_CHECK]["at"] = time.monotonic()
-    async with request.app[POLL_LOCK]:
-        try:
-            await poll_once(request.app)
-        except Exception as e:
-            log.exception("check of %s failed", task_id)
-            return web.json_response({"error": f"check failed: {type(e).__name__}"}, status=502)
+    checked[client] = time.monotonic()
+    lock = request.app[POLL_LOCK]
+    if lock.locked():
+        async with lock:
+            pass
+    else:
+        async with lock:
+            try:
+                await poll_once(request.app)
+            except Exception as e:
+                log.exception("check of %s failed", task_id)
+                return web.json_response({"error": f"check failed: {type(e).__name__}"}, status=502)
     found = await _sessions(request, task_id)
     # Gone from the open sessions means the check found it ended.
     return web.json_response(found[0] if found else {"id": task_id, "ended": True})

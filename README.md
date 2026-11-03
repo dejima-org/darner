@@ -585,7 +585,7 @@ Grants use `dejima --domains FILE` and `--dependencies FILE`, and output collect
 }
 ```
 
-It returns `201 {"id", "target"}`. An optional `name` names the session: up to 32 lowercase letters, digits and hyphens, not shaped like a session id, and not the name of another of the client's open sessions (409). Any `<id>` below can be `dn-<name>` instead. A repeat of the same `source` returns the existing task with `200` while it's kept. A failed launch is deleted, so repeating it retries. Errors are `{"error": "..."}`.
+It returns `201 {"id", "target"}`. An optional `name` names the session: up to 32 lowercase letters, digits and hyphens, not shaped like a session id, and not the name of another of the client's open sessions (409). Any `<id>` below can be `dn-<name>` instead. A name is free again once its session ends, so `dn-<name>` then means whichever open session took it next. A repeat of the same `source` returns the existing task with `200` while it's kept. A failed launch is deleted, so repeating it retries. Errors are `{"error": "..."}`.
 
 Every `poll_interval` seconds the API asks the dejima host for the status of launched tasks, collects output that is ready, and records events. A client sees only the events of tasks it created. Every `requester` is a label for who acted, up to 255 characters with no control or invisible characters; the audit log records it with the frontend's token name. `GET /v1/tasks` reuses a launcher status up to 5 seconds old, so open frontends don't each reach the dejima host:
 
@@ -608,7 +608,7 @@ Every `poll_interval` seconds the API asks the dejima host for the status of lau
 | `GET /v1/tasks/<id>` | one open session, in the same form |
 | `POST /v1/tasks/<id>/message` | `{text, requester}`: type a message into the session; 409 with the reason if the host refuses |
 | `POST /v1/tasks/<id>/files?name=&requester=` | the request body is a file for the session's `~/shared/uploads`; 413 over `max_upload` |
-| `POST /v1/tasks/<id>/check` | poll now rather than at the next `poll_interval`, and answer the session as it then is, or `{id, ended: true}`. A poll covers every session, so it's held to one every 15 seconds across all clients (429, with `Retry-After`) |
+| `POST /v1/tasks/<id>/check` | poll now rather than at the next `poll_interval`, and answer the session as it then is, or `{id, ended: true}`. A poll covers every session, so each client may check once every 15 seconds (429, with `Retry-After`), and a poll already running is the check |
 | `POST /v1/tasks/<id>/stop` | `{requester}`: end the task's session and close its tmux window; 409 if it isn't running |
 | `POST /v1/tasks/<id>/answer` | `{text, requester}`: answer the task's outstanding help request; 409 with the reason if the host refuses |
 

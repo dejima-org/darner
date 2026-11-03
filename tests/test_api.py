@@ -1775,13 +1775,13 @@ async def test_a_check_polls_now_and_answers_the_session(started, tmp_path, monk
     resp = await client.post(f"/v1/tasks/{task_id}/check", headers=AUTH)
     assert resp.status == 200 and (await resp.json())["id"] == task_id
     assert count.read_text().count("status") >= 1
-    # Once every CHECK_INTERVAL, whoever asks.
+    # Once every CHECK_INTERVAL for each client.
     resp = await client.post(f"/v1/tasks/{task_id}/check", headers=AUTH)
     assert resp.status == 429 and "try again in" in (await resp.json())["error"] and resp.headers["Retry-After"]
     assert (await client.post("/v1/tasks/dn-zzzzz/check", headers=AUTH)).status == 404
 
 
-async def test_a_check_waits_for_a_poll_already_running(started, monkeypatch):
+async def test_a_poll_already_running_is_the_check(started, monkeypatch):
     app, client, task_id, status, *_ = started
     status(ready=False)
     polled = []
@@ -1789,5 +1789,6 @@ async def test_a_check_waits_for_a_poll_already_running(started, monkeypatch):
     async with app[POLL_LOCK]:
         check = asyncio.ensure_future(client.post(f"/v1/tasks/{task_id}/check", headers=AUTH))
         await asyncio.sleep(0.2)
-        assert polled == [] and not check.done()
-    assert (await check).status == 200 and polled == [1]
+        assert not check.done()
+    # Answered once the running poll is done, without another.
+    assert (await check).status == 200 and polled == []
