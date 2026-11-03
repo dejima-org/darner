@@ -417,6 +417,12 @@ async def send_message(request: web.Request) -> web.Response:
     return await _act(request, "POST", f"/v1/tasks/{task_id}/message", json={"text": text, "requester": _user(request)})
 
 
+async def check_session(request: web.Request) -> web.Response:
+    """Have the API look at the session now, for output or a request it hasn't seen yet."""
+    task_id = request.match_info["id"]
+    return await _act(request, "POST", f"/v1/tasks/{task_id}/check")
+
+
 async def stop_session(request: web.Request) -> web.Response:
     task_id = request.match_info["id"]
     return await _act(request, "POST", f"/v1/tasks/{task_id}/stop", json={"requester": _user(request)})
@@ -524,7 +530,7 @@ def _task_request(request: web.Request, body: dict, ref: str) -> dict:
         "requester": _user(request),
         "source": {"kind": "web", "ref": ref},
     }
-    for key in ("harness", "backend", "model", "effort", "context_window", "network"):
+    for key in ("harness", "backend", "model", "effort", "context_window", "network", "name"):
         if isinstance(body.get(key), str) and body[key].strip():
             request_body[key] = body[key].strip()
     return request_body
@@ -619,6 +625,7 @@ def make_app(config: dict) -> web.Application:
     app.router.add_post("/tasks/preview", preview_task)
     app.router.add_post(f"/sessions/{TASK_ID}/message", send_message)
     app.router.add_post(f"/sessions/{TASK_ID}/stop", stop_session)
+    app.router.add_post(f"/sessions/{TASK_ID}/check", check_session)
     app.router.add_post(f"/sessions/{TASK_ID}/clear", clear_session)
     app.router.add_post(f"/sessions/{TASK_ID}/files", upload_file)
     app.router.add_post(f"/sessions/{TASK_ID}/domains/{{n:\\d{{1,9}}}}/{{verb:allow|deny}}", decide_domains)

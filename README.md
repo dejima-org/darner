@@ -436,6 +436,7 @@ The note is the task. The rest of the reply, minus the mention and the keyword l
 | `effort:` | effort level for this task: `low`, `medium`, `high` or `xhigh`, or `none` for cline, which dejima passes to cline as `--thinking` |
 | `context_window:` | context window for this task, in tokens, for a harness that has the setting (cline). Set it a little under what the model's server allows, so cline compacts before the server refuses |
 | `network:` | `named`: the session reaches only what this task names and its model, not dejima's own allowlist (dejima's `--drop-domains`). `sealed`: that, and the session doesn't start if it could look up any name, so only addresses are reachable (`--require-sealed`). A sealed session needs its model reached by address, such as a self-hosted one, and a domain request can't grant it a name later |
+| `name:` | a name for the session, so commands can call it `dn-<name>` in place of its id. Lowercase letters, digits and hyphens, up to 32, and no two open sessions share one |
 
 darner refuses a task asking for a backend, effort level or context window its harness can't take, as dejima's own manifests declare them: the backends speaking one of the harness's `api_styles`, the levels of its `effort` key, and whether it has a `context_window` key. A task naming no harness is held to the one dejima will pick, with its defaults. The API checks against the launcher's catalog, fetched at most every five minutes, and the launcher checks again, with its and dejima's defaults filled in.
 
@@ -584,13 +585,13 @@ Grants use `dejima --domains FILE` and `--dependencies FILE`, and output collect
 }
 ```
 
-It returns `201 {"id", "target"}`. A repeat of the same `source` returns the existing task with `200` while it's kept. A failed launch is deleted, so repeating it retries. Errors are `{"error": "..."}`.
+It returns `201 {"id", "target"}`. An optional `name` names the session: up to 32 lowercase letters, digits and hyphens, not shaped like a session id, and not the name of another of the client's open sessions (409). Any `<id>` below can be `dn-<name>` instead. A repeat of the same `source` returns the existing task with `200` while it's kept. A failed launch is deleted, so repeating it retries. Errors are `{"error": "..."}`.
 
 Every `poll_interval` seconds the API asks the dejima host for the status of launched tasks, collects output that is ready, and records events. A client sees only the events of tasks it created. Every `requester` is a label for who acted, up to 255 characters with no control or invisible characters; the audit log records it with the frontend's token name. `GET /v1/tasks` reuses a launcher status up to 5 seconds old, so open frontends don't each reach the dejima host:
 
 | endpoint | |
 |---|---|
-| `GET /v1/events` | unacknowledged events, oldest first: `{seq, id, type, summary, size, answerable, target, source, created}`, `type` is `output`, `help`, `domains`, `waiting`, `expired` or `ended`; `data` holds a domain request, a waiting session's `quiet` seconds, or a stopped session's `age` |
+| `GET /v1/events` | unacknowledged events, oldest first: `{seq, id, name, type, summary, size, answerable, target, source, created}`, `type` is `output`, `help`, `domains`, `waiting`, `expired` or `ended`; `data` holds a domain request, a waiting session's `quiet` seconds, or a stopped session's `age` |
 | `GET /v1/tasks/<id>/outputs/<seq>.zip` | an `output` event's archive (`size` 0 means it was rejected, and `summary` says why) |
 | `GET /v1/tasks/<id>/events` | a task's events so far, collected or not, in the same form, without acknowledging any; gone once the task is purged |
 | `POST /v1/events/<seq>/ack` | mark an event delivered |
@@ -603,10 +604,11 @@ Every `poll_interval` seconds the API asks the dejima host for the status of lau
 | `GET /v1/catalog` | the dejima host's harnesses and backends, the default harness and each harness's defaults (dejima's own, from `dejima --print-config`, with the launcher's options in their place), and under `options`, what each harness can be set to: its backends, effort levels, whether it takes a context window, and `[catalog]`'s models for each backend |
 | `POST /v1/tasks/<id>/domains/<n>/allow` | `{requester}`: grant domain request `n` as it was shown, minus what policy refuses |
 | `POST /v1/tasks/<id>/domains/<n>/deny` | `{requester}`: refuse domain request `n` |
-| `GET /v1/tasks` | the client's open sessions, with what each is waiting on: `{id, target, link, requester, started, state, answerable, waiting: {answer, domains}, started_with}`. `started_with` is what the request asked for, without the prompt: its `configs`, `blurbs`, agent settings, grants and file names |
+| `GET /v1/tasks` | the client's open sessions, with what each is waiting on: `{id, name, target, link, requester, started, state, answerable, waiting: {answer, domains}, started_with}`. `started_with` is what the request asked for, without the prompt: its `configs`, `blurbs`, agent settings, grants and file names |
 | `GET /v1/tasks/<id>` | one open session, in the same form |
 | `POST /v1/tasks/<id>/message` | `{text, requester}`: type a message into the session; 409 with the reason if the host refuses |
 | `POST /v1/tasks/<id>/files?name=&requester=` | the request body is a file for the session's `~/shared/uploads`; 413 over `max_upload` |
+| `POST /v1/tasks/<id>/check` | poll now rather than at the next `poll_interval`, and answer the session as it then is, or `{id, ended: true}`. A poll covers every session, so it's held to one every 15 seconds across all clients (429, with `Retry-After`) |
 | `POST /v1/tasks/<id>/stop` | `{requester}`: end the task's session and close its tmux window; 409 if it isn't running |
 | `POST /v1/tasks/<id>/answer` | `{text, requester}`: answer the task's outstanding help request; 409 with the reason if the host refuses |
 

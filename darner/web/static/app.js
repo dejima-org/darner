@@ -249,6 +249,7 @@ if (agent) {
       const fallback = key === "harness" ? catalog.default_harness : o.defaults[key];
       return fallback != null ? [String(fallback), "default"] : ["dejima decides", null];
     };
+    if (preview.name) row(list, "Name", `dn-${preview.name}`, null);
     row(list, "Harness", ...setting("harness", harness));
     row(list, "Backend", ...setting("backend", backend));
     row(list, "Model", ...setting("model", model));
