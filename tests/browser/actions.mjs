@@ -23,6 +23,19 @@ await page.fill("#message", "use postgres");
 await Promise.all([page.waitForEvent("load"), page.click("form[data-action] button[type=submit]")]);
 result.violations.push(...(await page.evaluate(() => window.__violations)));
 
+// A stop that fails puts the button back and says why.
+page.once("dialog", (dialog) => dialog.accept());
+await page.route("**/stop", (route) => route.fulfill({ status: 409, contentType: "application/json", body: JSON.stringify({ error: "dn-aaaaa is not running" }) }), { times: 1 });
+await page.click("button[data-post$='/stop']");
+await page.waitForFunction(() => !document.querySelector(".panel .alert").hidden);
+result.stop_failed = await page.evaluate(() => {
+  const button = document.querySelector("button[data-post$='/stop']");
+  return {
+    button: button.textContent, disabled: button.disabled, busy: button.classList.contains("busy"),
+    status_hidden: document.querySelector(".panel .status").hidden, alert: document.querySelector(".panel .alert").textContent,
+  };
+});
+
 // Stopping says it's still going until the API answers.
 page.once("dialog", (dialog) => dialog.accept());
 await page.route("**/stop", async (route) => { await new Promise((r) => setTimeout(r, 1500)); await route.continue(); });

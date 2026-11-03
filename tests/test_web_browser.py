@@ -134,6 +134,9 @@ async def test_the_actions_work_under_the_csp(aiohttp_server):
     }
     # Back to a harness that can't take them, the backend, model and context window go back to its defaults.
     assert agent["back"] == {"backend": "", "model": "", "context_window": "", "disabled": True}
+    assert result["stop_failed"] == {
+        "button": "Stop the session", "disabled": False, "busy": False, "status_hidden": True, "alert": "dn-aaaaa is not running",
+    }
     assert result["stopping"]["button"] == "Stopping the session" and "s so far." in result["stopping"]["status"]
     assert ("/v1/tasks/dn-aaaaa/stop", {"requester": "web"}) in posted
     assert result["starting"]["button"] == "Starting the session" and "s so far." in result["starting"]["status"]
