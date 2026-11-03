@@ -39,6 +39,12 @@ CONTEXT_WINDOW = range(512, 100_000_001)
 _ID = re.compile(r"dn-[a-z2-7]{5}")
 
 OUTPUT_INSTRUCTIONS = (
+    # Some harnesses' file tools take ~ literally and write under the working directory,
+    # where nothing reaches the requester (dejima#455).
+    "~/shared is the directory named shared in your home directory. Some file-editing tools don't expand ~ "
+    "and would write to a directory named ~ under your working directory instead, where nothing reaches the "
+    "requester, so give them the full path, which `echo ~/shared` prints. Run the `touch` commands below in a "
+    "shell, and check with `ls -a ~/shared` that what you wrote is there.\n\n"
     "When you finish:\n"
     "1. Put anything the requester should receive in ~/shared, but not in ~/shared/uploads, which holds "
     "files they sent you and isn't sent back.\n"

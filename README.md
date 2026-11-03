@@ -455,6 +455,7 @@ When the agent needs something from you, the bot posts its request. If the dejim
 <reply text>
 
 ## Delivering your output
+<~/shared is in the home directory, so give file tools its full path>
 <put output in ~/shared, a summary in ~/shared/RESULT.md, then create ~/shared/.done>
 <to ask for something, write ~/shared/HELP.md, create ~/shared/.help and end the turn>
 <to ask for domains, list them in ~/shared/DOMAINS, create ~/shared/.domains and end the turn>
