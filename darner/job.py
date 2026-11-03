@@ -28,8 +28,6 @@ _TARBALL = re.compile(r"tarball:([A-Za-z0-9][A-Za-z0-9._-]*)@[a-f0-9]{64}:(https
 _NAME = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}")
 # dejima's modelid rule: vendor/name, a :variant and a [context] bracket are all real.
 _MODEL = re.compile(r"[A-Za-z0-9][][A-Za-z0-9._:/-]{0,199}")
-# Every harness's levels: none is cline's only. dejima holds each harness to its own.
-EFFORTS = ("none", "low", "medium", "high", "xhigh")
 # What a session may reach beyond what it's granted: named passes dejima --drop-domains,
 # keeping only what the launch names, and sealed --require-sealed, refusing to
 # start a session that can resolve any name.
@@ -37,6 +35,8 @@ NETWORKS = ("named", "sealed")
 # dejima's range for a harness's context_window, in tokens.
 CONTEXT_WINDOW = range(512, 100_000_001)
 _ID = re.compile(r"dn-[a-z2-7]{5}")
+# The levels themselves are each harness's, from its dejima manifest.
+_EFFORT = re.compile(r"[a-z][a-z0-9]{0,31}")
 
 OUTPUT_INSTRUCTIONS = (
     "When you finish:\n"
@@ -100,11 +100,30 @@ def valid_model(s: str) -> bool:
 
 
 def valid_effort(s: str) -> bool:
-    return s in EFFORTS
+    return isinstance(s, str) and _EFFORT.fullmatch(s) is not None
 
 
 def valid_context_window(n: object) -> bool:
     return type(n) is int and n in CONTEXT_WINDOW
+
+
+def check_harness(
+    options: dict, harness: str | None, backend: str | None, effort: str | None, context_window: int | None,
+) -> None:
+    """Refuse settings the harness can't take, so a launch doesn't fail inside dejima.
+    options is the catalog's: what each of dejima's harnesses can be set to. A harness
+    it doesn't describe is left to dejima's own checks."""
+    known = options.get(harness)
+    if known is None:
+        return
+    if backend is not None and backend not in known["backends"]:
+        raise JobError(f"{harness} can't use the {backend} backend, only {', '.join(known['backends'])}")
+    if effort is not None and known["efforts"] == []:
+        raise JobError(f"{harness} takes no effort level")
+    if effort is not None and known["efforts"] is not None and effort not in known["efforts"]:
+        raise JobError(f"{harness} has no effort level {effort}, only {', '.join(known['efforts'])}")
+    if context_window is not None and not known["context_window"]:
+        raise JobError(f"{harness} takes no context window")
 
 
 def valid_name(s: str) -> bool:
@@ -177,7 +196,7 @@ def validate_job(d: object) -> Job:
         raise JobError("prompt contains a NUL byte")
     for key, check, what in (
         ("model", valid_model, "model"),
-        ("effort", valid_effort, f"effort ({', '.join(EFFORTS)})"),
+        ("effort", valid_effort, "effort level"),
         ("context_window", valid_context_window, f"context window ({CONTEXT_WINDOW.start} to {CONTEXT_WINDOW.stop - 1} tokens)"),
         ("network", lambda v: v in NETWORKS, f"network ({', '.join(NETWORKS)})"),
     ):

@@ -27,6 +27,23 @@ await page.goto(`${origin}/new`, { waitUntil: "networkidle" });
 await page.fill("#task", "add this recipe");
 await page.check('input[name="blurbs"][value="mealie"]');
 await page.fill("#domains", "allrecipes.example.org");
+const offered = (id) => page.$$eval(`#${id} option`, (os) => os.map((o) => o.value));
+result.agent = { default: { backends: await offered("backend"), models: await offered("models") } };
+await page.selectOption("#harness", "cline");
+await page.selectOption("#backend", "self-hosted");
+await page.fill("#model", "qwen3.5-4b");
+result.agent.cline = {
+  backends: await offered("backend"), efforts: await offered("effort"), models: await offered("models"),
+  context_window: await page.inputValue("#context_window"),
+};
+await page.selectOption("#harness", "claude-code");
+result.agent.back = {
+  backend: await page.inputValue("#backend"), model: await page.inputValue("#model"),
+  context_window: await page.inputValue("#context_window"), disabled: await page.isDisabled("#context_window"),
+};
+await page.selectOption("#harness", "cline");
+await page.selectOption("#backend", "openrouter");
+await page.fill("#model", "z-ai/glm-5.3");
 await Promise.all([page.waitForURL(`${origin}/sessions/dn-ccccc`), page.click("form[data-action] button[type=submit]")]);
 result.landed = page.url();
 result.violations.push(...(await page.evaluate(() => window.__violations)));

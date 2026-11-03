@@ -5,6 +5,7 @@ import pytest
 from darner.job import (
     OUTPUT_INSTRUCTIONS,
     JobError,
+    check_harness,
     compose_prompt,
     new_task_id,
     valid_dependency,
@@ -126,7 +127,7 @@ def test_valid_models(model):
 
 @pytest.mark.parametrize("job", [
     {"model": "-opus"}, {"model": "op us"}, {"model": "opus\n"}, {"model": "a" * 201},
-    {"effort": "max"}, {"effort": "HIGH"}, {"effort": 3}, {"effort": "None"},
+    {"effort": "-high"}, {"effort": "HIGH"}, {"effort": 3}, {"effort": "None"}, {"effort": "a" * 33},
     {"context_window": 511}, {"context_window": 100_000_001}, {"context_window": "32768"}, {"context_window": True},
 ])
 def test_invalid_model_and_effort(job):
@@ -141,6 +142,41 @@ def test_context_window():
 @pytest.mark.parametrize("effort", ["none", "low", "xhigh"])
 def test_valid_efforts(effort):
     assert validate_job({"id": "dn-abc23", "prompt": "p", "effort": effort}).effort == effort
+
+
+OPTIONS = {
+    "claude-code": {"backends": ["anthropic", "anthropic-api-key"], "efforts": ["low", "medium", "high", "xhigh"], "context_window": False},
+    "cline": {"backends": ["anthropic", "openrouter", "self-hosted"], "efforts": ["none", "low", "high"], "context_window": True},
+    "free": {"backends": ["self-hosted"], "efforts": None, "context_window": False},
+    "plain": {"backends": ["self-hosted"], "efforts": [], "context_window": False},
+}
+
+
+@pytest.mark.parametrize("settings", [
+    ("cline", "self-hosted", "none", 120000),
+    ("claude-code", "anthropic-api-key", "xhigh", None),
+    ("other", "anything", "none", 4096),
+    (None, "openrouter", "none", None),
+    ("free", None, "max", None),
+])
+def test_settings_a_harness_can_take(settings):
+    check_harness(OPTIONS, *settings)
+
+
+@pytest.mark.parametrize("settings", [
+    ("claude-code", "self-hosted", None, None),
+    ("claude-code", None, "none", None),
+    ("claude-code", None, None, 4096),
+    ("free", "openrouter", None, None),
+])
+def test_settings_a_harness_can_t_take(settings):
+    with pytest.raises(JobError):
+        check_harness(OPTIONS, *settings)
+
+
+def test_a_harness_without_effort_levels_says_so():
+    with pytest.raises(JobError, match="^plain takes no effort level$"):
+        check_harness(OPTIONS, "plain", None, "low", None)
 
 
 @pytest.mark.parametrize("network", ["named", "sealed"])

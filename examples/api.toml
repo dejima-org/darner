@@ -39,6 +39,15 @@ max_domains = 20
 # tarball: has the dejima host fetch any URL on its own network, so it's left out.
 # allow_dependency_kinds = ["apt", "cargo", "npm", "pip"]
 
+# Models to offer for each harness and backend. A frontend still takes one that
+# isn't listed. A context window is filled in when its model is picked.
+# [catalog.claude-code.anthropic]
+# models = ["claude-opus-5-5[1m]", "claude-sonnet-5-5"]
+# [catalog.cline.openrouter]
+# models = ["z-ai/glm-5.3"]
+# [catalog.cline.self-hosted]
+# models = [{ id = "qwen3.5-4b", context_window = 120000 }]
+
 # Should match the launcher's --max-output; a smaller value rejects output the launcher collected.
 [limits]
 max_bytes = 52428800

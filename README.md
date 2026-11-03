@@ -437,6 +437,8 @@ The note is the task. The rest of the reply, minus the mention and the keyword l
 | `context_window:` | context window for this task, in tokens, for a harness that has the setting (cline). Set it a little under what the model's server allows, so cline compacts before the server refuses |
 | `network:` | `named`: the session reaches only what this task names and its model, not dejima's own allowlist (dejima's `--drop-domains`). `sealed`: that, and the session doesn't start if it could look up any name, so only addresses are reachable (`--require-sealed`). A sealed session needs its model reached by address, such as a self-hosted one, and a domain request can't grant it a name later |
 
+darner refuses a task asking for a backend, effort level or context window its harness can't take, as dejima's own manifests declare them: the backends speaking one of the harness's `api_styles`, the levels of its `effort` key, and whether it has a `context_window` key. The API checks against the launcher's catalog, fetched at most every five minutes, and the launcher checks again with its defaults filled in.
+
 The bot replies with the task id and its tmux target, plus a link to the session if the API has `remote_access_url` set, or with why it was refused. It only acts when both the reply and the note are from users in its `allowlist`, since the note becomes the agent's instructions.
 
 When the agent delivers output, the bot replies again with the agent's summary and the output as a zip. It also says when the session ends.
@@ -562,6 +564,7 @@ Grants use `dejima --domains FILE` and `--dependencies FILE`, and output collect
 | `[tokens]` | one bearer token per frontend, by name. Each must be at least 32 characters, differ from the others and from `examples/api.toml`'s placeholder, or the API won't start; `openssl rand -hex 32` makes one. A token can do everything its frontend can, so see [SECURITY.md](SECURITY.md) before adding one |
 | `[policy]` | applied at launch and to every domain request; a misspelled key stops the API. `deny_domains`: refused, with their subdomains and parents. `allow_domains`: if set, only these and their subdomains. `max_domains`: also caps what a session gains through requests. `allow_internal` (default true): false refuses internal grants. `max_internal_domains`. `allow_dependency_kinds` (default `apt`, `cargo`, `npm`, `pip`): `tarball` is left out unless listed, since it has the dejima host fetch any URL on its own network |
 | `[limits]` | `max_bytes`, `max_files`: should match the launcher's `--max-output` |
+| `[catalog.HARNESS.BACKEND]` | `models`: the models to offer for that harness and backend, each an id or `{ id = "...", context_window = N }`, which fills in the context window when it's picked. Frontends offer them, and still take a model that isn't listed. A backend the harness can't use isn't offered, nor a context window if it takes none |
 
 ### API endpoints
 
@@ -595,7 +598,7 @@ Every `poll_interval` seconds the API asks the dejima host for the status of lau
 | `POST /v1/selftest` | `{requester, source}`: a finished task whose output, help request and waiting screen are hostile text, delivered through `/v1/events` like any task's; see [Checking a frontend](#checking-a-frontend) |
 | `GET /v1/blurbs/{name}` | a context blurb's text |
 | `GET /v1/configs/{name}` | what a config set applies, by keyword; `file` lists names only, never contents |
-| `GET /v1/catalog` | the dejima host's harnesses and backends, and the launcher's default harness |
+| `GET /v1/catalog` | the dejima host's harnesses and backends, the launcher's default harness and its defaults for each, and under `options`, what each harness can be set to: its backends, effort levels, whether it takes a context window, and `[catalog]`'s models for each backend |
 | `POST /v1/tasks/<id>/domains/<n>/allow` | `{requester}`: grant domain request `n` as it was shown, minus what policy refuses |
 | `POST /v1/tasks/<id>/domains/<n>/deny` | `{requester}`: refuse domain request `n` |
 | `GET /v1/tasks` | the client's open sessions, with what each is waiting on: `{id, target, link, requester, started, state, answerable, waiting: {answer, domains}}` |

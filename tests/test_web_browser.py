@@ -105,6 +105,17 @@ async def test_the_actions_work_under_the_csp(aiohttp_server):
     assert ("/v1/tasks/dn-aaaaa/message", {"text": "use postgres", "requester": "web"}) in posted
     [task] = [body for path, body in posted if path == "/v1/tasks"]
     assert task["task"] == "add this recipe" and task["blurbs"] == ["mealie"] and task["grants"]["domains"] == ["allrecipes.example.org"]
+    assert (task["harness"], task["backend"], task["model"]) == ("cline", "openrouter", "z-ai/glm-5.3")
+    assert "context_window" not in task and "effort" not in task
+    agent = result["agent"]
+    # With no harness chosen, the default harness's.
+    assert agent["default"] == {"backends": ["", "anthropic"], "models": ["claude-opus-5-5[1m]"]}
+    assert agent["cline"] == {
+        "backends": ["", "openrouter", "self-hosted"], "efforts": ["", "none", "low", "medium", "high", "xhigh"],
+        "models": ["qwen3.5-4b"], "context_window": "120000",
+    }
+    # Back to a harness that can't take them, the backend, model and context window go back to its defaults.
+    assert agent["back"] == {"backend": "", "model": "", "context_window": "", "disabled": True}
     assert result["landed"] == f"{origin}/sessions/dn-ccccc"
     assert result["violations"] == [] and result["errors"] == []
 

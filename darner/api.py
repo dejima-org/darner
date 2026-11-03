@@ -21,7 +21,10 @@ from pathlib import Path
 from aiohttp import web
 
 from darner import archive, configsets, selftest
-from darner.job import OUTPUT_INSTRUCTIONS, JobError, compose_prompt, new_task_id, valid_domain, valid_name, validate_job
+from darner.job import (
+    OUTPUT_INSTRUCTIONS, JobError, check_harness, compose_prompt, new_task_id, valid_context_window, valid_domain, valid_model,
+    valid_name, validate_job,
+)
 from darner.launch import FETCH_REJECTED
 from darner.store import Store
 
@@ -62,6 +65,7 @@ DEFAULTS = {
     "output_retention": 604800,
     "policy": {},
     "limits": {},
+    "catalog": {},
 }
 
 
@@ -102,34 +106,39 @@ STORE = web.AppKey("store", Store)
 SHARE_ERRORS = web.AppKey("share_errors", dict)
 EXPIRE_FAILED = web.AppKey("expire_failed", set)
 STATUS_CACHE = web.AppKey("status_cache", dict)
+CATALOG_CACHE = web.AppKey("catalog_cache", dict)
+# What dejima's harnesses take changes only when dejima is upgraded.
+CATALOG_TTL = 300
 # How old a launcher status, or a failure to get one, a session listing may
 # reuse, so tabs refreshing don't each open an ssh connection to the dejima host.
 STATUS_MAX_AGE = 5
 
 
 async def launcher_status(app: web.Application, max_age: float) -> tuple[int, str, str]:
-    """The launcher's status, or its failure, reused if younger than max_age.
+    """The launcher's status, or its failure, reused if younger than max_age."""
+    return await _shared(app[STATUS_CACHE], max_age, max_age, lambda: run_remote(app[CONFIG], ["status"]))
 
-    Everyone asking while a request is in flight shares it, the poller (with
-    max_age 0) included, so a dejima host that hangs costs one ssh attempt
-    at a time rather than a queue of them.
+
+async def _shared(cache: dict, max_age: float, error_age: float, fetch):
+    """fetch()'s result reused if younger than max_age, or its failure if younger than error_age.
+
+    Everyone asking while a fetch is in flight shares it, so a dejima host that
+    hangs costs one ssh attempt at a time rather than a queue of them.
     """
-    cache = app[STATUS_CACHE]
-    if "at" in cache and time.monotonic() - cache["at"] < max_age:
+    if "at" in cache and time.monotonic() - cache["at"] < (error_age if "error" in cache else max_age):
         if "error" in cache:
             # A fresh exception each time, so one cached failure doesn't grow a traceback per caller.
             raise RuntimeError(cache["error"])
         return cache["result"]
     if cache.get("inflight") is None:
-        cache["inflight"] = asyncio.ensure_future(_fetch_status(app))
+        cache["inflight"] = asyncio.ensure_future(_record(cache, fetch))
     # Shielded: a caller whose client went away mustn't cancel it for the others.
     return await asyncio.shield(cache["inflight"])
 
 
-async def _fetch_status(app: web.Application) -> tuple[int, str, str]:
-    cache = app[STATUS_CACHE]
+async def _record(cache: dict, fetch):
     try:
-        result = await run_remote(app[CONFIG], ["status"])
+        result = await fetch()
     except Exception as e:
         cache.update(at=time.monotonic(), error=str(e))
         cache.pop("result", None)
@@ -223,6 +232,32 @@ def check_policy_config(policy: object) -> None:
     unknown = set(policy.get("allow_dependency_kinds", ())) - set(DEPENDENCY_KINDS)
     if unknown:
         raise ValueError(f"unknown dependency kinds in allow_dependency_kinds: {', '.join(sorted(unknown))}")
+
+
+def check_catalog_config(catalog: object) -> dict:
+    """[catalog.HARNESS.BACKEND] models, each an id or an id and its context window,
+    as {harness: {backend: [{"id": ..., "context_window": ...}]}}."""
+    if not isinstance(catalog, dict):
+        raise ValueError("catalog must be a table")
+    found = {}
+    for harness, backends in catalog.items():
+        if not valid_name(harness) or not isinstance(backends, dict):
+            raise ValueError(f"catalog.{harness} must be a table of backends")
+        for backend, table in backends.items():
+            where = f"catalog.{harness}.{backend}"
+            if not valid_name(backend) or not isinstance(table, dict) or set(table) - {"models"}:
+                raise ValueError(f"{where} must be a table with models")
+            models = []
+            for entry in table.get("models", []):
+                model = {"id": entry} if isinstance(entry, str) else entry
+                if (
+                    not isinstance(model, dict) or set(model) - {"id", "context_window"} or not valid_model(model.get("id"))
+                    or ("context_window" in model and not valid_context_window(model["context_window"]))
+                ):
+                    raise ValueError(f"{where}: not a model, or an id and context_window: {entry!r}")
+                models.append(model)
+            found.setdefault(harness, {})[backend] = models
+    return found
 
 
 def _covers(parent: str, domain: str) -> bool:
@@ -617,6 +652,7 @@ async def create_task(request: web.Request) -> web.Response:
         return web.json_response({"error": "body must be JSON"}, status=400)
     try:
         job, source, requester = build_job(config, body)
+        await check_job_harness(request.app, job)
     except RequestError as e:
         return web.json_response({"error": str(e)}, status=e.status)
 
@@ -928,16 +964,59 @@ async def describe_config(request: web.Request) -> web.Response:
     return web.json_response(described)
 
 
+async def fetch_catalog(app: web.Application) -> dict:
+    """The launcher's catalog, or its failure, shared as the launcher's status is."""
+    return await _shared(app[CATALOG_CACHE], CATALOG_TTL, STATUS_MAX_AGE, lambda: _fetch_catalog(app[CONFIG]))
+
+
+async def _fetch_catalog(config: dict) -> dict:
+    code, out, err = await run_remote(config, ["catalog"])
+    if code:
+        raise RuntimeError(err or f"launcher exited {code}")
+    try:
+        return json.loads(out)
+    except ValueError:
+        raise RuntimeError("launcher sent a catalog that isn't JSON")
+
+
+async def check_job_harness(app: web.Application, job: dict) -> None:
+    """Refuse what the job's harness can't take, with the launcher's defaults filled in as it
+    fills them. Without a catalog this is left to the launcher, which checks again anyway."""
+    try:
+        found = await fetch_catalog(app)
+    except RuntimeError as e:
+        logging.warning("can't check harness settings: %s", e)
+        return
+    harness = job.get("harness") or found.get("default_harness")
+    defaults = found.get("defaults", {}).get(harness, {})
+    settings = {k: job.get(k) or defaults.get(k) for k in ("backend", "effort", "context_window")}
+    try:
+        check_harness(found.get("options", {}), harness, **settings)
+    except JobError as e:
+        raise RequestError(400, str(e))
+
+
 async def get_catalog(request: web.Request) -> web.Response:
     """The harnesses and backends the dejima host offers, for clients to show."""
     _client(request)
     try:
-        code, out, err = await run_remote(request.app[CONFIG], ["catalog"])
+        found = await fetch_catalog(request.app)
     except RuntimeError as e:
         return web.json_response({"error": f"catalog failed: {e}"}, status=502)
-    if code:
-        return web.json_response({"error": err or f"launcher exited {code}"}, status=502)
-    return web.json_response(json.loads(out))
+    return web.json_response(describe_catalog(found, request.app[CONFIG]["catalog"]))
+
+
+def describe_catalog(found: dict, catalog: dict) -> dict:
+    """The launcher's catalog, with what each installed harness can be set to:
+    its backends, effort levels, whether it takes a context window, its defaults,
+    and the operator's models for each backend it can use."""
+    options = {}
+    for harness, known in found.get("options", {}).items():
+        models = {b: models for b, models in catalog.get(harness, {}).items() if b in known["backends"]}
+        if not known["context_window"]:
+            models = {b: [{"id": m["id"]} for m in ms] for b, ms in models.items()}
+        options[harness] = {**known, "defaults": found.get("defaults", {}).get(harness, {}), "models": models}
+    return {**found, "options": options}
 
 
 async def ack_event(request: web.Request) -> web.Response:
@@ -967,6 +1046,7 @@ def make_app(config: dict, poll: bool = True) -> web.Application:
         config.setdefault(key, value)
     check_tokens(config["tokens"])
     check_policy_config(config.get("policy", {}))
+    config["catalog"] = check_catalog_config(config.get("catalog", {}))
     if config.get("remote_access_url") and not re.match(r"https?://", config["remote_access_url"]):
         raise ValueError("remote_access_url must start with http:// or https://")
     app = web.Application(client_max_size=256 * 1024)
@@ -980,6 +1060,7 @@ def make_app(config: dict, poll: bool = True) -> web.Application:
     app[SHARE_ERRORS] = {}
     app[EXPIRE_FAILED] = set()
     app[STATUS_CACHE] = {}
+    app[CATALOG_CACHE] = {}
     app.router.add_post("/v1/tasks", create_task)
     app.router.add_post("/v1/selftest", create_selftest)
     app.router.add_get("/v1/events", list_events)

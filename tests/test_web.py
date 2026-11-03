@@ -20,6 +20,22 @@ TOKEN = "w3b-0123456789abcdef0123456789abcdef"
 SELFTEST = clean_text(PAYLOAD.encode())
 
 
+CATALOG = {
+    "harnesses": ["claude-code", "cline"], "backends": ["anthropic", "openrouter", "self-hosted"], "default_harness": "claude-code",
+    "options": {
+        "claude-code": {
+            "backends": ["anthropic"], "efforts": ["low", "medium", "high", "xhigh"], "context_window": False,
+            "defaults": {"backend": "anthropic"}, "models": {"anthropic": [{"id": "claude-opus-5-5[1m]"}]},
+        },
+        "cline": {
+            "backends": ["openrouter", "self-hosted"], "efforts": ["none", "low", "medium", "high", "xhigh"], "context_window": True,
+            "defaults": {"backend": "self-hosted"},
+            "models": {"self-hosted": [{"id": "qwen3.5-4b", "context_window": 120000}], "openrouter": [{"id": "z-ai/glm-5.3"}]},
+        },
+    },
+}
+
+
 class FakeApi:
     """darner-api as darner-web sees it, recording every call."""
 
@@ -126,7 +142,7 @@ class FakeApi:
             return web.json_response({"path": "~/shared/uploads/" + request.query["name"], "size": len(self.uploaded), "told": False})
 
         async def catalog(request):
-            return await record(request, {"harnesses": ["claude-code", "cline"], "backends": ["self-hosted"], "default_harness": "claude-code"})
+            return await record(request, CATALOG)
 
         async def create(request):
             if self.create_status >= 400:
