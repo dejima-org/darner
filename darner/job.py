@@ -118,8 +118,10 @@ def check_harness(
         return
     if backend is not None and backend not in known["backends"]:
         raise JobError(f"{harness} can't use the {backend} backend, only {', '.join(known['backends'])}")
+    if effort is not None and known["efforts"] == []:
+        raise JobError(f"{harness} takes no effort level")
     if effort is not None and known["efforts"] is not None and effort not in known["efforts"]:
-        raise JobError(f"{harness} has no effort level {effort}, only {', '.join(known['efforts']) or 'none'}")
+        raise JobError(f"{harness} has no effort level {effort}, only {', '.join(known['efforts'])}")
     if context_window is not None and not known["context_window"]:
         raise JobError(f"{harness} takes no context window")
 

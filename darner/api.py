@@ -115,28 +115,30 @@ STATUS_MAX_AGE = 5
 
 
 async def launcher_status(app: web.Application, max_age: float) -> tuple[int, str, str]:
-    """The launcher's status, or its failure, reused if younger than max_age.
+    """The launcher's status, or its failure, reused if younger than max_age."""
+    return await _shared(app[STATUS_CACHE], max_age, max_age, lambda: run_remote(app[CONFIG], ["status"]))
 
-    Everyone asking while a request is in flight shares it, the poller (with
-    max_age 0) included, so a dejima host that hangs costs one ssh attempt
-    at a time rather than a queue of them.
+
+async def _shared(cache: dict, max_age: float, error_age: float, fetch):
+    """fetch()'s result reused if younger than max_age, or its failure if younger than error_age.
+
+    Everyone asking while a fetch is in flight shares it, so a dejima host that
+    hangs costs one ssh attempt at a time rather than a queue of them.
     """
-    cache = app[STATUS_CACHE]
-    if "at" in cache and time.monotonic() - cache["at"] < max_age:
+    if "at" in cache and time.monotonic() - cache["at"] < (error_age if "error" in cache else max_age):
         if "error" in cache:
             # A fresh exception each time, so one cached failure doesn't grow a traceback per caller.
             raise RuntimeError(cache["error"])
         return cache["result"]
     if cache.get("inflight") is None:
-        cache["inflight"] = asyncio.ensure_future(_fetch_status(app))
+        cache["inflight"] = asyncio.ensure_future(_record(cache, fetch))
     # Shielded: a caller whose client went away mustn't cancel it for the others.
     return await asyncio.shield(cache["inflight"])
 
 
-async def _fetch_status(app: web.Application) -> tuple[int, str, str]:
-    cache = app[STATUS_CACHE]
+async def _record(cache: dict, fetch):
     try:
-        result = await run_remote(app[CONFIG], ["status"])
+        result = await fetch()
     except Exception as e:
         cache.update(at=time.monotonic(), error=str(e))
         cache.pop("result", None)
@@ -963,19 +965,18 @@ async def describe_config(request: web.Request) -> web.Response:
 
 
 async def fetch_catalog(app: web.Application) -> dict:
-    """The launcher's catalog, fetched again once it's CATALOG_TTL seconds old."""
-    cached = app[CATALOG_CACHE]
-    if cached and time.monotonic() - cached["at"] < CATALOG_TTL:
-        return cached["found"]
-    code, out, err = await run_remote(app[CONFIG], ["catalog"])
+    """The launcher's catalog, or its failure, shared as the launcher's status is."""
+    return await _shared(app[CATALOG_CACHE], CATALOG_TTL, STATUS_MAX_AGE, lambda: _fetch_catalog(app[CONFIG]))
+
+
+async def _fetch_catalog(config: dict) -> dict:
+    code, out, err = await run_remote(config, ["catalog"])
     if code:
         raise RuntimeError(err or f"launcher exited {code}")
     try:
-        found = json.loads(out)
+        return json.loads(out)
     except ValueError:
         raise RuntimeError("launcher sent a catalog that isn't JSON")
-    app[CATALOG_CACHE].update(at=time.monotonic(), found=found)
-    return found
 
 
 async def check_job_harness(app: web.Application, job: dict) -> None:

@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 Brad Anderson
+import asyncio
 import io
 import json
 import sys
@@ -904,6 +905,21 @@ async def test_without_a_catalog_the_launcher_checks(aiohttp_client, config, mon
     client = await aiohttp_client(make_app(config, poll=False))
     resp = await client.post("/v1/tasks", json=request(harness="claude-code", effort="none"), headers=AUTH)
     assert resp.status == 201 and launched(tmp_path)[0]["effort"] == "none"
+
+
+async def test_a_failing_catalog_is_asked_for_once_at_a_time(aiohttp_client, config, monkeypatch, tmp_path):
+    monkeypatch.delenv("STUB_CATALOG")
+    client = await aiohttp_client(make_app(config, poll=False))
+
+    def post(n):
+        source = {"kind": "matrix", "ref": f"$event{n}", "channel": "!room:example.org"}
+        return client.post("/v1/tasks", json=request(source=source), headers=AUTH)
+
+    # Together they share one fetch, and those after it reuse its failure.
+    responses = await asyncio.gather(*(post(n) for n in range(3)))
+    responses += [await post(n) for n in range(3, 6)]
+    assert [r.status for r in responses] == [201] * 6
+    assert [f for f in fetches(tmp_path) if f == ["catalog"]] == [["catalog"]]
 
 
 async def test_the_catalog_says_what_each_harness_can_take(aiohttp_client, config, monkeypatch):

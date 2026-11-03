@@ -148,6 +148,7 @@ OPTIONS = {
     "claude-code": {"backends": ["anthropic", "anthropic-api-key"], "efforts": ["low", "medium", "high", "xhigh"], "context_window": False},
     "cline": {"backends": ["anthropic", "openrouter", "self-hosted"], "efforts": ["none", "low", "high"], "context_window": True},
     "free": {"backends": ["self-hosted"], "efforts": None, "context_window": False},
+    "plain": {"backends": ["self-hosted"], "efforts": [], "context_window": False},
 }
 
 
@@ -171,6 +172,11 @@ def test_settings_a_harness_can_take(settings):
 def test_settings_a_harness_can_t_take(settings):
     with pytest.raises(JobError):
         check_harness(OPTIONS, *settings)
+
+
+def test_a_harness_without_effort_levels_says_so():
+    with pytest.raises(JobError, match="^plain takes no effort level$"):
+        check_harness(OPTIONS, "plain", None, "low", None)
 
 
 @pytest.mark.parametrize("network", ["named", "sealed"])
