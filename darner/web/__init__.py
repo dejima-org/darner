@@ -425,7 +425,9 @@ async def check_session(request: web.Request) -> web.Response:
 
 async def stop_session(request: web.Request) -> web.Response:
     task_id = request.match_info["id"]
-    return await _act(request, "POST", f"/v1/tasks/{task_id}/stop", json={"requester": _user(request)})
+    # The API answers once the session has exited and its end is recorded, which can take a minute.
+    timeout = aiohttp.ClientTimeout(total=request.app[CONFIG]["launch_timeout"])
+    return await _act(request, "POST", f"/v1/tasks/{task_id}/stop", json={"requester": _user(request)}, timeout=timeout)
 
 
 async def decide_domains(request: web.Request) -> web.Response:
@@ -519,7 +521,6 @@ def _task_request(request: web.Request, body: dict, ref: str) -> dict:
     """The form as the API's task request, the way chat would send it."""
     request_body = {
         "task": body.get("task") if isinstance(body.get("task"), str) else "",
-        "context": body.get("context") if isinstance(body.get("context"), str) else "",
         "blurbs": _words(body.get("blurbs")),
         "configs": _words(body.get("configs")),
         "grants": {

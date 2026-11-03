@@ -637,8 +637,16 @@ async def test_share_error_is_logged_once(started, tmp_path, monkeypatch, caplog
 async def test_stop_reaches_launcher(started, tmp_path):
     app, client, task_id, *_ = started
     assert (await client.post(f"/v1/tasks/{task_id}/stop", json=STOP_BODY, headers=AUTH)).status == 204
-    assert fetches(tmp_path)[-1] == ["stop", task_id]
+    assert ["stop", task_id] in fetches(tmp_path)
 
+
+async def test_a_stopped_session_s_end_is_recorded_before_stop_answers(started, tmp_path):
+    app, client, task_id, status, *_ = started
+    # As the launcher reports it once its stop has returned.
+    status(state="exited", ready=False)
+    assert (await client.post(f"/v1/tasks/{task_id}/stop", json=STOP_BODY, headers=AUTH)).status == 204
+    assert (await client.get(f"/v1/tasks/{task_id}", headers=AUTH)).status == 404
+    assert app[STORE].task_status("maubot", task_id) == "ended"
 
 
 async def test_stop_is_scoped_and_needs_a_running_task(started, config, tmp_path, monkeypatch):

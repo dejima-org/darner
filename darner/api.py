@@ -1028,6 +1028,14 @@ async def stop_task(request: web.Request) -> web.Response:
     if code:
         return web.json_response({"error": err or f"launcher exited {code}"}, status=409)
     _audit("stop", client, task_id, requester)
+    # The launcher answers once the session has exited, so a poll now collects
+    # what it left and records its end, rather than leaving it shown running
+    # until the next poll_interval.
+    async with request.app[POLL_LOCK]:
+        try:
+            await poll_once(request.app)
+        except Exception:
+            log.exception("poll after stopping %s failed", task_id)
     return web.Response(status=204)
 
 

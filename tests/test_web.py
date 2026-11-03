@@ -619,7 +619,7 @@ async def test_a_refused_preview_says_why(client):
 
 async def test_starting_a_task_builds_the_request_as_chat_would(client, fake):
     body = {
-        "task": "add this recipe", "context": "from the site", "ref": "a" * 32,
+        "task": "add this recipe", "ref": "a" * 32,
         "blurbs": ["mealie"], "configs": ["recipes"], "domains": "allrecipes.example.org, cdn.example.org",
         "internal": "recipes.example.com:8443", "dependencies": "pip:requests  apt:jq",
         "harness": "cline", "backend": "", "model": " qwen3 ", "effort": "", "context_window": "30000", "network": "sealed",
@@ -629,7 +629,7 @@ async def test_starting_a_task_builds_the_request_as_chat_would(client, fake):
     assert resp.status == 200 and await resp.json() == {"location": "/sessions/dn-ccccc"}
     [(path, sent)] = posted(fake)
     assert path == "/v1/tasks" and sent == {
-        "task": "add this recipe", "context": "from the site", "blurbs": ["mealie"], "configs": ["recipes"],
+        "task": "add this recipe", "blurbs": ["mealie"], "configs": ["recipes"],
         "grants": {"domains": ["allrecipes.example.org", "cdn.example.org"], "internal": ["recipes.example.com:8443"],
                    "dependencies": ["pip:requests", "apt:jq"]},
         "requester": "web", "source": {"kind": "web", "ref": "a" * 32},
@@ -688,11 +688,11 @@ async def test_the_session_page_offers_actions_only_where_they_apply(client, fak
 
 
 async def test_a_task_at_the_api_s_limits_in_a_three_byte_script_reaches_it(client, fake):
-    task, context = "\u4e2d" * 32768, "\u6587" * 32768
-    resp = await client.post("/tasks", headers=POST, json={"task": task, "context": context, "ref": "a" * 32})
+    task = "\u4e2d" * 32768
+    resp = await client.post("/tasks", headers=POST, json={"task": task, "ref": "a" * 32})
     assert resp.status == 200, await resp.text()
     [(_, sent)] = posted(fake)
-    assert sent["task"] == task and sent["context"] == context
+    assert sent["task"] == task and "context" not in sent
 
 
 async def test_a_request_over_the_cap_gets_an_error_the_page_can_show(client, fake):

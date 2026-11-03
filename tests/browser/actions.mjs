@@ -23,6 +23,15 @@ await page.fill("#message", "use postgres");
 await Promise.all([page.waitForEvent("load"), page.click("form[data-action] button[type=submit]")]);
 result.violations.push(...(await page.evaluate(() => window.__violations)));
 
+// Stopping says it's still going until the API answers.
+page.once("dialog", (dialog) => dialog.accept());
+await page.route("**/stop", async (route) => { await new Promise((r) => setTimeout(r, 1500)); await route.continue(); });
+const reloaded = page.waitForEvent("load");
+await page.click("button[data-post$='/stop']");
+await page.waitForFunction(() => !document.querySelector(".panel .status").hidden);
+result.stopping = { button: await page.textContent("button[data-post$='/stop']"), status: await page.textContent(".panel .status") };
+await reloaded;
+
 await page.goto(`${origin}/new`, { waitUntil: "networkidle" });
 await page.fill("#task", "add this recipe");
 await page.check('input[name="blurbs"][value="mealie"]');

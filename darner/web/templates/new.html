@@ -8,8 +8,6 @@
 <textarea id="task" name="task" rows="4" required></textarea>
 <label for="name">Name <span class="quiet">optional: lowercase letters, digits and hyphens, unique among open sessions</span></label>
 <input id="name" name="name" maxlength="35" pattern="(dn-)?[a-z0-9][a-z0-9\-]{0,31}" autocomplete="off" placeholder="its id, such as dn-k3x7q">
-<label for="context">Extra context</label>
-<textarea id="context" name="context" rows="3"></textarea>
 {% if configs %}
 <fieldset><legend>Config sets</legend>
 <div class="choices">{% for name in configs %}<label class="choice"><input type="checkbox" name="configs" value="{{ name }}"> <a href="/configs/{{ name | urlencode }}">{{ name }}</a></label>{% endfor %}</div>

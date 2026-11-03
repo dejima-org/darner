@@ -72,7 +72,8 @@
 <button type="submit" class="quiet">Upload</button>
 </form>
 <div class="row"><button type="button" class="quiet" data-post="/sessions/{{ task_id }}/check" title="Look for output, a help request or a domain request now, rather than at the next poll">Check now</button>
-<button type="button" class="refuse" data-post="/sessions/{{ task_id }}/stop" data-confirm="Stop {{ title }}?">Stop the session</button></div>
+<button type="button" class="refuse" data-post="/sessions/{{ task_id }}/stop" data-confirm="Stop {{ title }}?" data-busy="Stopping the session">Stop the session</button></div>
+<p class="status" role="status" hidden data-text="dejima is stopping the sandbox, and darner is collecting any output it left. This page shows it ended when that's done."></p>
 <p class="alert" role="alert" hidden></p>
 </section>
 {% if session.started_with %}
