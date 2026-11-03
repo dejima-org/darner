@@ -21,6 +21,7 @@ if command == ["status"]:
         open(os.environ["STUB_STATUS_COUNT"], "a").write("status\\n")
     sys.stdout.write(open(os.environ["STUB_STATUS"]).read())
 elif command[:1] == ["catalog"]:
+    open(os.environ["STUB_LOG"], "a").write(json.dumps(command) + "\\n")
     sys.stdout.write(os.environ["STUB_CATALOG"])
 elif command[:1] == ["help"]:
     sys.stdout.buffer.write(os.environ.get("STUB_HELP", "").encode())
@@ -79,6 +80,20 @@ def request(**overrides):
     return body
 
 
+# As the launcher derives it from dejima's manifests.
+OPTIONS = {
+    "claude-code": {"backends": ["anthropic", "anthropic-api-key"], "efforts": ["low", "medium", "high", "xhigh"], "context_window": False},
+    "cline": {
+        "backends": ["anthropic", "anthropic-api-key", "openrouter", "self-hosted"],
+        "efforts": ["none", "low", "medium", "high", "xhigh"], "context_window": True,
+    },
+}
+CATALOG = {
+    "harnesses": ["claude-code", "cline"], "backends": ["anthropic", "anthropic-api-key", "openrouter", "self-hosted"],
+    "default_harness": "claude-code", "defaults": {}, "options": OPTIONS,
+}
+
+
 @pytest.fixture
 def config(tmp_path, monkeypatch):
     stub = tmp_path / "stub.py"
@@ -87,6 +102,7 @@ def config(tmp_path, monkeypatch):
     blurbs.mkdir()
     (blurbs / "myapp.md").write_text("Repo: example/myapp\n")
     monkeypatch.setenv("STUB_LOG", str(tmp_path / "stub.log"))
+    monkeypatch.setenv("STUB_CATALOG", json.dumps(CATALOG))
     return {
         "db_path": str(tmp_path / "db"),
         "results_dir": str(tmp_path / "results"),
@@ -823,14 +839,14 @@ async def test_model_and_effort_reach_the_job(client, tmp_path):
 
 @pytest.mark.parametrize("value", [32768, "32768"])
 async def test_context_window_reaches_the_job(client, tmp_path, value):
-    resp = await client.post("/v1/tasks", json=request(context_window=value), headers=AUTH)
+    resp = await client.post("/v1/tasks", json=request(harness="cline", context_window=value), headers=AUTH)
     assert resp.status == 201
     assert launched(tmp_path)[0]["context_window"] == 32768
 
 
 @pytest.mark.parametrize("value", ["lots", "１２３４", 100])
 async def test_bad_context_window_is_refused(client, value):
-    resp = await client.post("/v1/tasks", json=request(context_window=value), headers=AUTH)
+    resp = await client.post("/v1/tasks", json=request(harness="cline", context_window=value), headers=AUTH)
     assert resp.status == 400 and "context window" in (await resp.json())["error"]
 
 
@@ -853,7 +869,7 @@ async def test_bad_effort_is_refused(client):
 
 @pytest.mark.parametrize("settings,refused", [
     ({"harness": "claude-code", "backend": "openrouter"}, "claude-code can't use the openrouter backend"),
-    ({"harness": "cline", "backend": "anthropic"}, "cline can't use the anthropic backend"),
+    ({"backend": "self-hosted"}, "claude-code can't use the self-hosted backend"),
     ({"harness": "claude-code", "effort": "none"}, "claude-code has no effort level none"),
     ({"harness": "claude-code", "context_window": 32768}, "claude-code takes no context window"),
 ])
@@ -871,39 +887,51 @@ async def test_a_config_set_s_harness_is_held_to_its_backends(client, config, tm
     assert resp.status == 400 and "can't use the openrouter backend" in (await resp.json())["error"]
 
 
+async def test_the_launcher_s_defaults_are_checked(aiohttp_client, config, monkeypatch, tmp_path):
+    monkeypatch.setenv("STUB_CATALOG", json.dumps({**CATALOG, "defaults": {"cline": {"backend": "self-hosted", "effort": "none"}}}))
+    client = await aiohttp_client(make_app(config, poll=False))
+    resp = await client.post("/v1/tasks", json=request(harness="cline"), headers=AUTH)
+    assert resp.status == 201
+    source = {"kind": "matrix", "ref": "$event2", "channel": "!room:example.org"}
+    resp = await client.post("/v1/tasks", json=request(effort="none", source=source), headers=AUTH)
+    assert resp.status == 400 and "claude-code has no effort level none" in (await resp.json())["error"]
+    # Fetched once, and cached.
+    assert [f for f in fetches(tmp_path) if f == ["catalog"]] == [["catalog"]]
+
+
+async def test_without_a_catalog_the_launcher_checks(aiohttp_client, config, monkeypatch, tmp_path):
+    monkeypatch.delenv("STUB_CATALOG")
+    client = await aiohttp_client(make_app(config, poll=False))
+    resp = await client.post("/v1/tasks", json=request(harness="claude-code", effort="none"), headers=AUTH)
+    assert resp.status == 201 and launched(tmp_path)[0]["effort"] == "none"
+
+
 async def test_the_catalog_says_what_each_harness_can_take(aiohttp_client, config, monkeypatch):
-    monkeypatch.setenv("STUB_CATALOG", json.dumps({
-        "harnesses": ["claude-code", "cline", "other"], "backends": ["anthropic", "openrouter", "self-hosted"],
-        "default_harness": "claude-code", "defaults": {"cline": {"backend": "self-hosted"}},
-    }))
+    monkeypatch.setenv("STUB_CATALOG", json.dumps({**CATALOG, "defaults": {"cline": {"backend": "self-hosted"}}}))
     config["catalog"] = {
-        "claude-code": {"anthropic": {"models": ["claude-opus-5-5[1m]"]}},
+        "claude-code": {
+            "anthropic": {"models": ["claude-opus-5-5[1m]", {"id": "opus", "context_window": 200000}]},
+            "openrouter": {"models": ["z-ai/glm-5.3"]},
+        },
         "cline": {"self-hosted": {"models": [{"id": "qwen3.5-4b", "context_window": 120000}, "llama3:8b"]}},
     }
     client = await aiohttp_client(make_app(config, poll=False))
     catalog = await (await client.get("/v1/catalog", headers=AUTH)).json()
-    assert catalog["harnesses"] == ["claude-code", "cline", "other"] and catalog["default_harness"] == "claude-code"
+    assert catalog["harnesses"] == ["claude-code", "cline"] and catalog["default_harness"] == "claude-code"
+    # Only the backends a harness can use, and context windows only for a harness that takes one.
     assert catalog["options"] == {
         "claude-code": {
-            "backends": ["anthropic"], "efforts": ["low", "medium", "high", "xhigh"], "context_window": False,
-            "defaults": {}, "models": {"anthropic": [{"id": "claude-opus-5-5[1m]"}]},
+            **OPTIONS["claude-code"], "defaults": {},
+            "models": {"anthropic": [{"id": "claude-opus-5-5[1m]"}, {"id": "opus"}]},
         },
         "cline": {
-            "backends": ["openrouter", "self-hosted"], "efforts": ["none", "low", "medium", "high", "xhigh"], "context_window": True,
-            "defaults": {"backend": "self-hosted"},
+            **OPTIONS["cline"], "defaults": {"backend": "self-hosted"},
             "models": {"self-hosted": [{"id": "qwen3.5-4b", "context_window": 120000}, {"id": "llama3:8b"}]},
-        },
-        # A harness darner doesn't know is held to nothing.
-        "other": {
-            "backends": ["anthropic", "openrouter", "self-hosted"], "efforts": ["none", "low", "medium", "high", "xhigh"],
-            "context_window": True, "defaults": {}, "models": {},
         },
     }
 
 
 @pytest.mark.parametrize("catalog,refused", [
-    ({"claude-code": {"openrouter": {"models": ["z-ai/glm-5.3"]}}}, "claude-code can't use the openrouter backend"),
-    ({"claude-code": {"anthropic": {"models": [{"id": "opus", "context_window": 200000}]}}}, "takes no context window"),
     ({"cline": {"self-hosted": {"models": [{"id": "qwen", "context_window": 100}]}}}, "not a model"),
     ({"cline": {"self-hosted": {"models": [{"name": "qwen"}]}}}, "not a model"),
     ({"cline": {"self-hosted": {"model": ["qwen"]}}}, "must be a table with models"),

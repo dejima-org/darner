@@ -5,6 +5,7 @@ import pytest
 from darner.job import (
     OUTPUT_INSTRUCTIONS,
     JobError,
+    check_harness,
     compose_prompt,
     new_task_id,
     valid_dependency,
@@ -126,7 +127,7 @@ def test_valid_models(model):
 
 @pytest.mark.parametrize("job", [
     {"model": "-opus"}, {"model": "op us"}, {"model": "opus\n"}, {"model": "a" * 201},
-    {"effort": "max"}, {"effort": "HIGH"}, {"effort": 3}, {"effort": "None"},
+    {"effort": "-high"}, {"effort": "HIGH"}, {"effort": 3}, {"effort": "None"}, {"effort": "a" * 33},
     {"context_window": 511}, {"context_window": 100_000_001}, {"context_window": "32768"}, {"context_window": True},
 ])
 def test_invalid_model_and_effort(job):
@@ -143,25 +144,33 @@ def test_valid_efforts(effort):
     assert validate_job({"id": "dn-abc23", "prompt": "p", "effort": effort}).effort == effort
 
 
-@pytest.mark.parametrize("job", [
-    {"harness": "cline", "backend": "self-hosted", "context_window": 120000, "effort": "none"},
-    {"harness": "claude-code", "backend": "anthropic-api-key", "effort": "xhigh"},
-    {"harness": "other", "backend": "anything", "effort": "none", "context_window": 4096},
-    {"backend": "openrouter", "effort": "none"},
-])
-def test_settings_a_harness_can_take(job):
-    validate_job({"id": "dn-abc23", "prompt": "p", **job})
+OPTIONS = {
+    "claude-code": {"backends": ["anthropic", "anthropic-api-key"], "efforts": ["low", "medium", "high", "xhigh"], "context_window": False},
+    "cline": {"backends": ["anthropic", "openrouter", "self-hosted"], "efforts": ["none", "low", "high"], "context_window": True},
+    "free": {"backends": ["self-hosted"], "efforts": None, "context_window": False},
+}
 
 
-@pytest.mark.parametrize("job", [
-    {"harness": "claude-code", "backend": "self-hosted"},
-    {"harness": "cline", "backend": "anthropic"},
-    {"harness": "claude-code", "effort": "none"},
-    {"harness": "claude-code", "context_window": 4096},
+@pytest.mark.parametrize("settings", [
+    ("cline", "self-hosted", "none", 120000),
+    ("claude-code", "anthropic-api-key", "xhigh", None),
+    ("other", "anything", "none", 4096),
+    (None, "openrouter", "none", None),
+    ("free", None, "max", None),
 ])
-def test_settings_a_harness_can_t_take(job):
+def test_settings_a_harness_can_take(settings):
+    check_harness(OPTIONS, *settings)
+
+
+@pytest.mark.parametrize("settings", [
+    ("claude-code", "self-hosted", None, None),
+    ("claude-code", None, "none", None),
+    ("claude-code", None, None, 4096),
+    ("free", "openrouter", None, None),
+])
+def test_settings_a_harness_can_t_take(settings):
     with pytest.raises(JobError):
-        validate_job({"id": "dn-abc23", "prompt": "p", **job})
+        check_harness(OPTIONS, *settings)
 
 
 @pytest.mark.parametrize("network", ["named", "sealed"])

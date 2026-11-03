@@ -22,7 +22,7 @@ from aiohttp import web
 
 from darner import archive, configsets, selftest
 from darner.job import (
-    EFFORTS, HARNESSES, OUTPUT_INSTRUCTIONS, JobError, compose_prompt, new_task_id, valid_context_window, valid_domain, valid_model,
+    OUTPUT_INSTRUCTIONS, JobError, check_harness, compose_prompt, new_task_id, valid_context_window, valid_domain, valid_model,
     valid_name, validate_job,
 )
 from darner.launch import FETCH_REJECTED
@@ -106,6 +106,9 @@ STORE = web.AppKey("store", Store)
 SHARE_ERRORS = web.AppKey("share_errors", dict)
 EXPIRE_FAILED = web.AppKey("expire_failed", set)
 STATUS_CACHE = web.AppKey("status_cache", dict)
+CATALOG_CACHE = web.AppKey("catalog_cache", dict)
+# What dejima's harnesses take changes only when dejima is upgraded.
+CATALOG_TTL = 300
 # How old a launcher status, or a failure to get one, a session listing may
 # reuse, so tabs refreshing don't each open an ssh connection to the dejima host.
 STATUS_MAX_AGE = 5
@@ -231,21 +234,17 @@ def check_policy_config(policy: object) -> None:
 
 def check_catalog_config(catalog: object) -> dict:
     """[catalog.HARNESS.BACKEND] models, each an id or an id and its context window,
-    as {harness: {backend: [{"id": ..., "context_window": ...}]}}. Refuses a pair or
-    a context window the harness can't take, which would only be offered to be refused."""
+    as {harness: {backend: [{"id": ..., "context_window": ...}]}}."""
     if not isinstance(catalog, dict):
         raise ValueError("catalog must be a table")
     found = {}
     for harness, backends in catalog.items():
         if not valid_name(harness) or not isinstance(backends, dict):
             raise ValueError(f"catalog.{harness} must be a table of backends")
-        known = HARNESSES.get(harness)
         for backend, table in backends.items():
             where = f"catalog.{harness}.{backend}"
             if not valid_name(backend) or not isinstance(table, dict) or set(table) - {"models"}:
                 raise ValueError(f"{where} must be a table with models")
-            if known and backend not in known["backends"]:
-                raise ValueError(f"{where}: {harness} can't use the {backend} backend, only {', '.join(known['backends'])}")
             models = []
             for entry in table.get("models", []):
                 model = {"id": entry} if isinstance(entry, str) else entry
@@ -254,8 +253,6 @@ def check_catalog_config(catalog: object) -> dict:
                     or ("context_window" in model and not valid_context_window(model["context_window"]))
                 ):
                     raise ValueError(f"{where}: not a model, or an id and context_window: {entry!r}")
-                if "context_window" in model and known and not known["context_window"]:
-                    raise ValueError(f"{where}: {harness} takes no context window")
                 models.append(model)
             found.setdefault(harness, {})[backend] = models
     return found
@@ -653,6 +650,7 @@ async def create_task(request: web.Request) -> web.Response:
         return web.json_response({"error": "body must be JSON"}, status=400)
     try:
         job, source, requester = build_job(config, body)
+        await check_job_harness(request.app, job)
     except RequestError as e:
         return web.json_response({"error": str(e)}, status=e.status)
 
@@ -964,33 +962,59 @@ async def describe_config(request: web.Request) -> web.Response:
     return web.json_response(described)
 
 
+async def fetch_catalog(app: web.Application) -> dict:
+    """The launcher's catalog, fetched again once it's CATALOG_TTL seconds old."""
+    cached = app[CATALOG_CACHE]
+    if cached and time.monotonic() - cached["at"] < CATALOG_TTL:
+        return cached["found"]
+    code, out, err = await run_remote(app[CONFIG], ["catalog"])
+    if code:
+        raise RuntimeError(err or f"launcher exited {code}")
+    try:
+        found = json.loads(out)
+    except ValueError:
+        raise RuntimeError("launcher sent a catalog that isn't JSON")
+    app[CATALOG_CACHE].update(at=time.monotonic(), found=found)
+    return found
+
+
+async def check_job_harness(app: web.Application, job: dict) -> None:
+    """Refuse what the job's harness can't take, with the launcher's defaults filled in as it
+    fills them. Without a catalog this is left to the launcher, which checks again anyway."""
+    try:
+        found = await fetch_catalog(app)
+    except RuntimeError as e:
+        logging.warning("can't check harness settings: %s", e)
+        return
+    harness = job.get("harness") or found.get("default_harness")
+    defaults = found.get("defaults", {}).get(harness, {})
+    settings = {k: job.get(k) or defaults.get(k) for k in ("backend", "effort", "context_window")}
+    try:
+        check_harness(found.get("options", {}), harness, **settings)
+    except JobError as e:
+        raise RequestError(400, str(e))
+
+
 async def get_catalog(request: web.Request) -> web.Response:
     """The harnesses and backends the dejima host offers, for clients to show."""
     _client(request)
     try:
-        code, out, err = await run_remote(request.app[CONFIG], ["catalog"])
+        found = await fetch_catalog(request.app)
     except RuntimeError as e:
         return web.json_response({"error": f"catalog failed: {e}"}, status=502)
-    if code:
-        return web.json_response({"error": err or f"launcher exited {code}"}, status=502)
-    return web.json_response(describe_catalog(json.loads(out), request.app[CONFIG]["catalog"]))
+    return web.json_response(describe_catalog(found, request.app[CONFIG]["catalog"]))
 
 
 def describe_catalog(found: dict, catalog: dict) -> dict:
     """The launcher's catalog, with what each installed harness can be set to:
     its backends, effort levels, whether it takes a context window, its defaults,
-    and the operator's models for each backend."""
+    and the operator's models for each backend it can use."""
     options = {}
-    for harness in found.get("harnesses", []):
-        known = HARNESSES.get(harness, {})
-        backends = [b for b in found.get("backends", []) if b in known.get("backends", found.get("backends", []))]
-        options[harness] = {
-            "backends": backends,
-            "efforts": list(known.get("efforts", EFFORTS)),
-            "context_window": known.get("context_window", True),
-            "defaults": found.get("defaults", {}).get(harness, {}),
-            "models": {b: models for b, models in catalog.get(harness, {}).items() if b in backends},
-        }
+    for harness, known in found.get("options", {}).items():
+        models = {b: models for b, models in catalog.get(harness, {}).items() if b in known["backends"]}
+        if not known["context_window"]:
+            models = {b: [{"id": m["id"]} for m in ms] for b, ms in models.items()}
+        options[harness] = {**known, "defaults": found.get("defaults", {}).get(harness, {}), "models": models}
     return {**found, "options": options}
 
 
@@ -1035,6 +1059,7 @@ def make_app(config: dict, poll: bool = True) -> web.Application:
     app[SHARE_ERRORS] = {}
     app[EXPIRE_FAILED] = set()
     app[STATUS_CACHE] = {}
+    app[CATALOG_CACHE] = {}
     app.router.add_post("/v1/tasks", create_task)
     app.router.add_post("/v1/selftest", create_selftest)
     app.router.add_get("/v1/events", list_events)

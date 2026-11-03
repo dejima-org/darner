@@ -115,7 +115,7 @@ def dejima_argv(args: argparse.Namespace, job, task_dir: Path, dejima: str) -> l
     effort = job.effort or dict(args.effort).get(harness)
     context_window = job.context_window or dict(args.context_window).get(harness)
     # Checked again with the defaults filled in, which the API doesn't know.
-    check_harness(harness, backend, effort, context_window and int(context_window))
+    check_harness(harness_options(dejima_root(dejima)), harness, backend, effort, context_window and int(context_window))
     argv = [dejima, "--isolated", "--no-pause", "--shared-path-file", str(task_dir / "shared-path")]
     if args.keep_records:
         argv.append("--keep-records")
@@ -1165,28 +1165,73 @@ def stop(args: argparse.Namespace, task_id: str) -> None:
     subprocess.run([args.tmux, "kill-window", "-t", target], env=_tmux_env(), capture_output=True)
 
 
-def catalog(args: argparse.Namespace) -> dict:
-    """The harnesses and backends the configured dejima has, and this launcher's defaults for each harness.
+def dejima_root(dejima: str) -> Path:
+    """Where dejima keeps each harness and backend, as a directory holding a harness.conf or backend.conf."""
+    return Path(dejima).resolve().parent.parent
 
-    dejima keeps each as a directory beside its executable, holding a
-    harness.conf or backend.conf.
-    """
+
+# dejima's directory for each kind.
+PROVIDER_DIRS = {"harness": "harnesses", "backend": "backends"}
+
+
+def _names(root: Path, kind: str) -> list[str]:
+    directory = root / PROVIDER_DIRS[kind]
+    if not directory.is_dir():
+        return []
+    return sorted(p.name for p in directory.iterdir() if valid_name(p.name) and (p / f"{kind}.conf").is_file())
+
+
+def _manifest(path: Path) -> dict[str, str]:
+    """A dejima manifest's key = value lines."""
+    found = {}
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if line and line[0] not in "#;" and "=" in line:
+            key, value = line.split("=", 1)
+            found[key.strip()] = value.strip()
+    return found
+
+
+def harness_options(root: Path) -> dict:
+    """What each of dejima's harnesses can be set to, as its manifests declare: the
+    backends speaking one of its api_styles (any, if it names none), the levels of
+    its effort enum, and whether it has a context_window key."""
+    styles = {b: _manifest(root / "backends" / b / "backend.conf").get("api_style") for b in _names(root, "backend")}
+    options = {}
+    for harness in _names(root, "harness"):
+        manifest = _manifest(root / "harnesses" / harness / "harness.conf")
+        speaks = manifest.get("api_styles", "").split()
+        keys = dict(k.split(":", 1) if ":" in k else (k, "") for k in manifest.get("keys", "").split())
+        effort = keys.get("effort", "").lstrip("?").split("=", 1)[0]
+        if "effort" not in keys:
+            efforts = []
+        elif effort.startswith("enum:"):
+            efforts = effort[len("enum:"):].split("|")
+        else:
+            efforts = None  # not an enum, so any level is dejima's to check
+        options[harness] = {
+            "backends": [b for b, style in styles.items() if not speaks or style in speaks],
+            "efforts": efforts,
+            "context_window": "context_window" in keys,
+        }
+    return options
+
+
+def catalog(args: argparse.Namespace) -> dict:
+    """The harnesses and backends the configured dejima has, what each harness can be
+    set to, and this launcher's defaults for each harness."""
     dejima = shutil.which(args.dejima)
     if dejima is None:
         raise RuntimeError(f"{args.dejima} not found on PATH; pass --dejima with its full path")
-    root = Path(dejima).resolve().parent.parent
-
-    def names(kind: str) -> list[str]:
-        directory = root / f"{kind}s"
-        if not directory.is_dir():
-            return []
-        return sorted(p.name for p in directory.iterdir() if valid_name(p.name) and (p / f"{kind}.conf").is_file())
-
+    root = dejima_root(dejima)
     defaults = {}
     for key in ("backend", "model", "effort", "context_window"):
         for harness, value in getattr(args, key):
             defaults.setdefault(harness, {})[key] = int(value) if key == "context_window" else value
-    return {"harnesses": names("harness"), "backends": names("backend"), "default_harness": args.harness, "defaults": defaults}
+    return {
+        "harnesses": _names(root, "harness"), "backends": _names(root, "backend"), "default_harness": args.harness,
+        "defaults": defaults, "options": harness_options(root),
+    }
 
 
 def command(args: argparse.Namespace) -> list[str]:

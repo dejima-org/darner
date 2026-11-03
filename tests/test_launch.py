@@ -47,10 +47,29 @@ def env(tmp_path, monkeypatch):
     bin_dir.mkdir()
     (bin_dir / "dejima").write_text(FAKE_DEJIMA)
     (bin_dir / "dejima").chmod(0o755)
+    install_manifests(tmp_path)
     monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
     monkeypatch.setenv("FAKE_TMUX_LOG", str(tmp_path / "tmux.log"))
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "run"))
     return tmp_path
+
+
+# What dejima's own manifests declare that the launcher reads.
+MANIFESTS = {
+    ("harness", "claude-code"): "# Anthropic only\napi_styles = anthropic\nkeys = backend:?provider:backend model:?modelid effort:?enum:low|medium|high|xhigh\n",
+    ("harness", "cline"): "api_styles = anthropic openai\nkeys = model:?modelid context_window:?int:512:100000000 effort:?enum:none|low|medium|high|xhigh\n",
+    ("backend", "anthropic"): "api_style = anthropic\n",
+    ("backend", "anthropic-api-key"): "api_style       = anthropic\n",
+    ("backend", "openrouter"): "api_style = openai\n",
+    ("backend", "self-hosted"): "; served by the operator\napi_style = openai\n",
+}
+
+
+def install_manifests(root: Path, manifests: dict = MANIFESTS) -> None:
+    for (kind, name), text in manifests.items():
+        directory = root / {"harness": "harnesses", "backend": "backends"}[kind] / name
+        directory.mkdir(parents=True)
+        (directory / f"{kind}.conf").write_text(text)
 
 
 def args(tmp_path: Path, *extra: str):
@@ -130,7 +149,7 @@ def test_harness_and_backend_resolution(env, job, expected):
 
 @pytest.mark.parametrize("job,defaults", [
     ({"backend": "openrouter"}, ["--harness", "claude-code"]),
-    ({"harness": "cline"}, ["--harness", "claude-code", "--backend", "cline=anthropic"]),
+    ({"harness": "claude-code"}, ["--backend", "claude-code=openrouter"]),
     ({"effort": "none"}, ["--harness", "claude-code"]),
     ({"context_window": 120000}, ["--harness", "claude-code"]),
 ])
@@ -1147,7 +1166,7 @@ def test_model_and_effort_resolution(env, job, expected):
 
 
 @pytest.mark.parametrize("option, value", [
-    ("--model", "claude-code=bad value"), ("--effort", "claude-code=max"),
+    ("--model", "claude-code=bad value"), ("--effort", "claude-code=Max"),
     ("--context-window", "cline=511"), ("--context-window", "cline=３２７６８"), ("--context-window", "cline=lots"),
 ])
 def test_bad_per_harness_defaults_are_refused(env, option, value):
@@ -1228,9 +1247,10 @@ def test_catalog_lists_what_dejima_has(env):
     (root / "bin").mkdir(parents=True)
     (root / "bin" / "dejima").write_text("#!/bin/sh\n")
     (root / "bin" / "dejima").chmod(0o755)
-    for kind, name in (("harness", "claude-code"), ("harness", "cline"), ("backend", "anthropic"), ("backend", "self-hosted")):
-        (root / f"{kind}s" / name).mkdir(parents=True)
-        (root / f"{kind}s" / name / f"{kind}.conf").write_text("")
+    install_manifests(root, {
+        **{k: v for k, v in MANIFESTS.items() if k[1] not in ("anthropic-api-key", "openrouter")},
+        ("harness", "any"): "keys = model:?modelid effort:?word\n",
+    })
     (root / "backends" / "notes").mkdir()
     code, out, _ = run(
         args(env), "--dejima", str(root / "bin" / "dejima"), "--harness", "claude-code", "--backend", "cline=self-hosted",
@@ -1238,9 +1258,22 @@ def test_catalog_lists_what_dejima_has(env):
     )
     assert code == 0
     assert json.loads(out) == {
-        "harnesses": ["claude-code", "cline"], "backends": ["anthropic", "self-hosted"], "default_harness": "claude-code",
+        "harnesses": ["any", "claude-code", "cline"], "backends": ["anthropic", "self-hosted"], "default_harness": "claude-code",
         "defaults": {"cline": {"backend": "self-hosted", "model": "qwen3.5-4b", "context_window": 120000}, "claude-code": {"effort": "high"}},
+        "options": {
+            # No api_styles takes any backend, and an effort that isn't an enum is dejima's to check.
+            "any": {"backends": ["anthropic", "self-hosted"], "efforts": None, "context_window": False},
+            "claude-code": {"backends": ["anthropic"], "efforts": ["low", "medium", "high", "xhigh"], "context_window": False},
+            "cline": {
+                "backends": ["anthropic", "self-hosted"], "efforts": ["none", "low", "medium", "high", "xhigh"], "context_window": True,
+            },
+        },
     }
+
+
+def test_a_harness_dejima_has_no_manifest_for_is_left_to_dejima(env):
+    launch(args(env), {"id": "dn-abc23", "prompt": "p", "harness": "other", "backend": "anything", "effort": "max"})
+    assert "--effort" in written_argv(env, "dn-abc23")
 
 
 def b64(data: bytes) -> str:

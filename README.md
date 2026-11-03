@@ -437,7 +437,7 @@ The note is the task. The rest of the reply, minus the mention and the keyword l
 | `context_window:` | context window for this task, in tokens, for a harness that has the setting (cline). Set it a little under what the model's server allows, so cline compacts before the server refuses |
 | `network:` | `named`: the session reaches only what this task names and its model, not dejima's own allowlist (dejima's `--drop-domains`). `sealed`: that, and the session doesn't start if it could look up any name, so only addresses are reachable (`--require-sealed`). A sealed session needs its model reached by address, such as a self-hosted one, and a domain request can't grant it a name later |
 
-darner knows which backends and settings each of dejima's harnesses can take, and refuses a task asking for one its harness can't: claude-code uses `anthropic` or `anthropic-api-key` and has no `none` effort or context window, and cline uses `anthropic-api-key`, `openrouter` or `self-hosted`. A harness darner doesn't know is left to dejima's own checks.
+darner refuses a task asking for a backend, effort level or context window its harness can't take, as dejima's own manifests declare them: the backends speaking one of the harness's `api_styles`, the levels of its `effort` key, and whether it has a `context_window` key. The API checks against the launcher's catalog, fetched at most every five minutes, and the launcher checks again with its defaults filled in.
 
 The bot replies with the task id and its tmux target, plus a link to the session if the API has `remote_access_url` set, or with why it was refused. It only acts when both the reply and the note are from users in its `allowlist`, since the note becomes the agent's instructions.
 
@@ -564,7 +564,7 @@ Grants use `dejima --domains FILE` and `--dependencies FILE`, and output collect
 | `[tokens]` | one bearer token per frontend, by name. Each must be at least 32 characters, differ from the others and from `examples/api.toml`'s placeholder, or the API won't start; `openssl rand -hex 32` makes one. A token can do everything its frontend can, so see [SECURITY.md](SECURITY.md) before adding one |
 | `[policy]` | applied at launch and to every domain request; a misspelled key stops the API. `deny_domains`: refused, with their subdomains and parents. `allow_domains`: if set, only these and their subdomains. `max_domains`: also caps what a session gains through requests. `allow_internal` (default true): false refuses internal grants. `max_internal_domains`. `allow_dependency_kinds` (default `apt`, `cargo`, `npm`, `pip`): `tarball` is left out unless listed, since it has the dejima host fetch any URL on its own network |
 | `[limits]` | `max_bytes`, `max_files`: should match the launcher's `--max-output` |
-| `[catalog.HARNESS.BACKEND]` | `models`: the models to offer for that harness and backend, each an id or `{ id = "...", context_window = N }`, which fills in the context window when it's picked. Frontends offer them, and still take a model that isn't listed. A pair or context window the harness can't take stops the API |
+| `[catalog.HARNESS.BACKEND]` | `models`: the models to offer for that harness and backend, each an id or `{ id = "...", context_window = N }`, which fills in the context window when it's picked. Frontends offer them, and still take a model that isn't listed. A backend the harness can't use isn't offered, nor a context window if it takes none |
 
 ### API endpoints
 

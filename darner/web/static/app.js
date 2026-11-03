@@ -135,7 +135,7 @@ if (agent) {
   function update() {
     const o = offered();
     fill(backend, o.backends, named(o.defaults.backend));
-    fill(effort, o.efforts, named(o.defaults.effort));
+    fill(effort, o.efforts ?? allEfforts, named(o.defaults.effort));
     const ids = listed();
     models.replaceChildren(...ids.map((m) => new Option(m.context_window ? `${m.context_window} tokens` : "", m.id)));
     model.placeholder = named(o.defaults.model);
