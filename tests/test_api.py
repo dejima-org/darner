@@ -945,6 +945,23 @@ async def test_settings_the_harness_can_t_take_are_refused(client, tmp_path, set
     assert launched(tmp_path) == []
 
 
+async def test_config_sets_that_disagree_are_refused_unless_the_request_settles_it(client, config, tmp_path):
+    configs = Path(config["blurbs_dir"]).parent / "configs"
+    configs.mkdir()
+    (configs / "hosted").write_text("harness: cline\nbackend: openrouter\n")
+    (configs / "local").write_text("harness: cline\nbackend: self-hosted\n")
+    for path in ("/v1/tasks/preview", "/v1/tasks"):
+        resp = await client.post(path, json=request(configs=["local", "hosted"]), headers=AUTH)
+        assert resp.status == 400
+        assert (await resp.json())["error"] == (
+            "config sets disagree on backend: local gives self-hosted; hosted gives openrouter. Set backend for the task to choose"
+        )
+    assert launched(tmp_path) == []
+    resp = await client.post("/v1/tasks", json=request(configs=["local", "hosted"], backend="openrouter"), headers=AUTH)
+    assert resp.status == 201
+    assert (launched(tmp_path)[0]["harness"], launched(tmp_path)[0]["backend"]) == ("cline", "openrouter")
+
+
 async def test_a_config_set_s_harness_is_held_to_its_backends(client, config, tmp_path):
     configs = Path(config["blurbs_dir"]).parent / "configs"
     configs.mkdir()
