@@ -792,6 +792,15 @@ def test_stop_without_the_container_of_a_running_session_leaves_dejima(env, shar
         running.wait()
 
 
+def test_stop_of_a_session_whose_dejima_is_gone_closes_its_window(env, share, docker):
+    a, _ = share
+    (env / "tasks" / "dn-abc23" / "pid").write_text("999999999 1")
+    (env / "tmux.log").write_text("")
+    code, _, err = run(a, "--docker", str(docker), "--stop-timeout", "0", "stop", "dn-abc23")
+    assert code == 0, err
+    assert tmux_calls(env) == [["kill-window", "-t", "@7"]]
+
+
 def test_a_reused_pid_is_not_dejima_s(env, share):
     from darner import launch as launch_module
 
@@ -1032,6 +1041,18 @@ def test_allow_matches_whole_entries(env, allow_env):
     data = {"requester": "@a:example.org", "domains": entries("corp.example.com", "recipes.example.com")}
     assert json.loads(decide(a, "allow", 1, data)[1])["granted"] == ["corp.example.com"]
     assert allow_calls(env) == [["--container", "c0ffee", "corp.example.com"]]
+
+
+@pytest.mark.parametrize("entry", [
+    {"domain": ["pypi.org"], "internal": False, "port": None}, {"domain": "pypi.org", "internal": 0, "port": None},
+    {"domain": "pypi.org", "internal": False, "port": "443"}, "pypi.org",
+])
+def test_allow_refuses_malformed_entries(env, allow_env, entry):
+    a, shared = allow_env
+    request_domains(a, shared, "pypi.org\n")
+    code, _, err = decide(a, "allow", 1, {"requester": "@a:example.org", "domains": [entry]})
+    assert code == 1 and "entries with domain, internal and port" in err and "Traceback" not in err
+    assert allow_calls(env) == []
 
 
 def test_internal_limit_counts_launch_domains_and_earlier_grants(env, allow_env):

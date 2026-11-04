@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from darner.api import POLL_LOCK, STATUS_CACHE, STORE, make_app, poll_once
+from darner.api import COLLECT_TRIES, KEPT_ZIPS, POLL_LOCK, STATUS_CACHE, STORE, make_app, poll_once
 from darner.archive import MANIFEST_SLACK
 from darner.store import Store
 from tests.test_launch import FAKE_TMUX
@@ -317,6 +317,18 @@ async def test_an_acked_output_s_zip_is_deleted(started, tmp_path):
     assert (tmp_path / "results" / task_id / f"{event['seq']}.zip").is_file()
     assert (await client.post(f"/v1/events/{event['seq']}/ack", headers=AUTH)).status == 204
     assert not (tmp_path / "results" / task_id / f"{event['seq']}.zip").exists()
+
+
+async def test_only_a_task_s_latest_zips_are_kept(started, tmp_path):
+    app, client, task_id, status, output = started
+    status()
+    for i in range(KEPT_ZIPS + 2):
+        output(zip_bytes([("RESULT.md", f"take {i}")]))
+        await poll_once(app)
+    seqs = sorted(e["seq"] for e in await events(client) if e["type"] == "output")
+    assert len(seqs) == KEPT_ZIPS + 2
+    kept = sorted(int(p.stem) for p in (tmp_path / "results" / task_id).glob("*.zip"))
+    assert kept == seqs[-KEPT_ZIPS:]
 
 
 async def test_ready_output_becomes_event_and_download(started, tmp_path):
@@ -1433,6 +1445,10 @@ async def test_output_that_can_never_be_fetched_ends_the_task_after_max_session_
     await poll_once(app)
     assert app[STORE].launched() == [task_id]
     age_task(app, task_id, 86401)
+    # A few polls' grace, for a session expire stopped, whose last output is still to come.
+    for _ in range(COLLECT_TRIES - 1):
+        await poll_once(app)
+    assert app[STORE].launched() == [task_id]
     await poll_once(app)
     assert app[STORE].launched() == []
     [ended] = [e for e in await events(client) if e["id"] == task_id]
@@ -1726,7 +1742,8 @@ async def test_output_that_could_never_be_fetched_keeps_the_share(started, tmp_p
     status(state="exited")
     monkeypatch.setenv("STUB_FETCH_CODE", "1")
     age_task(app, task_id, 86401)
-    await poll_once(app)
+    for _ in range(COLLECT_TRIES):
+        await poll_once(app)
     assert forgets(tmp_path, task_id) == ["forget"]
 
 
@@ -1760,7 +1777,8 @@ async def test_a_collection_that_always_fails_still_expires(started, tmp_path, m
 
     monkeypatch.setattr(darner.api, "collect", broken)
     age_task(app, task_id, 86401)
-    await poll_once(app)
+    for _ in range(COLLECT_TRIES):
+        await poll_once(app)
     assert app[STORE].task_status("maubot", task_id) == "ended"
 
 
@@ -1864,6 +1882,15 @@ async def test_a_poll_already_running_is_the_check(started, monkeypatch):
         assert not check.done()
     # Answered once the running poll is done, without another.
     assert (await check).status == 200 and polled == []
+
+
+async def test_launcher_over_the_cap_is_given_up_with_what_it_started():
+    from darner.api import run_remote
+
+    writer = "(sleep 30; echo late) & head -c 5000000 /dev/zero"
+    config = {"launch_command": ["sh", "-c", writer], "limits": {"max_bytes": 1}, "launch_timeout": 30}
+    with pytest.raises(RuntimeError, match="more than"):
+        await asyncio.wait_for(run_remote(config, []), 5)
 
 
 async def test_launcher_over_the_cap_is_given_up_not_waited_on():

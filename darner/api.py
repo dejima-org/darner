@@ -11,6 +11,7 @@ import logging
 import os
 import re
 import shutil
+import signal
 import sys
 import tempfile
 import time
@@ -107,6 +108,12 @@ MAX_TEXT = 32 * 1024
 CONFIG = web.AppKey("config", dict)
 STORE = web.AppKey("store", Store)
 SHARE_ERRORS = web.AppKey("share_errors", dict)
+# Polls an exited task's output went uncollected, by task.
+UNCOLLECTED = web.AppKey("uncollected", dict)
+# Polls an exited task past max_session_age gets to deliver its output before it's ended without it.
+COLLECT_TRIES = 3
+# Output zips kept for each task.
+KEPT_ZIPS = 5
 EXPIRE_FAILED = web.AppKey("expire_failed", set)
 STATUS_CACHE = web.AppKey("status_cache", dict)
 CATALOG_CACHE = web.AppKey("catalog_cache", dict)
@@ -392,9 +399,11 @@ async def run_remote(config: dict, args: list[str], stdin: bytes = b"") -> tuple
     timeout = config.get("launch_timeout", 120)
     cap = _limits(config).max_bytes + archive.MANIFEST_SLACK
     try:
+        # In a session of its own, so a failure ends anything it started, which could hold the pipes open.
         proc = await asyncio.create_subprocess_exec(
             *config["launch_command"], *args,
             stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            start_new_session=True,
         )
     except OSError as e:
         # The reason names launch_command's path, and errors reach chat.
@@ -419,7 +428,8 @@ async def run_remote(config: dict, args: list[str], stdin: bytes = b"") -> tuple
     try:
         out, err = await asyncio.wait_for(communicate(), timeout)
     except (asyncio.TimeoutError, RuntimeError) as e:
-        proc.kill()
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(proc.pid, signal.SIGKILL)
         for reader in readers:
             reader.cancel()
         await asyncio.gather(*readers, return_exceptions=True)
@@ -471,6 +481,11 @@ async def collect(app: web.Application, task_id: str, signalled: bool = True) ->
     except OSError:
         store.remove_event(seq)
         raise
+    # A frontend may not collect until the session ends, so a session repeating
+    # .done can't fill the disk: only its latest zips are kept.
+    stored = sorted(int(p.stem) for p in task_dir.glob("*.zip") if p.stem.isdigit())
+    for old in stored[:-KEPT_ZIPS]:
+        (task_dir / f"{old}.zip").unlink(missing_ok=True)
     return True
 
 
@@ -640,9 +655,13 @@ async def poll_once(app: web.Application) -> None:
         elif task["state"] == "exited" and config["max_session_age"] and (
             time.time() - store.created(task["id"]) > config["max_session_age"]
         ):
-            # Its output can't be fetched, so it would otherwise be polled forever.
-            end_task(app, task["id"], "its output couldn't be collected")
-            await forget(app, task["id"])
+            # Its output can't be fetched, so it would otherwise be polled forever. A
+            # session expire stopped is always this old, so its last output gets a few polls.
+            tries = app[UNCOLLECTED][task["id"]] = app[UNCOLLECTED].get(task["id"], 0) + 1
+            if tries >= COLLECT_TRIES:
+                app[UNCOLLECTED].pop(task["id"])
+                end_task(app, task["id"], "its output couldn't be collected")
+                await forget(app, task["id"])
 
 
 async def _poll_forever(app: web.Application) -> None:
@@ -1253,6 +1272,7 @@ def make_app(config: dict, poll: bool = True) -> web.Application:
             raise ValueError(f"default blurb {name!r} has no {name}.md in {config['blurbs_dir']}")
     app[STORE].fail_pending()
     app[SHARE_ERRORS] = {}
+    app[UNCOLLECTED] = {}
     app[EXPIRE_FAILED] = set()
     app[STATUS_CACHE] = {}
     app[CATALOG_CACHE] = {}

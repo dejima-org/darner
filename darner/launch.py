@@ -1114,9 +1114,13 @@ def allow_domains(args: argparse.Namespace, task_id: str, number: int, data: obj
     request = _claim_domain_request(task_dir, task_id, number)
     # Matched as whole entries: a name approved plain doesn't grant it internal,
     # or on any port but the one shown.
-    approved = {
-        (d.get("domain"), d.get("internal"), d.get("port")) for d in data["domains"] if isinstance(d, dict)
-    }
+    if not all(
+        isinstance(d, dict) and isinstance(d.get("domain"), str) and type(d.get("internal")) is bool
+        and (d.get("port") is None or type(d["port"]) is int)
+        for d in data["domains"]
+    ):
+        raise ValueError("allow's domains must be entries with domain, internal and port")
+    approved = {(d["domain"], d["internal"], d.get("port")) for d in data["domains"]}
     # The session's limits cover every domain it holds: those it launched with
     # and every grant since, so repeated requests can't add up past them.
     held_file = task_dir / "domains-granted"
@@ -1192,7 +1196,7 @@ def stop(args: argparse.Namespace, task_id: str) -> None:
     containers = _session_containers(args, task_dir)
     if containers:
         subprocess.run([args.docker, "stop", *containers], capture_output=True)
-    elif _state(task_dir) == "running":
+    elif _state(task_dir) == "running" and _dejima_pid(task_dir):
         # Ending dejima would leave its container running, unstopped and forgotten.
         raise RuntimeError(f"couldn't find {task_id}'s container")
     elif pid := _dejima_pid(task_dir):
