@@ -61,9 +61,10 @@
 </section>
 {% if session %}
 <section class="panel">
-<form method="post" data-action="/sessions/{{ task_id }}/message">
+<form method="post" data-action="/sessions/{{ task_id }}/message" data-sent="Sent. It won't appear on this page.">
 <label for="message">{% if session.waiting.answer is not none %}Answer its help request{% else %}Send it a message{% endif %}</label>
-<textarea id="message" name="text" rows="3" required></textarea>
+<textarea id="message" name="text" rows="3" required aria-describedby="message-note"></textarea>
+<p class="quiet" id="message-note">What you send is typed into the session and not kept, so it won't appear here.</p>
 <button type="submit">Send</button>
 </form>
 <form method="post" data-upload="/sessions/{{ task_id }}/files">

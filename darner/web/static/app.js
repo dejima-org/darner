@@ -110,8 +110,10 @@ for (const form of document.querySelectorAll("form[data-action]")) {
     const json = { "Content-Type": "application/json" };
     const sent = await send(form.dataset.action, { headers: json, body: JSON.stringify(fields(form)) }, form);
     if (sent) form.reset();
-    if (sent === true) location.reload();
-    if (!sent) {
+    if (sent === true && !form.dataset.sent) location.reload();
+    else if (sent !== "moved") {
+      // A message isn't kept, so a reload wouldn't show it was sent: it's said instead.
+      if (sent) show(form, form.dataset.sent, true);
       done();
       button.disabled = false;
     }
