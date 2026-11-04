@@ -105,7 +105,7 @@ async def test_the_actions_work_under_the_csp(aiohttp_server):
     posted = [(path, body) for method, path, body in api.calls if method == "POST"]
     assert ("/v1/tasks/dn-aaaaa/message", {"text": "use postgres", "requester": "web"}) in posted
     # A message isn't kept, so the page says it was sent rather than reloading.
-    assert result["sent"] == {"alert": "Sent. It won't appear on this page.", "ok": True, "field": ""}
+    assert result["sent"] == {"note": "Sent.", "field": ""}
     [task] = [body for path, body in posted if path == "/v1/tasks"]
     assert task["task"] == "add this recipe" and task["blurbs"] == ["mealie"] and task["grants"]["domains"] == ["allrecipes.example.org"]
     assert (task["harness"], task["backend"], task["model"], task["name"]) == ("cline", "openrouter", "z-ai/glm-5.3", "recipes")
