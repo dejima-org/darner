@@ -1167,8 +1167,9 @@ def allow_domains(args: argparse.Namespace, task_id: str, number: int, data: obj
     ):
         raise ValueError("allow's domains must be entries with domain, internal and port")
     approved = {(d["domain"], d["internal"], d.get("port")) for d in data["domains"]}
-    request = _claim_domain_request(task_dir, task_id, number)
+    # Locked before claiming, so an approval killed while it waits leaves the request to approve again.
     with _domains_lock(task_dir, "grants.lock"):
+        request = _claim_domain_request(task_dir, task_id, number)
         granted, failed, unverified = _grant(task_dir, request, approved, containers[0], dejima_allow, limit, internal_limit)
     granted = [e["domain"] for e in granted]
     requester = " ".join(archive.clean_text(data["requester"].encode(), 255).split())
