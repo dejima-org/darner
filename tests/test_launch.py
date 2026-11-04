@@ -811,6 +811,9 @@ def test_a_reused_pid_is_not_dejima_s(env, share):
         assert launch_module._dejima_pid(env / "tasks" / "dn-abc23") is None
         (env / "tasks" / "dn-abc23" / "pid").write_text(f"{other.pid} {launch_module._start_time(other.pid)}")
         assert launch_module._dejima_pid(env / "tasks" / "dn-abc23") == other.pid
+        # Recorded without a start time when it couldn't be read, so any live pid matches.
+        (env / "tasks" / "dn-abc23" / "pid").write_text(str(other.pid))
+        assert launch_module._dejima_pid(env / "tasks" / "dn-abc23") == other.pid
     finally:
         other.kill()
         other.wait()
@@ -1053,6 +1056,17 @@ def test_allow_refuses_malformed_entries(env, allow_env, entry):
     code, _, err = decide(a, "allow", 1, {"requester": "@a:example.org", "domains": [entry]})
     assert code == 1 and "entries with domain, internal and port" in err and "Traceback" not in err
     assert allow_calls(env) == []
+    assert (a.tasks_dir / "dn-abc23" / "domains-pending").exists()
+
+
+def test_grants_are_made_under_a_lock(env, allow_env):
+    # So a second approval, of a request filed once the first was claimed, counts the first's grants.
+    a, shared = allow_env
+    lock, log = a.tasks_dir / "dn-abc23" / "grants.lock", env / "lock.log"
+    (env / "bin" / "dejima-allow").write_text(f"#!/bin/sh\nflock -n {lock} true && echo free >> {log} || echo held >> {log}\n")
+    request_domains(a, shared, "pypi.org\n")
+    assert decide(a, "allow", 1, {"requester": "@a:example.org", "domains": entries("pypi.org")})[0] == 0
+    assert log.read_text() == "held\n"
 
 
 def test_internal_limit_counts_launch_domains_and_earlier_grants(env, allow_env):

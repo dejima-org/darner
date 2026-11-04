@@ -153,6 +153,10 @@ class Store:
             return None
         return json.loads(row[1]).get("zip_sha256")
 
+    def drop_zip(self, seq: int) -> None:
+        """Say an output's zip is gone, so it isn't offered. Its summary stays."""
+        self.db.execute("UPDATE events SET size = 0 WHERE seq = ?", (seq,))
+
     def kept_outputs(self, task_id: str) -> set[int]:
         rows = self.db.execute("SELECT seq FROM events WHERE task_id = ? AND type = 'output' AND acked = 0", (task_id,))
         return {r[0] for r in rows}

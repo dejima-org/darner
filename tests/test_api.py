@@ -329,6 +329,8 @@ async def test_only_a_task_s_latest_zips_are_kept(started, tmp_path):
     assert len(seqs) == KEPT_ZIPS + 2
     kept = sorted(int(p.stem) for p in (tmp_path / "results" / task_id).glob("*.zip"))
     assert kept == seqs[-KEPT_ZIPS:]
+    # The older outputs keep their summaries, and aren't offered as zips.
+    assert [e["size"] > 0 for e in await events(client) if e["type"] == "output"] == [False] * 2 + [True] * KEPT_ZIPS
 
 
 async def test_ready_output_becomes_event_and_download(started, tmp_path):
@@ -1764,6 +1766,13 @@ async def test_a_failed_forget_of_a_delivered_share_is_retried_with_its_zip(star
     status(state="exited", ready=False)
     await poll_once(app)
     assert forgets(tmp_path, task_id) == ["forget-delivered", "forget-delivered"]
+    # Once the launcher stops listing it, an ended task isn't polled for.
+    (tmp_path / "status.json").write_text("[]")
+    count = tmp_path / "status-count"
+    monkeypatch.setenv("STUB_STATUS_COUNT", str(count))
+    await poll_once(app)
+    await poll_once(app)
+    assert count.read_text().count("status") == 1
 
 
 async def test_a_collection_that_always_fails_still_expires(started, tmp_path, monkeypatch):

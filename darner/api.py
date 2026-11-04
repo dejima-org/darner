@@ -110,6 +110,7 @@ STORE = web.AppKey("store", Store)
 SHARE_ERRORS = web.AppKey("share_errors", dict)
 # Polls an exited task's output went uncollected, by task.
 UNCOLLECTED = web.AppKey("uncollected", dict)
+FORGOTTEN = web.AppKey("forgotten", set)
 # Polls an exited task past max_session_age gets to deliver its output before it's ended without it.
 COLLECT_TRIES = 3
 # Output zips kept for each task.
@@ -486,6 +487,7 @@ async def collect(app: web.Application, task_id: str, signalled: bool = True) ->
     stored = sorted(int(p.stem) for p in task_dir.glob("*.zip") if p.stem.isdigit())
     for old in stored[:-KEPT_ZIPS]:
         (task_dir / f"{old}.zip").unlink(missing_ok=True)
+        store.drop_zip(old)
     return True
 
 
@@ -599,7 +601,9 @@ async def forget(app: web.Application, task_id: str, delivered: str | None = Non
 async def poll_once(app: web.Application) -> None:
     config, store = app[CONFIG], app[STORE]
     purge(app)
-    ours, ended = set(store.launched()), set(store.ended())
+    # An ended task the launcher has stopped listing needs nothing more from it.
+    app[FORGOTTEN].intersection_update(store.ended())
+    ours, ended = set(store.launched()), set(store.ended()) - app[FORGOTTEN]
     if not ours and not ended:
         return
     code, out, err = await launcher_status(app, 0)
@@ -607,6 +611,7 @@ async def poll_once(app: web.Application) -> None:
         log.warning("status failed: %s", err or f"exit {code}")
         return
     listed = json.loads(out)
+    app[FORGOTTEN].update(ended - {task["id"] for task in listed})
     # A task the launcher no longer lists can never report ending, such as one
     # whose task directory was removed, so it's ended once it's past its age.
     gone = ours - {task["id"] for task in listed}
@@ -1147,7 +1152,7 @@ async def get_blurb(request: web.Request) -> web.Response:
     _client(request)
     blurbs_dir, name = Path(request.app[CONFIG]["blurbs_dir"]), request.match_info["name"]
     if name not in available_blurbs(blurbs_dir):
-        raise _not_found(f"no blurb {name}")
+        raise _not_found("no such blurb")
     return web.json_response(load_blurbs(blurbs_dir, [name])[0][1])
 
 
@@ -1273,6 +1278,7 @@ def make_app(config: dict, poll: bool = True) -> web.Application:
     app[STORE].fail_pending()
     app[SHARE_ERRORS] = {}
     app[UNCOLLECTED] = {}
+    app[FORGOTTEN] = set()
     app[EXPIRE_FAILED] = set()
     app[STATUS_CACHE] = {}
     app[CATALOG_CACHE] = {}

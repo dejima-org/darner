@@ -309,7 +309,8 @@ def run_session(args: argparse.Namespace, task_dir: Path) -> int:
         delivery.start()
     try:
         proc = subprocess.Popen(dejima)
-        (task_dir / "pid").write_text(f"{proc.pid} {_start_time(proc.pid)}")
+        started = _start_time(proc.pid)
+        (task_dir / "pid").write_text(f"{proc.pid} {started}" if started else str(proc.pid))
         code = proc.wait()
     except OSError as e:
         print(f"darner: couldn't start {dejima[0]}: {e}", file=sys.stderr)
@@ -902,9 +903,9 @@ def _session_containers(args: argparse.Namespace, task_dir: Path) -> list[str]:
 
 
 @contextlib.contextmanager
-def _domains_lock(task_dir: Path):
+def _domains_lock(task_dir: Path, name: str = "domains.lock"):
     """Serialise writing and deciding domain requests, so a decision sees one request whole."""
-    with open(task_dir / "domains.lock", "w") as lock:
+    with open(task_dir / name, "w") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         yield
 
@@ -1091,6 +1092,52 @@ def _tell_agent(args: argparse.Namespace, task_dir: Path, task_id: str, message:
     return True
 
 
+def _grant(task_dir: Path, request: dict, approved: set, container: str, dejima_allow: str, limit, internal_limit):
+    """Allow a request's approved entries, within the session's limits.
+
+    The caller holds grants.lock from reading what's granted to writing it,
+    so two approvals running at once can't each pass the limits on their own.
+    """
+    # The session's limits cover every domain it holds: those it launched with
+    # and every grant since, so repeated requests can't add up past them.
+    held_file = task_dir / "domains-granted"
+    held = json.loads(held_file.read_text()) if held_file.exists() else []
+    launched_with = sum(1 for line in (task_dir / "domains").read_text().splitlines() if line.strip())
+    internal_held = json.loads((task_dir / "argv.json").read_text()).count("--internal-domain") + sum(
+        1 for h in held if isinstance(h, dict) and h["internal"]
+    )
+    granted, failed, unverified = [], [], []
+    for entry in request["domains"]:
+        if (entry["domain"], entry["internal"], entry.get("port")) not in approved:
+            continue
+        if limit is not None and launched_with + len(held) + len(granted) >= limit:
+            failed.append({"domain": entry["domain"], "error": f"over this session's limit of {limit} domains"})
+            continue
+        if entry["internal"] and internal_limit is not None and internal_held >= internal_limit:
+            failed.append({"domain": entry["domain"], "error": f"over this session's limit of {internal_limit} internal domains"})
+            continue
+        argv = [
+            dejima_allow, "--container", container,
+            *(["--internal"] if entry["internal"] else []),
+            *(["--port", str(entry["port"])] if entry.get("port") else []),
+            entry["domain"],
+        ]
+        result = subprocess.run(argv, capture_output=True, text=True)
+        message = archive.clean_text(result.stderr.encode(), 2000)
+        # dejima-allow exits 2 when the permit landed but its check that the
+        # domain answers on 443 failed, which a service on another port fails
+        # spuriously. The domain is allowed either way.
+        if result.returncode in (0, 2):
+            granted.append(entry)
+            internal_held += entry["internal"]
+            if result.returncode == 2:
+                unverified.append({"domain": entry["domain"], "warning": message})
+        else:
+            failed.append({"domain": entry["domain"], "error": message})
+    _write_atomic(held_file, json.dumps(held + granted))
+    return granted, failed, unverified
+
+
 def allow_domains(args: argparse.Namespace, task_id: str, number: int, data: object) -> dict:
     """Grant a domain request to the running session, limited to what the API passes on.
 
@@ -1111,7 +1158,6 @@ def allow_domains(args: argparse.Namespace, task_id: str, number: int, data: obj
     containers = _session_containers(args, task_dir)
     if len(containers) != 1:
         raise RuntimeError(f"couldn't find {task_id}'s container")
-    request = _claim_domain_request(task_dir, task_id, number)
     # Matched as whole entries: a name approved plain doesn't grant it internal,
     # or on any port but the one shown.
     if not all(
@@ -1121,43 +1167,9 @@ def allow_domains(args: argparse.Namespace, task_id: str, number: int, data: obj
     ):
         raise ValueError("allow's domains must be entries with domain, internal and port")
     approved = {(d["domain"], d["internal"], d.get("port")) for d in data["domains"]}
-    # The session's limits cover every domain it holds: those it launched with
-    # and every grant since, so repeated requests can't add up past them.
-    held_file = task_dir / "domains-granted"
-    held = json.loads(held_file.read_text()) if held_file.exists() else []
-    launched_with = sum(1 for line in (task_dir / "domains").read_text().splitlines() if line.strip())
-    internal_held = json.loads((task_dir / "argv.json").read_text()).count("--internal-domain") + sum(
-        1 for h in held if isinstance(h, dict) and h["internal"]
-    )
-    granted, failed, unverified = [], [], []
-    for entry in request["domains"]:
-        if (entry["domain"], entry["internal"], entry.get("port")) not in approved:
-            continue
-        if limit is not None and launched_with + len(held) + len(granted) >= limit:
-            failed.append({"domain": entry["domain"], "error": f"over this session's limit of {limit} domains"})
-            continue
-        if entry["internal"] and internal_limit is not None and internal_held >= internal_limit:
-            failed.append({"domain": entry["domain"], "error": f"over this session's limit of {internal_limit} internal domains"})
-            continue
-        argv = [
-            dejima_allow, "--container", containers[0],
-            *(["--internal"] if entry["internal"] else []),
-            *(["--port", str(entry["port"])] if entry.get("port") else []),
-            entry["domain"],
-        ]
-        result = subprocess.run(argv, capture_output=True, text=True)
-        message = archive.clean_text(result.stderr.encode(), 2000)
-        # dejima-allow exits 2 when the permit landed but its check that the
-        # domain answers on 443 failed, which a service on another port fails
-        # spuriously. The domain is allowed either way.
-        if result.returncode in (0, 2):
-            granted.append(entry)
-            internal_held += entry["internal"]
-            if result.returncode == 2:
-                unverified.append({"domain": entry["domain"], "warning": message})
-        else:
-            failed.append({"domain": entry["domain"], "error": message})
-    _write_atomic(held_file, json.dumps(held + granted))
+    request = _claim_domain_request(task_dir, task_id, number)
+    with _domains_lock(task_dir, "grants.lock"):
+        granted, failed, unverified = _grant(task_dir, request, approved, containers[0], dejima_allow, limit, internal_limit)
     granted = [e["domain"] for e in granted]
     requester = " ".join(archive.clean_text(data["requester"].encode(), 255).split())
     note = f"Domain request from {requester}: allowed {', '.join(granted) or 'none'}"
