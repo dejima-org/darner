@@ -39,7 +39,7 @@
 <input id="model" name="model" list="models" placeholder="No change">
 <datalist id="models"></datalist>
 <label for="effort">Effort</label>
-<select id="effort" name="effort"><option value="">No change</option>{% for level in ("none", "low", "medium", "high", "xhigh") %}<option>{{ level }}</option>{% endfor %}</select>
+<select id="effort" name="effort"><option value="">No change</option>{% for level in efforts %}<option>{{ level }}</option>{% endfor %}</select>
 <label for="context_window">Context window, in tokens</label>
 <input id="context_window" name="context_window" inputmode="numeric" placeholder="No change">
 </div>

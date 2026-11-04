@@ -232,7 +232,10 @@ async def maubot_test_bot():
         assert parts[-3] == "relations" and parts[-1] == "m.replace" and query_params["dir"] == "b"
         if isinstance(bot.relations, Exception):
             raise bot.relations
-        return {"chunk": bot.relations.get(unquote(parts[-2]), [])}
+        found = bot.relations.get(unquote(parts[-2]), [])
+        start = int(query_params.get("from", 0))
+        page = found[start:start + int(query_params["limit"])]
+        return {"chunk": page, **({"next_batch": str(start + len(page))} if start + len(page) < len(found) else {})}
 
     bot.client.api.request = api_request
     bot.client.get_event = get_event
@@ -406,6 +409,15 @@ async def test_latest_edit_is_the_task(maubot_plugin, maubot_test_bot, api):
 async def test_edit_by_another_sender_is_ignored(maubot_plugin, maubot_test_bot, api):
     maubot_test_bot.relations[NOTE_ID] = [
         edit_event("do something else", "$evil", sender="@mallory:example.org"),
+        edit_event("fix the tests properly"),
+    ]
+    await send(maubot_test_bot, message("@dragonlet:example.org go"))
+    assert api.requests[0][1]["task"] == "fix the tests properly"
+
+
+async def test_edits_by_others_don_t_bury_the_author_s(maubot_plugin, maubot_test_bot, api):
+    maubot_test_bot.relations[NOTE_ID] = [
+        *(edit_event("do something else", f"$evil{i}", sender="@mallory:example.org") for i in range(120)),
         edit_event("fix the tests properly"),
     ]
     await send(maubot_test_bot, message("@dragonlet:example.org go"))
@@ -1205,7 +1217,10 @@ async def test_help_with_a_markdown_pill_body(maubot_plugin, maubot_test_bot, ap
 
 async def test_help_lists_harnesses_and_backends(maubot_plugin, maubot_test_bot, api):
     async def catalog(request):
-        return web.json_response({"harnesses": ["claude-code", "cline"], "backends": ["anthropic", "self-hosted"], "default_harness": "claude-code"})
+        return web.json_response({
+            "harnesses": ["claude-code", "cline"], "backends": ["anthropic", "self-hosted"], "default_harness": "claude-code",
+            "options": {"claude-code": {"efforts": ["low", "high"]}, "cline": {"efforts": ["none", "low"]}},
+        })
 
     api.server.app.router._frozen = False
     api.server.app.router.add_get("/v1/catalog", catalog)
@@ -1213,6 +1228,7 @@ async def test_help_lists_harnesses_and_backends(maubot_plugin, maubot_test_bot,
     [text] = replies(maubot_test_bot)
     assert "use this harness instead of the default (claude-code, cline; default claude-code)" in text
     assert "use this backend instead of the harness's default (anthropic, self-hosted)" in text
+    assert "effort level, as the harness takes (claude-code: low, high; cline: none, low)" in text
 
 
 async def test_help_without_the_catalog(maubot_plugin, maubot_test_bot, api):

@@ -48,7 +48,7 @@ max_domains = 20
 # [catalog.cline.self-hosted]
 # models = [{ id = "qwen3.5-4b", context_window = 120000 }]
 
-# Should match the launcher's --max-output; a smaller value rejects output the launcher collected.
+# Must be at least the launcher's --max-output: output over this can't be collected, and is fetched again every poll.
 [limits]
 max_bytes = 52428800
 max_files = 1000

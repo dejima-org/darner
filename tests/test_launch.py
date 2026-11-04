@@ -261,6 +261,17 @@ def test_fetch_returns_zip_and_consumes_done(share):
     assert not (shared / ".done").exists()
 
 
+def test_repeated_done_waits_for_the_interval(env, share):
+    a, shared = share
+    (shared / "RESULT.md").write_text("one")
+    (shared / ".done").touch()
+    assert run(a, "fetch", "dn-abc23")[0] == 0
+    (shared / ".done").touch()
+    assert status(a)[0]["ready"] is False
+    os.utime(env / "tasks" / "dn-abc23" / "consumed", (0, 0))
+    assert status(a)[0]["ready"] is True
+
+
 def test_fetch_without_done_fails(share):
     a, _ = share
     code, out, err = run(a, "fetch", "dn-abc23")
@@ -355,6 +366,7 @@ def test_undeletable_done_is_consumed_once(share):
 
     (shared / ".done").unlink()
     (shared / ".done").touch()
+    os.utime(a.tasks_dir / "dn-abc23" / "consumed", (0, 0))
     assert status(a)[0]["ready"] is True
 
 
@@ -448,6 +460,14 @@ def test_answer_to_a_cline_question_is_typed(env, asked):
     assert all(call[4] == "--" for call in tmux_calls(env) if call[:2] == ["send-keys", "-l"])
     assert "".join(typed) == " 2 of them: " + "x" * 1500 and len(typed) == 2
     assert not any(call[0] in ("load-buffer", "paste-buffer") for call in tmux_calls(env))
+
+
+def test_a_typed_chunk_s_final_semicolon_is_escaped_for_tmux(env, asked):
+    (env / "tmux.log.screen").write_text(" Cline is asking a question\n Which branch?\n")
+    text = "x" * 1022 + ";" + "y\\;"
+    assert answer_run(asked, {"requester": "@a:example.org", "text": text}, "--answers", "--paste-delay", "0")[0] == 0
+    typed = [call[5] for call in tmux_calls(env) if call[:2] == ["send-keys", "-l"]]
+    assert typed == [" " + "x" * 1022 + "\\;", "y\\\\;"]
 
 
 def test_answer_is_sanitised(env, asked):
@@ -749,6 +769,7 @@ def test_stop_stops_the_container_then_closes_the_window(env, share, docker, mon
 
 def test_stop_before_the_container_exists_ends_dejima(env, share, docker):
     a, _ = share
+    (env / "tasks" / "dn-abc23" / "shared-path").unlink()
     starting = subprocess.Popen(["sleep", "30"])
     (env / "tasks" / "dn-abc23" / "pid").write_text(str(starting.pid))
     (env / "tmux.log").write_text("")
@@ -756,6 +777,34 @@ def test_stop_before_the_container_exists_ends_dejima(env, share, docker):
     assert code == 0, err
     assert starting.wait(timeout=5) == -15
     assert tmux_calls(env) == [["kill-window", "-t", "@7"]]
+
+
+def test_stop_without_the_container_of_a_running_session_leaves_dejima(env, share, docker):
+    a, _ = share
+    running = subprocess.Popen(["sleep", "30"])
+    try:
+        (env / "tasks" / "dn-abc23" / "pid").write_text(str(running.pid))
+        code, _, err = run(a, "--docker", str(docker), "--stop-timeout", "1", "stop", "dn-abc23")
+        assert code == 1 and "couldn't find dn-abc23's container" in err
+        assert running.poll() is None
+    finally:
+        running.kill()
+        running.wait()
+
+
+def test_a_reused_pid_is_not_dejima_s(env, share):
+    from darner import launch as launch_module
+
+    a, _ = share
+    other = subprocess.Popen(["sleep", "30"])
+    try:
+        (env / "tasks" / "dn-abc23" / "pid").write_text(f"{other.pid} 1")
+        assert launch_module._dejima_pid(env / "tasks" / "dn-abc23") is None
+        (env / "tasks" / "dn-abc23" / "pid").write_text(f"{other.pid} {launch_module._start_time(other.pid)}")
+        assert launch_module._dejima_pid(env / "tasks" / "dn-abc23") == other.pid
+    finally:
+        other.kill()
+        other.wait()
 
 
 def test_run_id_comes_from_compose_environment_without_remote_access(env, share, docker, monkeypatch):
@@ -789,7 +838,7 @@ def test_exec_records_dejima_pid(env):
     task = env / "tasks" / "dn-abc23"
     subprocess.run([sys.executable, "-m", "darner.launch", "--exec", str(task)], cwd=Path(__file__).parent.parent, check=True,
                    env={**os.environ, "FAKE_DEJIMA_LOG": str(env / "dejima.log")})
-    assert int((task / "pid").read_text()) > 0
+    assert int((task / "pid").read_text().split()[0]) > 0
 
 
 FAKE_DEJIMA_ALLOW = """#!/bin/sh

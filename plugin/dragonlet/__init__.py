@@ -49,6 +49,8 @@ NOT_AN_ID = re.compile(
     r"(?:stop|status|upload)\s+([a-z0-9]{2}-[a-z0-9]{5})|tell\s+([a-z0-9]{2}-(?=[a-z]*\d)[a-z0-9]{5})\s.*",
     re.IGNORECASE | re.DOTALL,
 )
+# Pages of a note's edits read looking for its author's latest.
+MAX_EDIT_PAGES = 20
 # Delivery attempts before an event is given up on, acknowledged and logged.
 MAX_ATTEMPTS = 5
 UPLOAD = re.compile(rf"upload\s+({_ID})", re.IGNORECASE)
@@ -75,7 +77,7 @@ dependency: <specs>  install dependencies (apt:, pip:, cargo:, npm:, tarball:)
 harness: <name>    use this harness instead of the default{harnesses}
 backend: <name>    use this backend instead of the harness's default{backends}
 model: <name>      use this model instead of the harness's default
-effort: <level>    effort level: low, medium, high or xhigh, or none for cline
+effort: <level>    effort level, as the harness takes{efforts}
 context_window: <tokens>  cline's context window, for a self-hosted model
 network: <reach>   named: only what this task names, not dejima's own allowlist; sealed: that, and refuse to start if the session can resolve any name
 name: <name>       name the session, so commands can call it dn-<name>; it holds the name until it's cleared
@@ -179,22 +181,28 @@ class Dragonlet(Plugin):
         bundled relations, which a decrypted event doesn't carry.
         """
         path = Path.v1.rooms[note.room_id].relations[note.event_id]["m.replace"]
-        try:
-            resp = await self.client.api.request(Method.GET, path, query_params={"dir": "b", "limit": "50"})
-        except Exception as e:
-            raise NoteError(f"couldn't check the note for edits: {e}")
-        for raw in resp.get("chunk", []):
-            edit = Event.deserialize({"room_id": note.room_id, **raw})
-            if edit.sender != note.sender:
-                continue
-            if isinstance(edit, EncryptedEvent):
-                try:
-                    edit = await self.client.crypto.decrypt_megolm_event(edit)
-                except (DecryptionError, AttributeError):
-                    raise NoteError("couldn't decrypt the note's latest edit")
-            if isinstance(edit, RawMessageEvent):
-                return edit.content.body
-        return None
+        query = {"dir": "b", "limit": "50"}
+        # Paged through, since anyone in the room can add edits that bury the author's.
+        for _ in range(MAX_EDIT_PAGES):
+            try:
+                resp = await self.client.api.request(Method.GET, path, query_params=query)
+            except Exception as e:
+                raise NoteError(f"couldn't check the note for edits: {e}")
+            for raw in resp.get("chunk", []):
+                edit = Event.deserialize({"room_id": note.room_id, **raw})
+                if edit.sender != note.sender:
+                    continue
+                if isinstance(edit, EncryptedEvent):
+                    try:
+                        edit = await self.client.crypto.decrypt_megolm_event(edit)
+                    except (DecryptionError, AttributeError):
+                        raise NoteError("couldn't decrypt the note's latest edit")
+                if isinstance(edit, RawMessageEvent):
+                    return edit.content.body
+            if not resp.get("next_batch"):
+                return None
+            query = {**query, "from": resp["next_batch"]}
+        raise NoteError("the note has too many edits by others to find its author's latest")
 
     async def _submit(self, evt: MessageEvent, replied: Event | None = None) -> tuple[str, bool]:
         """Start a task: a reply's note is the task, otherwise the message itself is."""
@@ -328,6 +336,11 @@ class Dragonlet(Plugin):
             harnesses += f"; default {catalog['default_harness']})" if catalog.get("default_harness") else ")"
         if catalog.get("backends"):
             backends = f" ({', '.join(catalog['backends'])})"
+        efforts = "; ".join(
+            f"{name}: {', '.join(o['efforts']) or 'none taken'}"
+            for name, o in (catalog.get("options") or {}).items() if isinstance(o, dict) and isinstance(o.get("efforts"), list)
+        )
+        efforts = f" ({efforts})" if efforts else ""
         try:
             async with self._api("GET", "/v1/configs", raise_for_status=True) as resp:
                 configs = await resp.json()
@@ -335,7 +348,7 @@ class Dragonlet(Plugin):
             self.log.warning("Couldn't list config sets", exc_info=True)
             configs = None
         configs = f" (available: {', '.join(configs) or 'none'})" if isinstance(configs, list) else ""
-        return USAGE.format(blurbs=listed, harnesses=harnesses, backends=backends, configs=configs, bot=self.client.mxid)
+        return USAGE.format(blurbs=listed, harnesses=harnesses, backends=backends, efforts=efforts, configs=configs, bot=self.client.mxid)
 
     def _help_task(self, replied: Event | None) -> str | None:
         # Only the bot's own tag counts, so a user can't steer an answer into another task

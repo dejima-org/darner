@@ -169,6 +169,9 @@ class Store:
     def known(self, task_id: str) -> bool:
         return self.db.execute("SELECT 1 FROM tasks WHERE id = ?", (task_id,)).fetchone() is not None
 
+    def ended(self) -> list[str]:
+        return [r[0] for r in self.db.execute("SELECT id FROM tasks WHERE status = 'ended'")]
+
     def set_run_id(self, task_id: str, run_id: str) -> None:
         self.db.execute("UPDATE tasks SET run_id = ? WHERE id = ?", (run_id, task_id))
 

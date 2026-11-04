@@ -128,8 +128,6 @@ async def guard(request: web.Request, handler):
             raise web.HTTPForbidden(text=refusal)
         response = await handler(request)
     except web.HTTPRequestEntityTooLarge:
-        if request.method in ("GET", "HEAD"):
-            raise
         # The page's script shows an action's error as a sentence, so it gets one.
         return web.json_response({"error": "That's more than darner-web takes in one request."}, status=413, headers=HEADERS)
     except web.HTTPException as e:
@@ -509,12 +507,23 @@ def _words(value: object) -> list[str]:
     return [v for v in value.replace(",", " ").split() if v]
 
 
+EFFORTS = ("none", "low", "medium", "high", "xhigh")
+
+
 async def new_task_page(request: web.Request) -> web.Response:
     catalog = await api(request, "GET", "/v1/catalog")
     blurbs = await api(request, "GET", "/v1/blurbs")
     configs = await api(request, "GET", "/v1/configs")
+    # Every level a harness's manifest lists; one that lists none takes any of dejima's.
+    efforts = []
+    for options in catalog.get("options", {}).values():
+        for level in EFFORTS if options.get("efforts") is None else options["efforts"]:
+            if level not in efforts:
+                efforts.append(level)
     # A fresh source per page, so sending the form twice finds the task the first send started.
-    return page(request, "new.html", catalog=catalog, blurbs=blurbs, configs=configs, ref=secrets.token_hex(16))
+    return page(
+        request, "new.html", catalog=catalog, blurbs=blurbs, configs=configs, efforts=efforts, ref=secrets.token_hex(16)
+    )
 
 
 def _task_request(request: web.Request, body: dict, ref: str) -> dict:

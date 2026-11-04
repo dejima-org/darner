@@ -4,7 +4,16 @@ Work lands on `development`, and every merge there publishes a pre-release. A re
 
 ## 1. It trails a dejima release
 
-darner runs dejima on the dejima host and relies on its flags and tools: `--isolated`, `--shared-path-file`, `--internal-domain`, `--model`, `--drop-domains`, `--require-sealed`, `dejima-allow --port`, `dejima-share prune --isolated --yes <share>` and others. A darner release is released against one dejima release, the tag on dejima's `main` that it was tested with and that has everything it needs. `CHANGELOG.md` names it under the version's heading:
+darner runs dejima on the dejima host and relies on these of its flags, tools and files:
+
+- `dejima`: `--isolated`, `--no-pause`, `--shared-path-file`, `--keep-records`, `--identity`, `--harness`, `--backend`, `--model`, `--effort`, `--context-window`, `--domains`, `--internal-domain`, `--dependencies`, `--drop-domains`, `--require-sealed` and `--print-config`
+- `--print-config`'s `section.key=value` lines, for `core.harness` and `harness.<name>.{backend,model,effort,context_window}`
+- `dejima-allow`: `--container`, `--internal` and `--port`, and exit status 2 meaning granted but not answering on 443
+- `dejima-share`: `prune --isolated [share]` and `--yes`, as its `--help` lists them
+- the manifests, `harnesses/*/harness.conf` (`api_styles`, and `keys` with `effort:?enum:...` and `context_window`) and `backends/*/backend.conf` (`api_style`), found beside the directory `dejima` resolves to from `bin/`
+- `$XDG_RUNTIME_DIR/dejima/sessions/<run id>` with its `pane=` line, and the `SANDBOX_ISOLATED_WORK=dejima_isolated-work-<run id>` volume name
+
+A darner release is released against one dejima release, the tag on dejima's `main` that it was tested with and that has everything it needs. `CHANGELOG.md` names it under the version's heading:
 
 ```
 ## 0.1.18
