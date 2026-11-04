@@ -1058,8 +1058,12 @@ async def decide_domains(request: web.Request) -> web.Response:
     if verb == "allow":
         # Checked again here, in case the policy changed since the request was shown.
         policy = config.get("policy", {})
-        payload["domains"] = [d["domain"] for d in shown["domains"] if not denied_domain(policy, d["domain"], d["internal"])]
+        payload["domains"] = [
+            {"domain": d["domain"], "internal": d["internal"], "port": d["port"]}
+            for d in shown["domains"] if not denied_domain(policy, d["domain"], d["internal"])
+        ]
         payload["max_domains"] = policy.get("max_domains")
+        payload["max_internal_domains"] = policy.get("max_internal_domains")
     try:
         code, out, err = await run_remote(config, [verb, task_id, str(number)], json.dumps(payload).encode())
     except RuntimeError as e:

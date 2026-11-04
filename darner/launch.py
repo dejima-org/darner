@@ -974,7 +974,7 @@ def _domain_and_port(word: str) -> tuple[str | None, int | None]:
     host, sep, port = word.rpartition(":")
     if not sep:
         return word, None
-    if port.isascii() and port.isdigit() and 0 < int(port) < 65536:
+    if port.isascii() and port.isdigit() and len(port) <= 5 and 0 < int(port) < 65536:
         return host, int(port)
     return None, None
 
@@ -1083,9 +1083,9 @@ def allow_domains(args: argparse.Namespace, task_id: str, number: int, data: obj
         raise RuntimeError(f"{task_id} is not running")
     if not isinstance(data, dict) or not isinstance(data.get("requester"), str) or not isinstance(data.get("domains"), list):
         raise ValueError("allow needs requester and domains")
-    limit = data.get("max_domains")
-    if limit is not None and type(limit) is not int:
-        raise ValueError("max_domains must be a whole number")
+    limit, internal_limit = data.get("max_domains"), data.get("max_internal_domains")
+    if any(n is not None and type(n) is not int for n in (limit, internal_limit)):
+        raise ValueError("max_domains and max_internal_domains must be whole numbers")
     dejima_allow = shutil.which(args.dejima_allow)
     if dejima_allow is None:
         raise RuntimeError(f"{args.dejima_allow} not found on PATH; pass --dejima-allow with its full path")
@@ -1093,18 +1093,28 @@ def allow_domains(args: argparse.Namespace, task_id: str, number: int, data: obj
     if len(containers) != 1:
         raise RuntimeError(f"couldn't find {task_id}'s container")
     request = _claim_domain_request(task_dir, task_id, number)
-    approved = {d for d in data["domains"] if isinstance(d, str)}
-    # The session's limit covers every domain it holds: those it launched with
-    # and every grant since, so repeated requests can't add up past it.
+    # Matched as whole entries: a name approved plain doesn't grant it internal,
+    # or on any port but the one shown.
+    approved = {
+        (d.get("domain"), d.get("internal"), d.get("port")) for d in data["domains"] if isinstance(d, dict)
+    }
+    # The session's limits cover every domain it holds: those it launched with
+    # and every grant since, so repeated requests can't add up past them.
     held_file = task_dir / "domains-granted"
     held = json.loads(held_file.read_text()) if held_file.exists() else []
     launched_with = sum(1 for line in (task_dir / "domains").read_text().splitlines() if line.strip())
+    internal_held = json.loads((task_dir / "argv.json").read_text()).count("--internal-domain") + sum(
+        1 for h in held if isinstance(h, dict) and h["internal"]
+    )
     granted, failed, unverified = [], [], []
     for entry in request["domains"]:
-        if entry["domain"] not in approved:
+        if (entry["domain"], entry["internal"], entry.get("port")) not in approved:
             continue
         if limit is not None and launched_with + len(held) + len(granted) >= limit:
             failed.append({"domain": entry["domain"], "error": f"over this session's limit of {limit} domains"})
+            continue
+        if entry["internal"] and internal_limit is not None and internal_held >= internal_limit:
+            failed.append({"domain": entry["domain"], "error": f"over this session's limit of {internal_limit} internal domains"})
             continue
         argv = [
             dejima_allow, "--container", containers[0],
@@ -1118,12 +1128,14 @@ def allow_domains(args: argparse.Namespace, task_id: str, number: int, data: obj
         # domain answers on 443 failed, which a service on another port fails
         # spuriously. The domain is allowed either way.
         if result.returncode in (0, 2):
-            granted.append(entry["domain"])
+            granted.append(entry)
+            internal_held += entry["internal"]
             if result.returncode == 2:
                 unverified.append({"domain": entry["domain"], "warning": message})
         else:
             failed.append({"domain": entry["domain"], "error": message})
     _write_atomic(held_file, json.dumps(held + granted))
+    granted = [e["domain"] for e in granted]
     requester = " ".join(archive.clean_text(data["requester"].encode(), 255).split())
     note = f"Domain request from {requester}: allowed {', '.join(granted) or 'none'}"
     if failed:

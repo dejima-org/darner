@@ -711,7 +711,14 @@ async def test_allow_passes_only_what_policy_permits(requested, tmp_path):
     assert resp.status == 200 and (await resp.json())["granted"] == ["pypi.org"]
     assert fetches(tmp_path)[-1] == [
         "allow", task_id, "3",
-        {"requester": "@alice:example.org", "domains": ["pypi.org", "mirror.internal.example"], "max_domains": 3},
+        {
+            "requester": "@alice:example.org",
+            "domains": [
+                {"domain": "pypi.org", "internal": False, "port": None},
+                {"domain": "mirror.internal.example", "internal": True, "port": None},
+            ],
+            "max_domains": 3, "max_internal_domains": None,
+        },
     ]
 
 

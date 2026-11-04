@@ -829,6 +829,16 @@ def decide(a, verb, number, data, *extra):
         return run(a, "--docker", str(a.tasks_dir.parent / "docker"), *extra, verb, "dn-abc23", str(number))
 
 
+def entries(*lines):
+    """Domain request entries as the API passes them back, from DOMAINS-style lines."""
+    out = []
+    for line in lines:
+        internal = line.startswith("internal ")
+        name, _, port = line.removeprefix("internal ").partition(":")
+        out.append({"domain": name, "internal": internal, "port": int(port) if port else None})
+    return out
+
+
 def allow_calls(env):
     log = env / "allow.log"
     return [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
@@ -876,7 +886,7 @@ def test_allow_grants_the_saved_request_within_what_the_api_passes(env, allow_en
     request_domains(a, shared, "pypi.org\ninternal mirror.internal.example\nother.example.com\n")
     # The agent rewriting DOMAINS after the request has no effect on what's granted.
     (shared / "DOMAINS").write_text("evil.example.com\n")
-    data = {"requester": "@alice:example.org", "domains": ["pypi.org", "mirror.internal.example", "evil.example.com"]}
+    data = {"requester": "@alice:example.org", "domains": entries("pypi.org", "internal mirror.internal.example", "evil.example.com")}
     code, out, err = decide(a, "allow", 1, data)
     assert code == 0, err
     assert json.loads(out) == {"granted": ["pypi.org", "mirror.internal.example"], "failed": [], "unverified": [], "told": False}
@@ -886,7 +896,9 @@ def test_allow_grants_the_saved_request_within_what_the_api_passes(env, allow_en
         ["--container", "c0ffee", "--internal", "mirror.internal.example"],
     ]
     assert not (env / "tasks" / "dn-abc23" / "domains-pending").exists()
-    assert json.loads((env / "tasks" / "dn-abc23" / "domains-granted").read_text()) == ["pypi.org", "mirror.internal.example"]
+    assert json.loads((env / "tasks" / "dn-abc23" / "domains-granted").read_text()) == entries(
+        "pypi.org", "internal mirror.internal.example"
+    )
     assert decide(a, "allow", 1, data)[0] == 1
 
 
@@ -895,7 +907,7 @@ def test_allow_reports_failures_and_tells_the_agent(env, allow_env):
     request_domains(a, shared, "pypi.org\nblocked.example\n")
     (env / "tmux.log").write_text("")
     code, out, _ = decide(
-        a, "allow", 1, {"requester": "@alice:example.org", "domains": ["pypi.org", "blocked.example"]},
+        a, "allow", 1, {"requester": "@alice:example.org", "domains": entries("pypi.org", "blocked.example")},
         "--answers", "--paste-delay", "0",
     )
     result = json.loads(out)
@@ -917,9 +929,9 @@ def test_superseded_request_is_refused(allow_env):
     for name in ("consumed-domains",):
         os.utime(a.tasks_dir / "dn-abc23" / name, (0, 0))
     assert request_domains(a, shared, "files.pythonhosted.org\n")["request"] == 2
-    code, _, err = decide(a, "allow", 1, {"requester": "@a:example.org", "domains": ["pypi.org"]})
+    code, _, err = decide(a, "allow", 1, {"requester": "@a:example.org", "domains": entries("pypi.org")})
     assert code == 1 and "replaced by a newer one" in err
-    assert decide(a, "allow", 2, {"requester": "@a:example.org", "domains": ["files.pythonhosted.org"]})[0] == 0
+    assert decide(a, "allow", 2, {"requester": "@a:example.org", "domains": entries("files.pythonhosted.org")})[0] == 0
 
 
 def test_deny_discards_the_request(env, allow_env):
@@ -927,7 +939,7 @@ def test_deny_discards_the_request(env, allow_env):
     request_domains(a, shared, "pypi.org\n")
     code, out, _ = decide(a, "deny", 1, {"requester": "@alice:example.org"})
     assert code == 0 and json.loads(out) == {"told": False}
-    assert decide(a, "allow", 1, {"requester": "@a:example.org", "domains": ["pypi.org"]})[0] == 1
+    assert decide(a, "allow", 1, {"requester": "@a:example.org", "domains": entries("pypi.org")})[0] == 1
     assert allow_calls(env) == []
 
 
@@ -935,7 +947,7 @@ def test_allow_needs_the_container(env, allow_env, monkeypatch):
     a, shared = allow_env
     request_domains(a, shared, "pypi.org\n")
     monkeypatch.delenv("FAKE_DOCKER_PS")
-    code, _, err = decide(a, "allow", 1, {"requester": "@a:example.org", "domains": ["pypi.org"]})
+    code, _, err = decide(a, "allow", 1, {"requester": "@a:example.org", "domains": entries("pypi.org")})
     assert code == 1 and "couldn't find dn-abc23's container" in err
     assert (a.tasks_dir / "dn-abc23" / "domains-pending").exists()
 
@@ -951,7 +963,7 @@ def test_domain_limit_counts_launch_domains_and_earlier_grants(env, allow_env):
     a, shared = allow_env
     (env / "tasks" / "dn-abc23" / "domains").write_text("one.example.com\n")
     request_domains(a, shared, "two.example.com\n")
-    data = {"requester": "@a:example.org", "domains": ["two.example.com"], "max_domains": 3}
+    data = {"requester": "@a:example.org", "domains": entries("two.example.com"), "max_domains": 3}
     assert json.loads(decide(a, "allow", 1, data)[1])["granted"] == ["two.example.com"]
 
     import time
@@ -959,10 +971,32 @@ def test_domain_limit_counts_launch_domains_and_earlier_grants(env, allow_env):
     time.sleep(0.05)
     os.utime(a.tasks_dir / "dn-abc23" / "consumed-domains", (0, 0))
     request_domains(a, shared, "three.example.com\nfour.example.com\n")
-    data = {"requester": "@a:example.org", "domains": ["three.example.com", "four.example.com"], "max_domains": 3}
+    data = {"requester": "@a:example.org", "domains": entries("three.example.com", "four.example.com"), "max_domains": 3}
     result = json.loads(decide(a, "allow", 2, data)[1])
     assert result["granted"] == ["three.example.com"]
     assert result["failed"] == [{"domain": "four.example.com", "error": "over this session's limit of 3 domains"}]
+
+
+def test_allow_matches_whole_entries(env, allow_env):
+    a, shared = allow_env
+    request_domains(a, shared, "corp.example.com\ninternal corp.example.com\nrecipes.example.com:8443\n")
+    data = {"requester": "@a:example.org", "domains": entries("corp.example.com", "recipes.example.com")}
+    assert json.loads(decide(a, "allow", 1, data)[1])["granted"] == ["corp.example.com"]
+    assert allow_calls(env) == [["--container", "c0ffee", "corp.example.com"]]
+
+
+def test_internal_limit_counts_launch_domains_and_earlier_grants(env, allow_env):
+    a, shared = allow_env
+    task_dir = env / "tasks" / "dn-abc23"
+    (task_dir / "argv.json").write_text(json.dumps(["dejima", "--internal-domain", "one.example.com"]))
+    request_domains(a, shared, "internal two.example.com\nthree.example.com\n")
+    data = {
+        "requester": "@a:example.org", "domains": entries("internal two.example.com", "three.example.com"),
+        "max_internal_domains": 1,
+    }
+    result = json.loads(decide(a, "allow", 1, data)[1])
+    assert result["granted"] == ["three.example.com"]
+    assert result["failed"] == [{"domain": "two.example.com", "error": "over this session's limit of 1 internal domains"}]
 
 
 def message_run(a, data, *extra):
@@ -1014,7 +1048,7 @@ def test_changed_domains_file_is_a_request_once_settled(env, allow_env):
 def test_rerequest_after_a_decision_goes_straight_through(env, allow_env):
     a, shared = allow_env
     request_domains(a, shared, "recipes.example.com\n")
-    decide(a, "allow", 1, {"requester": "@a:example.org", "domains": ["recipes.example.com"]})
+    decide(a, "allow", 1, {"requester": "@a:example.org", "domains": entries("recipes.example.com")})
     # The agent edits its request without signalling again.
     (shared / "DOMAINS").write_text("internal recipes.example.com\n")
     age(shared / "DOMAINS", 60)
@@ -1039,19 +1073,19 @@ def test_permitted_but_unverified_domain_counts_as_allowed(env, allow_env):
     request_domains(a, shared, "internal quiet.example\n")
     (env / "tmux.log").write_text("")
     code, out, _ = decide(
-        a, "allow", 1, {"requester": "@a:example.org", "domains": ["quiet.example"]}, "--answers", "--paste-delay", "0"
+        a, "allow", 1, {"requester": "@a:example.org", "domains": entries("internal quiet.example")}, "--answers", "--paste-delay", "0"
     )
     result = json.loads(out)
     assert code == 0 and result["granted"] == ["quiet.example"] and result["failed"] == []
     assert result["unverified"] == [{"domain": "quiet.example", "warning": "WARNING: quiet.example is still NOT reachable (curl exit 28)."}]
     assert "allowed but not reachable on port 443 when checked: quiet.example" in (env / "tmux.log.buffer").read_text()
-    assert json.loads((a.tasks_dir / "dn-abc23" / "domains-granted").read_text()) == ["quiet.example"]
+    assert json.loads((a.tasks_dir / "dn-abc23" / "domains-granted").read_text()) == entries("internal quiet.example")
 
 
 def test_dejima_allow_message_reaches_the_requester_whole(env, allow_env):
     a, shared = allow_env
     request_domains(a, shared, "wordy.example\n")
-    result = json.loads(decide(a, "allow", 1, {"requester": "@a:example.org", "domains": ["wordy.example"]})[1])
+    result = json.loads(decide(a, "allow", 1, {"requester": "@a:example.org", "domains": entries("wordy.example")})[1])
     assert result["unverified"][0]["warning"].endswith("the end")
 
 
@@ -1178,10 +1212,11 @@ def test_bad_per_harness_defaults_are_refused(env, option, value):
 
 def test_domain_ports_are_checked_on_that_port(env, allow_env):
     a, shared = allow_env
-    request = request_domains(a, shared, "internal recipes.example.com:8443\npypi.org:99999\nfiles.example.com:\n")
+    lines = "internal recipes.example.com:8443\npypi.org:99999\nfiles.example.com:\nlong.example.com:" + "9" * 5000
+    request = request_domains(a, shared, lines + "\n")
     assert request["domains"] == [{"domain": "recipes.example.com", "internal": True, "port": 8443}]
-    assert request["rejected"] == 2
-    decide(a, "allow", 1, {"requester": "@a:example.org", "domains": ["recipes.example.com"]})
+    assert request["rejected"] == 3
+    decide(a, "allow", 1, {"requester": "@a:example.org", "domains": entries("internal recipes.example.com:8443")})
     assert allow_calls(env) == [["--container", "c0ffee", "--internal", "--port", "8443", "recipes.example.com"]]
 
 
