@@ -105,13 +105,17 @@ for (const form of document.querySelectorAll("form[data-action]")) {
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     const button = form.querySelector("button[type=submit]");
+    const note = form.querySelector(".sent");
     button.disabled = true;
+    if (note) note.hidden = true;
     const done = button.dataset.busy ? busy(button) : () => {};
     const json = { "Content-Type": "application/json" };
     const sent = await send(form.dataset.action, { headers: json, body: JSON.stringify(fields(form)) }, form);
     if (sent) form.reset();
-    if (sent === true) location.reload();
-    if (!sent) {
+    if (sent === true && !note) location.reload();
+    else if (sent !== "moved") {
+      // A message isn't kept, so a reload wouldn't show it was sent: it's said beside Send instead.
+      if (note) note.hidden = !sent;
       done();
       button.disabled = false;
     }

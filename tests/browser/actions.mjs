@@ -20,7 +20,11 @@ await page.addInitScript(() => {
 
 await page.goto(`${origin}/sessions/dn-aaaaa`, { waitUntil: "networkidle" });
 await page.fill("#message", "use postgres");
-await Promise.all([page.waitForEvent("load"), page.click("form[data-action] button[type=submit]")]);
+await page.click("form[data-action] button[type=submit]");
+await page.waitForFunction(() => !document.querySelector("form[data-action] .sent").hidden);
+result.sent = await page.evaluate(() => ({
+  note: document.querySelector("form[data-action] .sent").textContent, field: document.querySelector("#message").value,
+}));
 result.violations.push(...(await page.evaluate(() => window.__violations)));
 
 // A stop that fails puts the button back and says why.
