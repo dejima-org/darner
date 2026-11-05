@@ -566,9 +566,9 @@ async def expire(app: web.Application, task: dict) -> None:
     audit.info("stop %s after max_session_age, at %ds", task["id"], int(age))
 
 
-def end_task(app: web.Application, task_id: str, note: str = "") -> None:
+def end_task(app: web.Application, task_id: str, note: str = "", kept: bool = False) -> None:
     """Delete everything about an ended task but the output its frontend hasn't collected."""
-    app[STORE].end(task_id, note)
+    app[STORE].end(task_id, note, {"share_kept": True} if kept else None)
     kept = app[STORE].kept_outputs(task_id)
     task_dir = Path(app[CONFIG]["results_dir"]) / task_id
     for path in task_dir.glob("*.zip"):
@@ -576,31 +576,71 @@ def end_task(app: web.Application, task_id: str, note: str = "") -> None:
             path.unlink(missing_ok=True)
 
 
-def purge(app: web.Application) -> None:
-    """Delete ended tasks whose frontend has collected everything, or that waited past output_retention."""
-    store = app[STORE]
-    for task_id in store.purgeable(app[CONFIG]["output_retention"]):
-        store.delete(task_id)
-        shutil.rmtree(Path(app[CONFIG]["results_dir"]) / task_id, ignore_errors=True)
+async def purge(app: web.Application, discards: bool = True) -> None:
+    """Delete ended tasks whose frontend has collected everything, or that waited past output_retention.
+
+    One whose ~/shared the launcher kept waits to be cleared, or for output_retention, and the share goes with it.
+    A share that can't be pruned is tried again each poll, so a passing failure doesn't leave it behind for
+    good, until a second output_retention. Without discards, as on an acknowledgement, those wait for the poller.
+    """
+    store, retention = app[STORE], app[CONFIG]["output_retention"]
+    for task_id in store.purgeable(retention):
+        if store.share_kept(task_id):
+            if not discards:
+                continue
+            if not await discard(app, task_id) and time.time() - store.ended_at(task_id) < 2 * retention:
+                continue
+        delete_task(app, task_id)
 
 
-async def forget(app: web.Application, task_id: str, delivered: str | None = None) -> None:
-    """Have the launcher delete an ended session's task directory.
+def delete_task(app: web.Application, task_id: str) -> None:
+    app[STORE].delete(task_id)
+    shutil.rmtree(Path(app[CONFIG]["results_dir"]) / task_id, ignore_errors=True)
+
+
+async def discard(app: web.Application, task_id: str) -> bool:
+    """Have the launcher prune the ~/shared it kept for an ended session. Whether it did."""
+    try:
+        code, _, err = await run_remote(app[CONFIG], ["discard", task_id])
+    except RuntimeError as e:
+        code, err = 1, str(e)
+    if code:
+        log.warning("removing %s's ~/shared failed: %s", task_id, err or f"exit {code}")
+        return False
+    app[STORE].set_share_kept(task_id, False)
+    return True
+
+
+async def forget(app: web.Application, task_id: str, delivered: str | None = None) -> bool:
+    """Have the launcher delete an ended session's task directory. Whether it kept its ~/shared.
 
     With delivered, the hash of the session's latest zip this API stored, its
     ~/shared too. The launcher prunes it only if that's the zip it last sent
     and the share still holds exactly that. Only the API knows which zip it
-    kept, so only it can say.
+    kept, so only it can say. A share it keeps waits for the session to be cleared.
     """
     command = ["forget-delivered", task_id, delivered] if delivered else ["forget", task_id]
-    code, _, err = await run_remote(app[CONFIG], command)
+    try:
+        code, out, err = await run_remote(app[CONFIG], command)
+    except RuntimeError as e:
+        code, out, err = 1, "", str(e)
     if code:
         log.warning("forget %s failed: %s", task_id, err or f"exit {code}")
+        return False
+    try:
+        kept = json.loads(out).get("kept")
+    except (ValueError, AttributeError):
+        kept = None
+    if not isinstance(kept, str):
+        return False
+    log.warning("kept %s's ~/shared until it's cleared: %s", task_id, kept)
+    app[STORE].set_share_kept(task_id, True)
+    return True
 
 
 async def poll_once(app: web.Application) -> None:
     config, store = app[CONFIG], app[STORE]
-    purge(app)
+    await purge(app)
     # An ended task the launcher has stopped listing needs nothing more from it.
     app[FORGOTTEN].intersection_update(store.ended())
     ours, ended = set(store.launched()), set(store.ended()) - app[FORGOTTEN]
@@ -623,9 +663,11 @@ async def poll_once(app: web.Application) -> None:
             # Left behind by a forget that failed, or by a task whose launch was never recorded.
             # One that ended here is retried with its output's hash, so its share is still pruned.
             if task["state"] == "exited" and task["id"] in ended:
-                await forget(app, task["id"], store.last_stored_zip(task["id"]))
-            elif task["state"] == "exited" and not store.known(task["id"]):
-                await forget(app, task["id"])
+                # Its end was announced without the share, so a kept one is announced now, to be cleared.
+                if await forget(app, task["id"], store.last_stored_zip(task["id"])):
+                    store.add_event(task["id"], "ended", data={"share_kept": True})
+            elif task["state"] == "exited" and not store.known(task["id"]) and await forget(app, task["id"]):
+                log.warning("no frontend can clear %s, so prune its ~/shared on the dejima host with `darner-launch discard %s`", task["id"], task["id"])
             continue
         # Logged once per change: it's repeated every poll until fixed.
         if app[SHARE_ERRORS].get(task["id"]) != task.get("error"):
@@ -654,9 +696,9 @@ async def poll_once(app: web.Application) -> None:
         await expire(app, task)
         if task["state"] == "exited" and collected:
             # Delivered and kept: the session's latest output is a zip this API stored.
-            delivered = store.last_stored_zip(task["id"])
-            end_task(app, task["id"])
-            await forget(app, task["id"], delivered)
+            # Forgotten first, so its end can say whether its ~/shared waits to be cleared.
+            kept = await forget(app, task["id"], store.last_stored_zip(task["id"]))
+            end_task(app, task["id"], kept=kept)
         elif task["state"] == "exited" and config["max_session_age"] and (
             time.time() - store.created(task["id"]) > config["max_session_age"]
         ):
@@ -665,11 +707,16 @@ async def poll_once(app: web.Application) -> None:
             tries = app[UNCOLLECTED][task["id"]] = app[UNCOLLECTED].get(task["id"], 0) + 1
             if tries >= COLLECT_TRIES:
                 app[UNCOLLECTED].pop(task["id"])
-                end_task(app, task["id"], "its output couldn't be collected")
-                await forget(app, task["id"])
+                kept = await forget(app, task["id"])
+                end_task(app, task["id"], "its output couldn't be collected", kept=kept)
 
 
 async def _poll_forever(app: web.Application) -> None:
+    # Once at startup, so the launcher's warnings, such as a dejima-share it can't find, reach the log.
+    try:
+        await fetch_catalog(app)
+    except Exception as e:
+        log.warning("couldn't fetch the launcher's catalog: %s", e)
     while True:
         await asyncio.sleep(app[CONFIG].get("poll_interval", 30))
         try:
@@ -1241,7 +1288,34 @@ async def ack_event(request: web.Request) -> web.Response:
     # Collected, so its zip goes now, not when the session ends.
     if event.type == "output":
         (Path(request.app[CONFIG]["results_dir"]) / event.id / f"{seq}.zip").unlink(missing_ok=True)
-    purge(request.app)
+    await purge(request.app, discards=False)
+    return web.Response(status=204)
+
+
+async def clear_task(request: web.Request) -> web.Response:
+    """Delete an ended session now: its output, its events, and the ~/shared the launcher kept for it."""
+    client = _client(request)
+    task_id = _task_id(request)
+    store = request.app[STORE]
+    status = store.task_status(client, task_id)
+    if status is None:
+        raise _not_found(f"no session {task_id}")
+    if status != "ended":
+        return web.json_response({"error": f"{task_id} is still running. Stop it first."}, status=409)
+    try:
+        body = await request.json() if request.can_read_body else {}
+        requester = _requester(body.get("requester"))
+    except (ValueError, RequestError, AttributeError):
+        return web.json_response({"error": "body must have requester"}, status=400)
+    # Asked even when no share was reported kept, since a forget that failed leaves the
+    # task directory on the dejima host for discard to forget. The launcher's reason can
+    # name host paths, so it goes to the log, not the frontend.
+    if not await discard(request.app, task_id) and store.share_kept(task_id):
+        return web.json_response(
+            {"error": f"couldn't remove {task_id}'s ~/shared on the dejima host; the API's log says why"}, status=502,
+        )
+    _audit("clear", client, task_id, requester)
+    delete_task(request.app, task_id)
     return web.Response(status=204)
 
 
@@ -1297,6 +1371,7 @@ def make_app(config: dict, poll: bool = True) -> web.Application:
     app.router.add_post(r"/v1/events/{seq:\d{1,9}}/ack", ack_event)
     app.router.add_post(r"/v1/tasks/{id:dn-[a-z0-9][a-z0-9-]{0,31}}/answer", answer_help)
     app.router.add_post(r"/v1/tasks/{id:dn-[a-z0-9][a-z0-9-]{0,31}}/stop", stop_task)
+    app.router.add_post(r"/v1/tasks/{id:dn-[a-z0-9][a-z0-9-]{0,31}}/clear", clear_task)
     app.router.add_post(r"/v1/tasks/{id:dn-[a-z0-9][a-z0-9-]{0,31}}/message", message_task)
     app.router.add_post(r"/v1/tasks/{id:dn-[a-z0-9][a-z0-9-]{0,31}}/files", upload_file)
     app.router.add_post(r"/v1/tasks/{id:dn-[a-z0-9][a-z0-9-]{0,31}}/check", check_task)

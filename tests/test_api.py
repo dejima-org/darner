@@ -41,6 +41,11 @@ elif command[:1] in (["forget"], ["forget-delivered"]):
     open(os.environ["STUB_LOG"], "a").write(json.dumps(command) + "\\n")
     if os.environ.get("STUB_FORGET_ERROR"):
         sys.exit("darner-launch: " + os.environ["STUB_FORGET_ERROR"])
+    print(json.dumps({"kept": os.environ["STUB_FORGET_KEPT"]} if os.environ.get("STUB_FORGET_KEPT") else {}))
+elif command[:1] == ["discard"]:
+    open(os.environ["STUB_LOG"], "a").write(json.dumps(command) + "\\n")
+    if os.environ.get("STUB_DISCARD_ERROR"):
+        sys.exit("darner-launch: " + os.environ["STUB_DISCARD_ERROR"])
 elif command[:1] == ["stop"]:
     open(os.environ["STUB_LOG"], "a").write(json.dumps(command) + "\\n")
     if os.environ.get("STUB_STOP_ERROR"):
@@ -1713,6 +1718,103 @@ async def test_no_output_keeps_the_share(started, tmp_path):
     assert forgets(tmp_path, task_id) == ["forget"]
 
 
+def discards(tmp_path, task_id):
+    return [f for f in fetches(tmp_path) if f == ["discard", task_id]]
+
+
+async def kept_share(started, monkeypatch):
+    """A session that ended with its output collected and acknowledged, and its ~/shared kept."""
+    app, client, task_id, status, output = started
+    status(state="exited")
+    output(zip_bytes([("RESULT.md", "done")]))
+    monkeypatch.setenv("STUB_FORGET_KEPT", "it changed after its output was delivered")
+    await poll_once(app)
+    found = await events(client)
+    assert [e.get("data") for e in found if e["type"] == "ended"] == [{"share_kept": True}]
+    for e in found:
+        assert (await client.post(f"/v1/events/{e['seq']}/ack", headers=AUTH)).status == 204
+    return app, client, task_id
+
+
+async def test_a_kept_share_waits_to_be_cleared(started, tmp_path, monkeypatch):
+    app, client, task_id = await kept_share(started, monkeypatch)
+    await poll_once(app)
+    assert app[STORE].task_status("maubot", task_id) == "ended" and discards(tmp_path, task_id) == []
+    resp = await client.post(f"/v1/tasks/{task_id}/clear", json={"requester": "@a:example.org"}, headers=AUTH)
+    assert resp.status == 204
+    assert discards(tmp_path, task_id) == [["discard", task_id]] and not app[STORE].known(task_id)
+
+
+async def test_clearing_without_a_kept_share(started, tmp_path, monkeypatch):
+    app, client, task_id, status, _ = started
+    status(state="running", ready=False)
+    await poll_once(app)
+    resp = await client.post(f"/v1/tasks/{task_id}/clear", json={"requester": "@a:example.org"}, headers=AUTH)
+    assert resp.status == 409 and "still running" in (await resp.json())["error"]
+    status(state="exited", ready=False)
+    await poll_once(app)
+    # A launcher that can't discard, such as an older one, doesn't fail a clear with nothing kept.
+    monkeypatch.setenv("STUB_DISCARD_ERROR", "unknown command")
+    resp = await client.post(f"/v1/tasks/{task_id}/clear", json={"requester": "@a:example.org"}, headers=AUTH)
+    assert resp.status == 204 and discards(tmp_path, task_id) == [["discard", task_id]] and not app[STORE].known(task_id)
+    resp = await client.post(f"/v1/tasks/{task_id}/clear", json={"requester": "@a:example.org"}, headers=AUTH)
+    assert resp.status == 404
+
+
+async def test_a_failed_discard_leaves_the_session_to_clear_again(started, tmp_path, monkeypatch):
+    app, client, task_id = await kept_share(started, monkeypatch)
+    monkeypatch.setenv("STUB_DISCARD_ERROR", "dejima-share: /home/operator/share is mounted")
+    resp = await client.post(f"/v1/tasks/{task_id}/clear", json={"requester": "@a:example.org"}, headers=AUTH)
+    body = (await resp.json())["error"]
+    assert resp.status == 502 and "/home" not in body and "the API's log says why" in body
+    assert app[STORE].known(task_id)
+
+
+async def test_a_share_that_can_t_be_pruned_is_tried_again_until_a_second_retention(started, tmp_path, monkeypatch, config):
+    app, client, task_id = await kept_share(started, monkeypatch)
+    monkeypatch.setenv("STUB_DISCARD_ERROR", "host unreachable")
+    app[STORE].db.execute("UPDATE tasks SET ended = ?", (time.time() - config["output_retention"] - 1,))
+    await poll_once(app)
+    await poll_once(app)
+    assert len(discards(tmp_path, task_id)) == 2 and app[STORE].known(task_id)
+    app[STORE].db.execute("UPDATE tasks SET ended = ?", (time.time() - 2 * config["output_retention"] - 1,))
+    await poll_once(app)
+    assert not app[STORE].known(task_id)
+
+
+async def test_a_forget_that_times_out_still_ends_the_task(started, tmp_path, monkeypatch):
+    import darner.api
+
+    app, client, task_id, status, output = started
+    status(state="exited")
+    output(zip_bytes([("RESULT.md", "done")]))
+    real = darner.api.run_remote
+
+    async def slow_forget(config, command, *args, **kwargs):
+        if command[0].startswith("forget"):
+            raise RuntimeError("launcher timed out")
+        return await real(config, command, *args, **kwargs)
+
+    monkeypatch.setattr(darner.api, "run_remote", slow_forget)
+    await poll_once(app)
+    assert app[STORE].task_status("maubot", task_id) == "ended"
+
+
+async def test_a_kept_share_goes_after_output_retention(started, tmp_path, monkeypatch, config):
+    app, client, task_id = await kept_share(started, monkeypatch)
+    app[STORE].db.execute("UPDATE tasks SET ended = ?", (time.time() - config["output_retention"] - 1,))
+    await poll_once(app)
+    assert discards(tmp_path, task_id) == [["discard", task_id]] and not app[STORE].known(task_id)
+
+
+async def test_another_frontend_can_t_clear_a_session(started, monkeypatch, config):
+    app, client, task_id = await kept_share(started, monkeypatch)
+    config["tokens"]["other"] = "0ther-0123456789abcdef0123456789abcdef"
+    other = {"Authorization": "Bearer 0ther-0123456789abcdef0123456789abcdef"}
+    resp = await client.post(f"/v1/tasks/{task_id}/clear", json={"requester": "@a:example.org"}, headers=other)
+    assert resp.status == 404 and app[STORE].known(task_id)
+
+
 async def test_output_the_launcher_rejected_keeps_the_share(started, tmp_path, monkeypatch):
     app, client, task_id, status, _ = started
     status(state="exited")
@@ -1756,6 +1858,20 @@ async def test_a_session_this_api_never_recorded_keeps_its_share(started, tmp_pa
     assert forgets(tmp_path, "dn-zzzzz") == ["forget"]
 
 
+async def test_a_share_kept_on_a_retried_forget_is_announced_to_be_cleared(started, tmp_path, monkeypatch):
+    app, client, task_id, status, output = started
+    status(state="exited")
+    output(zip_bytes([("RESULT.md", "done")]))
+    monkeypatch.setenv("STUB_FORGET_ERROR", "host unreachable")
+    await poll_once(app)
+    monkeypatch.delenv("STUB_FORGET_ERROR")
+    monkeypatch.setenv("STUB_FORGET_KEPT", "it changed after its output was delivered")
+    status(state="exited", ready=False)
+    await poll_once(app)
+    ended = [e.get("data") for e in await events(client) if e["type"] == "ended" and e["id"] == task_id]
+    assert ended == [None, {"share_kept": True}] and app[STORE].share_kept(task_id)
+
+
 async def test_a_failed_forget_of_a_delivered_share_is_retried_with_its_zip(started, tmp_path, monkeypatch):
     app, client, task_id, status, output = started
     status(state="exited")
@@ -1766,6 +1882,7 @@ async def test_a_failed_forget_of_a_delivered_share_is_retried_with_its_zip(star
     status(state="exited", ready=False)
     await poll_once(app)
     assert forgets(tmp_path, task_id) == ["forget-delivered", "forget-delivered"]
+    assert not [e for e in await events(client) if e["type"] == "ended" and e.get("data")]
     # Once the launcher stops listing it, an ended task isn't polled for.
     (tmp_path / "status.json").write_text("[]")
     count = tmp_path / "status-count"

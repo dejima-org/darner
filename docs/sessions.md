@@ -43,7 +43,7 @@ The files are still agent-written: treat what is in the zip as untrusted.
 
 ## What's kept
 
-**Nothing about a session outlives it.** When a session ends, the API deletes everything it kept about it except output its frontend hasn't collected: the prompt and context, who asked, help requests, terminal screens and domain requests. The launcher deletes the session's task directory on the dejima host. Once the frontend acknowledges the output, the API deletes the rest, zips included. The bot does so as soon as it has posted it; darner-web when you clear the session. Output nobody collects is deleted after `output_retention`. Your frontend's own copy, such as the room's messages, is yours.
+**Nothing about a session outlives it.** When a session ends, the API deletes everything it kept about it except output its frontend hasn't collected: the prompt and context, who asked, help requests, terminal screens and domain requests. The launcher deletes the session's task directory on the dejima host. Once the frontend acknowledges the output, the API deletes the rest, zips included. The bot does so as soon as it has posted it; darner-web when you clear the session. A session whose `~/shared` was kept waits to be cleared, below. Output nobody collects is deleted after `output_retention`. Your frontend's own copy, such as the room's messages, is yours.
 
 The session's `~/shared` on the dejima host, which dejima keeps if it isn't empty, is pruned with `dejima-share prune --isolated --yes` when the session ends, but only once its output has been delivered whole. All of these must hold:
 
@@ -51,6 +51,8 @@ The session's `~/shared` on the dejima host, which dejima keeps if it isn't empt
 - that delivery left nothing out but `uploads/`
 - the share still holds exactly what the delivery carried
 
-Otherwise it's kept: a session that was stopped or ended without output, output that was rejected or couldn't be read, files changed after the delivery, or a delivery that left out symlinks or unreadable files. A kept share holds what darner couldn't deliver, so it's left on the dejima host for you to recover, or remove with `dejima-share prune --isolated`. The API's log says why each was kept. `--keep-shared` on the launcher keeps every share.
+Otherwise it's kept: a session that was stopped or ended without output, output that was rejected or couldn't be read, files changed after the delivery, or a delivery that left out symlinks or unreadable files. A kept share holds what darner couldn't deliver, so it's left on the dejima host for you to recover until the session is cleared, from its frontend, or `output_retention` passes. Then the launcher prunes it, whatever it holds, and the API deletes the session. The API's log says why each was kept, and the frontend says it's waiting to be cleared. `--keep-shared` on the launcher keeps every share, even past a clear.
+
+darner prunes only the share dejima recorded for a session darner launched, by name, never by sweeping the share root, so a session you start on the dejima host yourself keeps its share for you to remove. A kept share whose session the API no longer knows, which no frontend can clear, is named in the API's log; remove it on the dejima host with `darner-launch discard <id>`.
 
 The API's audit log, `darner.audit`, records who did what to each session, through which frontend, so that can be answered after the session's own data is deleted. It records a message's length, never its text.

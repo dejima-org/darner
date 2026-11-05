@@ -90,8 +90,8 @@
 {% endif %}
 {% else %}
 <section class="panel">
-<div class="row"><button type="button" class="refuse" data-post="/sessions/{{ task_id }}/clear" data-confirm="Clear {{ task_id }}? Its output and zips are deleted.">Clear it</button>
-<span class="quiet">Its output and zips are deleted when it's cleared.</span></div>
+<div class="row"><button type="button" class="refuse" data-post="/sessions/{{ task_id }}/clear" data-confirm="Clear {{ task_id }}? Its output, zips and ~/shared on the dejima host are deleted.">Clear it</button>
+<span class="quiet">Its output, zips and ~/shared on the dejima host are deleted when it's cleared.</span></div>
 <p class="alert" role="alert" hidden></p>
 </section>
 {% endif %}

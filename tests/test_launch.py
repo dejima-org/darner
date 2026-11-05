@@ -1635,8 +1635,10 @@ def test_forget_delivered_prunes_a_share_that_still_holds_its_delivery(env, deli
 
 def test_plain_forget_never_prunes(env, delivered, dejima_share):
     a, shared, stored = delivered
-    assert run(a, "--dejima-share", str(dejima_share), "forget", "dn-abc23")[0] == 0
+    code, out, _ = run(a, "--dejima-share", str(dejima_share), "forget", "dn-abc23")
+    assert code == 0 and json.loads(out) == {"kept": "its output wasn't delivered whole"}
     assert prunes(env) == [] and shared.is_dir() and not (env / "tasks" / "dn-abc23").exists()
+    assert (env / "tasks" / ".kept" / "dn-abc23").read_text() == str(shared)
 
 
 def test_forget_still_refuses_a_running_session(env, share, dejima_share):
@@ -1646,9 +1648,11 @@ def test_forget_still_refuses_a_running_session(env, share, dejima_share):
 
 
 def kept(env, a, shared, dejima_share, why, stored=ANY_ZIP):
-    code, _, err = forget_delivered(a, dejima_share, stored)
-    assert code == 1 and "kept its ~/shared for dejima-share prune --isolated by hand" in err and why in err, err
-    assert prunes(env) == [] and shared.is_dir() and not (env / "tasks" / "dn-abc23").exists()
+    """The share is kept, and recorded for discard, and the task directory still goes."""
+    code, out, err = forget_delivered(a, dejima_share, stored)
+    assert code == 0 and why in json.loads(out)["kept"], err
+    assert shared.is_dir() and not (env / "tasks" / "dn-abc23").exists()
+    assert (env / "tasks" / ".kept" / "dn-abc23").read_text() == str(shared)
 
 
 def test_no_recorded_delivery_keeps_the_share(env, share, dejima_share):
@@ -1701,26 +1705,24 @@ def test_a_dejima_share_without_the_named_form_isn_t_run(env, delivered, dejima_
     a, shared, stored = delivered
     monkeypatch.setenv("FAKE_SHARE_OLD", "1")
     kept(env, a, shared, dejima_share, "can't prune one share by name", stored)
+    assert prunes(env) == []
 
 
 def test_a_prune_that_exits_0_but_leaves_the_share_is_reported(env, delivered, dejima_share, monkeypatch):
     a, shared, stored = delivered
     monkeypatch.setenv("FAKE_SHARE_NOOP", "1")
-    code, _, err = forget_delivered(a, dejima_share, stored)
-    assert code == 1 and "exited 0 but the share is still there: Kept." in err and shared.is_dir()
+    kept(env, a, shared, dejima_share, "exited 0 but the share is still there: Kept.", stored)
 
 
 def test_a_share_dejima_refuses_is_kept(env, delivered, dejima_share, monkeypatch):
     a, shared, stored = delivered
     monkeypatch.setenv("FAKE_SHARE_REFUSE", "a container still mounts it")
-    code, _, err = forget_delivered(a, dejima_share, stored)
-    assert code == 1 and "dejima-share: a container still mounts it" in err and shared.is_dir()
+    kept(env, a, shared, dejima_share, "dejima-share: a container still mounts it", stored)
 
 
 def test_a_missing_dejima_share_keeps_the_share_and_the_task_still_goes(env, delivered):
     a, shared, stored = delivered
-    code, _, err = run(a, "--dejima-share", "no-such-dejima-share", "forget-delivered", "dn-abc23", stored)
-    assert code == 1 and "pass --dejima-share with its full path" in err and shared.is_dir()
+    kept(env, a, shared, "no-such-dejima-share", "pass --dejima-share with its full path", stored)
 
 
 def test_an_unrunnable_dejima_share_is_reported(env, delivered):
@@ -1729,14 +1731,14 @@ def test_an_unrunnable_dejima_share_is_reported(env, delivered):
     broken.parent.mkdir(exist_ok=True)
     broken.write_text("not a program")
     broken.chmod(0o755)
-    code, _, err = run(a, "--dejima-share", str(broken), "forget-delivered", "dn-abc23", stored)
-    assert code == 1 and "couldn't run" in err and shared.is_dir() and not (env / "tasks" / "dn-abc23").exists()
+    kept(env, a, shared, broken, "couldn't run", stored)
 
 
 def test_keep_shared_keeps_the_share(env, delivered, dejima_share):
     a, shared, stored = delivered
     assert forget_delivered(a, dejima_share, stored, "--keep-shared")[0] == 0
     assert prunes(env) == [] and shared.is_dir() and not (env / "tasks" / "dn-abc23").exists()
+    assert not (env / "tasks" / ".kept").exists()
 
 
 @pytest.mark.parametrize("recorded", [None, "gone", "/etc"])
@@ -1783,6 +1785,115 @@ def test_an_unreadable_share_is_kept_and_the_task_still_goes(env, delivered, dej
         kept(env, a, shared, dejima_share, "couldn't open it to compare with its delivery: Permission denied", stored)
     finally:
         shared.chmod(0o755)
+
+
+def discard(a, dejima_share, *extra):
+    return run(a, "--dejima-share", str(dejima_share), *extra, "discard", "dn-abc23")
+
+
+def test_discard_prunes_a_kept_share(env, delivered, dejima_share):
+    a, shared, _ = delivered
+    run(a, "--dejima-share", str(dejima_share), "forget", "dn-abc23")
+    code, _, err = discard(a, dejima_share)
+    assert code == 0, err
+    assert prunes(env) == [f"prune --isolated --yes {shared}"] and not shared.exists()
+    assert not (env / "tasks" / ".kept" / "dn-abc23").exists()
+
+
+def test_discard_forgets_an_exited_session_first(env, delivered, dejima_share):
+    # As when the API's forget failed, and the session is cleared.
+    a, shared, _ = delivered
+    assert discard(a, dejima_share)[0] == 0
+    assert not shared.exists() and not (env / "tasks" / "dn-abc23").exists()
+
+
+def test_a_share_darner_didn_t_start_is_never_pruned(env, delivered, dejima_share):
+    # A session started on the host by hand has a share beside darner's, and no task directory or record.
+    a, shared, _ = delivered
+    theirs = shared.parent / "20261025-090000-Mine99"
+    theirs.mkdir()
+    (theirs / "notes.md").write_text("mine")
+    run(a, "--dejima-share", str(dejima_share), "forget", "dn-abc23")
+    assert discard(a, dejima_share)[0] == 0
+    assert run(a, "--dejima-share", str(dejima_share), "discard", "dn-mine2")[0] == 0
+    assert prunes(env) == [f"prune --isolated --yes {shared}"] and (theirs / "notes.md").exists()
+
+
+def test_a_second_discard_at_once_still_succeeds(env, delivered, dejima_share, monkeypatch):
+    # A clear and the poller's purge racing: the record is gone by the time the second unlinks it.
+    from darner import launch as launch_module
+
+    a, shared, _ = delivered
+    run(a, "--dejima-share", str(dejima_share), "forget", "dn-abc23")
+    record = env / "tasks" / ".kept" / "dn-abc23"
+    real = launch_module._prune
+
+    def racing(args, share):
+        problem = real(args, share)
+        record.unlink()
+        return problem
+
+    monkeypatch.setattr(launch_module, "_prune", racing)
+    assert discard(a, dejima_share)[0] == 0 and not shared.exists()
+
+
+def test_discard_refuses_a_running_session(env, share, dejima_share):
+    a, shared = share
+    code, _, err = discard(a, dejima_share)
+    assert code == 1 and "hasn't ended" in err and shared.is_dir() and prunes(env) == []
+
+
+def test_discard_with_nothing_kept_does_nothing(env, dejima_share):
+    assert discard(args(env), dejima_share)[0] == 0 and prunes(env) == []
+
+
+def test_a_failed_discard_keeps_the_record_for_another_try(env, delivered, dejima_share, monkeypatch):
+    a, shared, _ = delivered
+    run(a, "--dejima-share", str(dejima_share), "forget", "dn-abc23")
+    monkeypatch.setenv("FAKE_SHARE_REFUSE", "a container still mounts it")
+    code, _, err = discard(a, dejima_share)
+    assert code == 1 and "a container still mounts it" in err and shared.is_dir()
+    assert (env / "tasks" / ".kept" / "dn-abc23").exists()
+
+
+def test_discard_prunes_only_under_the_share_root(env, delivered, dejima_share):
+    a, shared, _ = delivered
+    run(a, "--dejima-share", str(dejima_share), "forget", "dn-abc23")
+    (env / "tasks" / ".kept" / "dn-abc23").write_text("/etc")
+    code, _, err = discard(a, dejima_share)
+    assert code == 1 and "is not under" in err and prunes(env) == []
+
+
+def test_discard_with_keep_shared_keeps_the_share(env, delivered, dejima_share):
+    a, shared, _ = delivered
+    run(a, "--dejima-share", str(dejima_share), "forget", "dn-abc23")
+    assert discard(a, dejima_share, "--keep-shared")[0] == 0
+    assert shared.is_dir() and prunes(env) == [] and not (env / "tasks" / ".kept" / "dn-abc23").exists()
+
+
+def test_discard_is_a_command(env, share, dejima_share, monkeypatch):
+    a, shared = share
+    (env / "tasks" / "dn-abc23" / "exit").write_text("0\n")
+    monkeypatch.setenv("SSH_ORIGINAL_COMMAND", "discard ../etc")
+    assert run(a, "--dejima-share", str(dejima_share))[0] == 2
+    monkeypatch.setenv("SSH_ORIGINAL_COMMAND", "discard dn-abc23")
+    assert run(a, "--dejima-share", str(dejima_share))[0] == 0 and not shared.exists()
+
+
+def test_catalog_says_what_it_can_t_do_without_a_tool(env):
+    root = env / "dejima-install"
+    (root / "bin").mkdir(parents=True)
+    (root / "bin" / "dejima").write_text("#!/bin/sh\n")
+    (root / "bin" / "dejima").chmod(0o755)
+    install_manifests(root, MANIFESTS)
+    code, _, err = run(
+        args(env), "--dejima", str(root / "bin" / "dejima"), "--dejima-share", "no-such-share",
+        "--dejima-allow", "no-such-allow", "--docker", "no-such-docker", "catalog",
+    )
+    assert code == 0
+    assert "~/shared will be kept, not pruned: no-such-share not found on PATH" in err
+    assert "no-such-allow not found on PATH, so domain requests can't be granted" in err
+    assert "no-such-docker not found on PATH, so sessions can't be stopped" in err
 
 
 @pytest.mark.parametrize("third", ["", "ABC" + "0" * 61, "0" * 63, "0" * 65, "g" * 64])

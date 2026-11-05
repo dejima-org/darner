@@ -434,20 +434,14 @@ async def decide_domains(request: web.Request) -> web.Response:
 
 
 async def clear_session(request: web.Request) -> web.Response:
-    """Acknowledge an ended session's remaining events, so the API deletes it."""
+    """Have the API delete an ended session: its output, and the ~/shared the dejima host kept for it."""
     task_id = request.match_info["id"]
     try:
-        await api(request, "GET", f"/v1/tasks/{task_id}")
-        return web.json_response({"error": f"{task_id} is still running. Stop it first."}, status=409)
+        await api(request, "POST", f"/v1/tasks/{task_id}/clear", json={"requester": _user(request)})
     except ApiError as e:
+        # Already gone, as when it was cleared in another tab: what Clear asked for.
         if e.status != 404:
             return web.json_response({"error": str(e)}, status=_status(e))
-    try:
-        for event in await api(request, "GET", "/v1/events"):
-            if event["id"] == task_id:
-                await api(request, "POST", f"/v1/events/{event['seq']}/ack")
-    except ApiError as e:
-        return web.json_response({"error": str(e)}, status=_status(e))
     return web.json_response({"location": "/"})
 
 

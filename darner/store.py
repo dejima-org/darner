@@ -80,6 +80,7 @@ class Store:
             ("tasks", "typed", "REAL"),
             ("tasks", "ended", "REAL"),
             ("tasks", "name", "TEXT"),
+            ("tasks", "share_kept", "INTEGER NOT NULL DEFAULT 0"),
         ):
             if column not in {row[1] for row in self.db.execute(f"PRAGMA table_info({table})")}:
                 self.db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
@@ -120,7 +121,7 @@ class Store:
         for (task_id,) in self.db.execute("SELECT id FROM tasks WHERE status IN ('pending', 'failed')").fetchall():
             self.delete(task_id)
 
-    def end(self, task_id: str, note: str = "") -> None:
+    def end(self, task_id: str, note: str = "", data: dict | None = None) -> None:
         """Keep only what the task's frontend has yet to collect: its unacknowledged output.
 
         The prompt, requester, run id, and every other event go now. An ended
@@ -135,7 +136,8 @@ class Store:
             )
             self.db.execute("DELETE FROM events WHERE task_id = ? AND (acked = 1 OR type != 'output')", (task_id,))
             self.db.execute(
-                "INSERT INTO events (task_id, type, summary, created) VALUES (?, 'ended', ?, ?)", (task_id, note, time.time())
+                "INSERT INTO events (task_id, type, summary, data, created) VALUES (?, 'ended', ?, ?, ?)",
+                (task_id, note, None if data is None else json.dumps(data), time.time()),
             )
 
     def delete(self, task_id: str) -> None:
@@ -162,16 +164,27 @@ class Store:
         return {r[0] for r in rows}
 
     def purgeable(self, retention: float) -> list[str]:
-        """Ended tasks whose frontend has collected everything, or that have waited longer than retention."""
+        """Ended tasks whose frontend has collected everything and whose ~/shared wasn't kept, or that have waited longer than retention."""
         rows = self.db.execute(
-            "SELECT id FROM tasks t WHERE status = 'ended' AND (ended < ? OR NOT EXISTS"
-            " (SELECT 1 FROM events e WHERE e.task_id = t.id AND e.acked = 0))",
+            "SELECT id FROM tasks t WHERE status = 'ended' AND (ended < ? OR (NOT share_kept AND NOT EXISTS"
+            " (SELECT 1 FROM events e WHERE e.task_id = t.id AND e.acked = 0)))",
             (time.time() - retention,),
         )
         return [r[0] for r in rows]
 
+    def set_share_kept(self, task_id: str, kept: bool) -> None:
+        self.db.execute("UPDATE tasks SET share_kept = ? WHERE id = ?", (kept, task_id))
+
+    def share_kept(self, task_id: str) -> bool:
+        row = self.db.execute("SELECT share_kept FROM tasks WHERE id = ?", (task_id,)).fetchone()
+        return bool(row and row[0])
+
     def known(self, task_id: str) -> bool:
         return self.db.execute("SELECT 1 FROM tasks WHERE id = ?", (task_id,)).fetchone() is not None
+
+    def ended_at(self, task_id: str) -> float:
+        row = self.db.execute("SELECT ended FROM tasks WHERE id = ?", (task_id,)).fetchone()
+        return row[0] if row and row[0] else 0.0
 
     def ended(self) -> list[str]:
         return [r[0] for r in self.db.execute("SELECT id FROM tasks WHERE status = 'ended'")]

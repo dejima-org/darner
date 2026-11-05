@@ -26,13 +26,13 @@
 | `--max-upload BYTES` | 50 MiB | largest file a requester can upload into a session |
 | `--docker PATH` | `docker` | the docker CLI, used to find and stop a session's container |
 | `--dejima-allow PATH` | `dejima-allow` | dejima's `dejima-allow`, used to grant a session the domains it requested |
-| `--dejima-share PATH` | `dejima-share` | dejima's `dejima-share`, used to remove an ended session's `~/shared` once its output has been delivered whole; it needs a dejima with `prune --isolated [share]` and `--yes`, and without one, shares are kept |
+| `--dejima-share PATH` | `dejima-share` | dejima's `dejima-share`, used to remove an ended session's `~/shared` once its output has been delivered whole, or once it's cleared; it needs a dejima with `prune --isolated [share]` and `--yes`, and without one, shares are kept. `catalog` says so, and the API logs it at startup |
 | `--keep-shared` | off | keep every ended session's `~/shared` on the dejima host, even once its output has been delivered; separate from `--keep-records`, which keeps dejima's records |
 | `--stop-timeout SECONDS` | 60 | how long a stopped session may take to exit before dejima itself is ended |
 | `--help-interval SECONDS` | 300 | least time between a task's help requests, and between domain requests while one awaits a decision, so a session can't flood the room |
 | `--done-interval SECONDS` | 60 | least time between a running task's `.done` deliveries, so a session can't fill the API's disk; an exited session's is collected at once |
 
-The API sends one of these commands, which arrive as `SSH_ORIGINAL_COMMAND`: none (launch the job on stdin), `status`, `fetch <id>`, `catalog`, `help <id>`, `answer <id>`, `message <id>`, `upload <id>`, `stop <id>`, `domains <id>`, `allow <id> <n>`, `deny <id> <n>`, `forget <id>` or `forget-delivered <id> <sha256>`. Anything else is refused.
+The API sends one of these commands, which arrive as `SSH_ORIGINAL_COMMAND`: none (launch the job on stdin), `status`, `fetch <id>`, `catalog`, `help <id>`, `answer <id>`, `message <id>`, `upload <id>`, `stop <id>`, `domains <id>`, `allow <id> <n>`, `deny <id> <n>`, `forget <id>`, `forget-delivered <id> <sha256>` or `discard <id>`. Anything else is refused.
 
 Grants use `dejima --domains FILE` and `--dependencies FILE`, and output collection uses `--shared-path-file FILE`. A task without grants passes neither grant flag.
 
@@ -106,6 +106,7 @@ Every `poll_interval` seconds the API asks the dejima host for the status of lau
 | `POST /v1/tasks/<id>/files?name=&requester=` | the request body is a file for the session's `~/shared/uploads`; 413 over `max_upload` |
 | `POST /v1/tasks/<id>/check` | poll now rather than at the next `poll_interval`, and answer the session as it then is, or `{id, ended: true}`. A poll covers every session, so each client may check once every 15 seconds (429, with `Retry-After`), and a poll already running is the check |
 | `POST /v1/tasks/<id>/stop` | `{requester}`: end the task's session and close its tmux window, then poll, so a session that has exited is normally shown ended by the time it answers. A failed poll is logged and doesn't fail the stop; 409 if it isn't running |
+| `POST /v1/tasks/<id>/clear` | `{requester}`: delete an ended session now, with its output, and have the dejima host prune the `~/shared` it kept for it; 409 if it's running, 502 if the share couldn't be pruned, and the session stays to clear again |
 | `POST /v1/tasks/<id>/answer` | `{text, requester}`: answer the task's outstanding help request; 409 with the reason if the host refuses |
 
 `source` is echoed back as given, so a client knows where to reply without keeping state.
