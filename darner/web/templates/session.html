@@ -49,7 +49,7 @@
 <p class="summary">{% if session.name %}<span class="id">{{ task_id }}</span>. {% endif %}Started by <strong>{{ session.requester }}</strong>, {{ session.started | age }} ago. <span class="state {{ session.state }}">{{ session.state }}</span>
 {% if session.link %} · <a href="{{ session.link }}" rel="noopener noreferrer">Open it in remote access</a>{% endif %}</p>
 {% else %}
-<p class="summary">Ended. Only its output is kept, until it's cleared.</p>
+<p class="summary">Ended. Its output is kept here until it's cleared.{% if share == "pruned" %} Its ~/shared on the dejima host was removed, since everything in it is in the zip.{% elif share == "kept" %} Its ~/shared is kept on the dejima host too, since it holds files the zip doesn't.{% endif %}</p>
 {% endif %}
 <p class="untrusted">Everything marked as the agent's was written by the agent. Treat it as untrusted.</p>
 <section class="latest" aria-label="Latest">

@@ -200,6 +200,7 @@ nav .new { padding: 0.5rem 0.9rem; font-size: 0.95rem; }
 }
 .panel form + form { margin-top: 1.25rem; padding-top: 1.25rem; border-top: 1px solid var(--rule); }
 .panel .row { display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: center; margin-top: 1.25rem; }
+.panel > .row:first-child { margin-top: 0; }
 
 .latest { margin: 1.5rem 0; }
 .started { margin: 1.5rem 0; }
@@ -246,6 +247,7 @@ nav .new { padding: 0.5rem 0.9rem; font-size: 0.95rem; }
 .event.ended > h2, .event.expired > h2 { border-bottom: 0; }
 .event.expired > h2 { color: var(--refused); }
 .event .footer { padding: 0 1.1rem 1rem; display: flex; gap: 0.75rem; flex-wrap: wrap; align-items: center; }
+.event .agent + .footer { padding-top: 1rem; }
 .event .footer .quiet { font-size: 0.92rem; }
 ul.domains { list-style: none; padding: 0; margin: 0 0 0.75rem; display: grid; gap: 0.35rem; font-family: var(--font-mono); font-size: 0.92rem; }
 .domains .label { margin-left: 0.5rem; }

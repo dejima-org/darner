@@ -312,7 +312,8 @@ async def test_the_selftest_check_catches_unsafe_html():
 
 async def test_an_ended_session_shows_its_output_and_a_purged_one_is_gone(client):
     resp, html = await get(client, "/sessions/dn-bbbbb")
-    assert resp.status == 200 and "Only its output is kept" in html and "done" in html
+    assert resp.status == 200 and "Its output is kept here until it's cleared." in html and "done" in html
+    assert "~/shared" not in html.split('class="summary"', 1)[1].split("</p>", 1)[0]
     # It leads with the output, not the ended notice the summary already gives.
     assert 'class="event output"' in html.split('<section class="latest"', 1)[1].split("</section>", 1)[0]
     resp, html = await get(client, "/sessions/dn-zzzzz")
@@ -771,11 +772,21 @@ async def test_a_launch_the_api_says_failed_is_shown_as_it_is(client, fake):
     assert resp.status == 502 and (await resp.json())["error"] == "launch failed: dejima exited 1"
 
 
+@pytest.mark.parametrize("data, says", [
+    ({"share_pruned": True}, "Its ~/shared on the dejima host was removed, since everything in it is in the zip."),
+    ({"share_kept": True}, "Its ~/shared is kept on the dejima host too, since it holds files the zip doesn't."),
+])
+async def test_an_ended_session_says_where_its_files_are(client, fake, data, says):
+    fake.events["dn-bbbbb"][-1]["data"] = data
+    resp, html = await get(client, "/sessions/dn-bbbbb")
+    assert says in html.split('class="summary"', 1)[1].split("</p>", 1)[0]
+
+
 async def test_a_session_the_api_no_longer_lists_as_open_shows_as_ended(client, fake):
     # As a self-test's session does: it's ended from the start, and darner-api
     # answers GET /v1/tasks/<id> with a plain-text 404.
     resp, html = await get(client, "/sessions/dn-bbbbb")
-    assert resp.status == 200 and "Only its output is kept" in html
+    assert resp.status == 200 and "Its output is kept here until it's cleared." in html
 
 
 async def test_a_config_set_without_files_renders(client):

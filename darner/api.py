@@ -566,9 +566,12 @@ async def expire(app: web.Application, task: dict) -> None:
     audit.info("stop %s after max_session_age, at %ds", task["id"], int(age))
 
 
-def end_task(app: web.Application, task_id: str, note: str = "", kept: bool = False) -> None:
-    """Delete everything about an ended task but the output its frontend hasn't collected."""
-    app[STORE].end(task_id, note, {"share_kept": True} if kept else None)
+def end_task(app: web.Application, task_id: str, note: str = "", share: str | None = None) -> None:
+    """Delete everything about an ended task but the output its frontend hasn't collected.
+
+    share, "kept" or "pruned", is what became of its ~/shared, for its frontend to say.
+    """
+    app[STORE].end(task_id, note, {f"share_{share}": True} if share else None)
     kept = app[STORE].kept_outputs(task_id)
     task_dir = Path(app[CONFIG]["results_dir"]) / task_id
     for path in task_dir.glob("*.zip"):
@@ -611,8 +614,8 @@ async def discard(app: web.Application, task_id: str) -> bool:
     return True
 
 
-async def forget(app: web.Application, task_id: str, delivered: str | None = None) -> bool:
-    """Have the launcher delete an ended session's task directory. Whether it kept its ~/shared.
+async def forget(app: web.Application, task_id: str, delivered: str | None = None) -> str | None:
+    """Have the launcher delete an ended session's task directory. Whether it "kept" or "pruned" its ~/shared.
 
     With delivered, the hash of the session's latest zip this API stored, its
     ~/shared too. The launcher prunes it only if that's the zip it last sent
@@ -626,16 +629,17 @@ async def forget(app: web.Application, task_id: str, delivered: str | None = Non
         code, out, err = 1, "", str(e)
     if code:
         log.warning("forget %s failed: %s", task_id, err or f"exit {code}")
-        return False
+        return None
     try:
-        kept = json.loads(out).get("kept")
+        reply = json.loads(out)
+        kept, pruned = reply.get("kept"), reply.get("pruned")
     except (ValueError, AttributeError):
-        kept = None
+        return None
     if not isinstance(kept, str):
-        return False
+        return "pruned" if pruned is True else None
     log.warning("kept %s's ~/shared until it's cleared: %s", task_id, kept)
     app[STORE].set_share_kept(task_id, True)
-    return True
+    return "kept"
 
 
 async def poll_once(app: web.Application) -> None:
@@ -664,9 +668,9 @@ async def poll_once(app: web.Application) -> None:
             # One that ended here is retried with its output's hash, so its share is still pruned.
             if task["state"] == "exited" and task["id"] in ended:
                 # Its end was announced without the share, so a kept one is announced now, to be cleared.
-                if await forget(app, task["id"], store.last_stored_zip(task["id"])):
+                if await forget(app, task["id"], store.last_stored_zip(task["id"])) == "kept":
                     store.add_event(task["id"], "ended", data={"share_kept": True})
-            elif task["state"] == "exited" and not store.known(task["id"]) and await forget(app, task["id"]):
+            elif task["state"] == "exited" and not store.known(task["id"]) and await forget(app, task["id"]) == "kept":
                 log.warning("no frontend can clear %s, so prune its ~/shared on the dejima host with `darner-launch discard %s`", task["id"], task["id"])
             continue
         # Logged once per change: it's repeated every poll until fixed.
@@ -697,8 +701,8 @@ async def poll_once(app: web.Application) -> None:
         if task["state"] == "exited" and collected:
             # Delivered and kept: the session's latest output is a zip this API stored.
             # Forgotten first, so its end can say whether its ~/shared waits to be cleared.
-            kept = await forget(app, task["id"], store.last_stored_zip(task["id"]))
-            end_task(app, task["id"], kept=kept)
+            share = await forget(app, task["id"], store.last_stored_zip(task["id"]))
+            end_task(app, task["id"], share=share)
         elif task["state"] == "exited" and config["max_session_age"] and (
             time.time() - store.created(task["id"]) > config["max_session_age"]
         ):
@@ -707,8 +711,8 @@ async def poll_once(app: web.Application) -> None:
             tries = app[UNCOLLECTED][task["id"]] = app[UNCOLLECTED].get(task["id"], 0) + 1
             if tries >= COLLECT_TRIES:
                 app[UNCOLLECTED].pop(task["id"])
-                kept = await forget(app, task["id"])
-                end_task(app, task["id"], "its output couldn't be collected", kept=kept)
+                share = await forget(app, task["id"])
+                end_task(app, task["id"], "its output couldn't be collected", share=share)
 
 
 async def _poll_forever(app: web.Application) -> None:

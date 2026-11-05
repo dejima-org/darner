@@ -1627,8 +1627,8 @@ def forget_delivered(a, dejima_share, stored, *extra):
 
 def test_forget_delivered_prunes_a_share_that_still_holds_its_delivery(env, delivered, dejima_share):
     a, shared, stored = delivered
-    code, _, err = forget_delivered(a, dejima_share, stored)
-    assert code == 0, err
+    code, out, err = forget_delivered(a, dejima_share, stored)
+    assert code == 0 and json.loads(out) == {"pruned": True}, err
     assert prunes(env) == [f"prune --isolated --yes {shared}"]
     assert not shared.exists() and not (env / "tasks" / "dn-abc23").exists()
 
@@ -1736,7 +1736,8 @@ def test_an_unrunnable_dejima_share_is_reported(env, delivered):
 
 def test_keep_shared_keeps_the_share(env, delivered, dejima_share):
     a, shared, stored = delivered
-    assert forget_delivered(a, dejima_share, stored, "--keep-shared")[0] == 0
+    code, out, _ = forget_delivered(a, dejima_share, stored, "--keep-shared")
+    assert code == 0 and json.loads(out) == {}
     assert prunes(env) == [] and shared.is_dir() and not (env / "tasks" / "dn-abc23").exists()
     assert not (env / "tasks" / ".kept").exists()
 

@@ -41,7 +41,7 @@ elif command[:1] in (["forget"], ["forget-delivered"]):
     open(os.environ["STUB_LOG"], "a").write(json.dumps(command) + "\\n")
     if os.environ.get("STUB_FORGET_ERROR"):
         sys.exit("darner-launch: " + os.environ["STUB_FORGET_ERROR"])
-    print(json.dumps({"kept": os.environ["STUB_FORGET_KEPT"]} if os.environ.get("STUB_FORGET_KEPT") else {}))
+    print(json.dumps({"kept": os.environ["STUB_FORGET_KEPT"]} if os.environ.get("STUB_FORGET_KEPT") else {"pruned": True} if command[0] == "forget-delivered" else {}))
 elif command[:1] == ["discard"]:
     open(os.environ["STUB_LOG"], "a").write(json.dumps(command) + "\\n")
     if os.environ.get("STUB_DISCARD_ERROR"):
@@ -1699,6 +1699,8 @@ async def test_a_clean_delivery_asks_for_the_share_to_be_pruned(started, tmp_pat
     output(zip_bytes([("RESULT.md", "done")]))
     await poll_once(app)
     assert forgets(tmp_path, task_id) == ["forget-delivered"]
+    # Its end says so, for the frontend to say where its files are.
+    assert [e.get("data") for e in await events(client) if e["type"] == "ended"] == [{"share_pruned": True}]
 
 
 async def test_a_delivery_before_the_session_exited_still_counts(started, tmp_path):
