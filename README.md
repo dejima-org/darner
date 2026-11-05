@@ -41,7 +41,7 @@ frontend ──► darner-api ──ssh──► darner-launch ──► dejima 
 
 - **Frontends** are where you work. Two ship with darner, as equals: the [Matrix bot](docs/matrix.md), which takes tasks as replies in a room, and [darner-web](docs/web.md), in a browser. Run either or both. Each has its own token and sees only the sessions it started.
 - **darner-api** holds tasks and their events, applies your policy, and collects output. Frontends talk only to it.
-- **The dejima host** runs dejima and `darner-launch`. The API reaches it over ssh with a key that can run nothing but the launcher.
+- **The dejima host** runs [dejima](https://gitbox.branderson.io/dejima/dejima) and `darner-launch`. The API reaches it over ssh with a key that can run nothing but the launcher.
 
 They can share a machine or not.
 
