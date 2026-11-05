@@ -436,7 +436,13 @@ async def decide_domains(request: web.Request) -> web.Response:
 async def clear_session(request: web.Request) -> web.Response:
     """Have the API delete an ended session: its output, and the ~/shared the dejima host kept for it."""
     task_id = request.match_info["id"]
-    return await _act(request, "POST", f"/v1/tasks/{task_id}/clear", location="/", json={"requester": _user(request)})
+    try:
+        await api(request, "POST", f"/v1/tasks/{task_id}/clear", json={"requester": _user(request)})
+    except ApiError as e:
+        # Already gone, as when it was cleared in another tab: what Clear asked for.
+        if e.status != 404:
+            return web.json_response({"error": str(e)}, status=_status(e))
+    return web.json_response({"location": "/"})
 
 
 class _TooLarge(Exception):

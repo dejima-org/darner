@@ -1745,7 +1745,7 @@ async def test_a_kept_share_waits_to_be_cleared(started, tmp_path, monkeypatch):
     assert discards(tmp_path, task_id) == [["discard", task_id]] and not app[STORE].known(task_id)
 
 
-async def test_clearing_without_a_kept_share_asks_nothing_of_the_launcher(started, tmp_path):
+async def test_clearing_without_a_kept_share(started, tmp_path, monkeypatch):
     app, client, task_id, status, _ = started
     status(state="running", ready=False)
     await poll_once(app)
@@ -1753,8 +1753,10 @@ async def test_clearing_without_a_kept_share_asks_nothing_of_the_launcher(starte
     assert resp.status == 409 and "still running" in (await resp.json())["error"]
     status(state="exited", ready=False)
     await poll_once(app)
+    # A launcher that can't discard, such as an older one, doesn't fail a clear with nothing kept.
+    monkeypatch.setenv("STUB_DISCARD_ERROR", "unknown command")
     resp = await client.post(f"/v1/tasks/{task_id}/clear", json={"requester": "@a:example.org"}, headers=AUTH)
-    assert resp.status == 204 and discards(tmp_path, task_id) == [] and not app[STORE].known(task_id)
+    assert resp.status == 204 and discards(tmp_path, task_id) == [["discard", task_id]] and not app[STORE].known(task_id)
     resp = await client.post(f"/v1/tasks/{task_id}/clear", json={"requester": "@a:example.org"}, headers=AUTH)
     assert resp.status == 404
 
@@ -1766,6 +1768,36 @@ async def test_a_failed_discard_leaves_the_session_to_clear_again(started, tmp_p
     body = (await resp.json())["error"]
     assert resp.status == 502 and "/home" not in body and "the API's log says why" in body
     assert app[STORE].known(task_id)
+
+
+async def test_a_share_that_can_t_be_pruned_is_tried_again_until_a_second_retention(started, tmp_path, monkeypatch, config):
+    app, client, task_id = await kept_share(started, monkeypatch)
+    monkeypatch.setenv("STUB_DISCARD_ERROR", "host unreachable")
+    app[STORE].db.execute("UPDATE tasks SET ended = ?", (time.time() - config["output_retention"] - 1,))
+    await poll_once(app)
+    await poll_once(app)
+    assert len(discards(tmp_path, task_id)) == 2 and app[STORE].known(task_id)
+    app[STORE].db.execute("UPDATE tasks SET ended = ?", (time.time() - 2 * config["output_retention"] - 1,))
+    await poll_once(app)
+    assert not app[STORE].known(task_id)
+
+
+async def test_a_forget_that_times_out_still_ends_the_task(started, tmp_path, monkeypatch):
+    import darner.api
+
+    app, client, task_id, status, output = started
+    status(state="exited")
+    output(zip_bytes([("RESULT.md", "done")]))
+    real = darner.api.run_remote
+
+    async def slow_forget(config, command, *args, **kwargs):
+        if command[0].startswith("forget"):
+            raise RuntimeError("launcher timed out")
+        return await real(config, command, *args, **kwargs)
+
+    monkeypatch.setattr(darner.api, "run_remote", slow_forget)
+    await poll_once(app)
+    assert app[STORE].task_status("maubot", task_id) == "ended"
 
 
 async def test_a_kept_share_goes_after_output_retention(started, tmp_path, monkeypatch, config):

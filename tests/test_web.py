@@ -135,6 +135,8 @@ class FakeApi:
             return web.Response(status=204)
 
         async def clear(request):
+            if getattr(self, "clear_status", 204) == 404:
+                return web.json_response({"error": "no session"}, status=404)
             if any(t["id"] == request.match_info["id"] for t in self.sessions):
                 return web.json_response({"error": f"{request.match_info['id']} is still running. Stop it first."}, status=409)
             return await no_content(request)
@@ -575,6 +577,10 @@ async def test_clear_refuses_a_running_session_and_clears_an_ended_one(client, f
     resp = await client.post("/sessions/dn-bbbbb/clear", headers=POST, json={})
     assert resp.status == 200 and (await resp.json())["location"] == "/"
     assert posted(fake)[-1] == ("/v1/tasks/dn-bbbbb/clear", {"requester": "web"})
+    # Already cleared, as from another tab, is what Clear asked for.
+    fake.clear_status = 404
+    resp = await client.post("/sessions/dn-bbbbb/clear", headers=POST, json={})
+    assert resp.status == 200 and (await resp.json())["location"] == "/"
 
 
 async def test_an_upload_streams_to_the_api(client, fake):

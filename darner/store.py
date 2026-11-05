@@ -182,6 +182,10 @@ class Store:
     def known(self, task_id: str) -> bool:
         return self.db.execute("SELECT 1 FROM tasks WHERE id = ?", (task_id,)).fetchone() is not None
 
+    def ended_at(self, task_id: str) -> float:
+        row = self.db.execute("SELECT ended FROM tasks WHERE id = ?", (task_id,)).fetchone()
+        return row[0] if row and row[0] else 0.0
+
     def ended(self) -> list[str]:
         return [r[0] for r in self.db.execute("SELECT id FROM tasks WHERE status = 'ended'")]
 

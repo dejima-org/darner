@@ -926,6 +926,12 @@ async def test_clear_by_task_id_or_by_replying(maubot_plugin, maubot_test_bot, a
     assert replies(maubot_test_bot) == ["Cleared dn-7f3k2: its output and its ~/shared on the dejima host are deleted."] * 2
 
 
+async def test_a_mistyped_id_isn_t_cleared_or_taken_as_a_task(maubot_plugin, maubot_test_bot, api):
+    await send(maubot_test_bot, message("@dragonlet:example.org clear ab-12345", reply_to=None))
+    assert api.clears == [] and api.requests == []
+    assert replies(maubot_test_bot) == ["ab-12345 isn't one of my task ids, which look like dn-xxxxx."]
+
+
 async def test_clear_needs_a_task_and_relays_a_refusal(maubot_plugin, maubot_test_bot, api):
     await send(maubot_test_bot, message("@dragonlet:example.org clear", reply_to=None))
     api.clear_status = 409

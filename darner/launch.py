@@ -541,7 +541,9 @@ def forget(args: argparse.Namespace, task_id: str, delivered: str | None = None)
         raise RuntimeError(f"{task_id} hasn't ended")
     problem = _prune_share(args, task_dir, delivered) if delivered else "its output wasn't delivered whole"
     kept = problem and _keep(args, task_dir, task_id)
-    shutil.rmtree(task_dir)
+    # A clear's discard may be forgetting it at the same time.
+    with contextlib.suppress(FileNotFoundError):
+        shutil.rmtree(task_dir)
     if kept:
         return {"kept": problem}
     if problem and delivered:

@@ -48,7 +48,7 @@ TELL = re.compile(rf"tell(?:\s+({_ID}))?\s+(\S.*)", re.IGNORECASE | re.DOTALL)
 # Only as the whole argument, so "stop re-using the old client" is still a task. After
 # tell, words follow anyway, so the word must have a digit, as most ids do.
 NOT_AN_ID = re.compile(
-    r"(?:stop|status|upload)\s+([a-z0-9]{2}-[a-z0-9]{5})|tell\s+([a-z0-9]{2}-(?=[a-z]*\d)[a-z0-9]{5})\s.*",
+    r"(?:stop|clear|status|upload)\s+([a-z0-9]{2}-[a-z0-9]{5})|tell\s+([a-z0-9]{2}-(?=[a-z]*\d)[a-z0-9]{5})\s.*",
     re.IGNORECASE | re.DOTALL,
 )
 # Pages of a note's edits read looking for its author's latest.

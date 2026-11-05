@@ -576,15 +576,20 @@ def end_task(app: web.Application, task_id: str, note: str = "", kept: bool = Fa
             path.unlink(missing_ok=True)
 
 
-async def purge(app: web.Application) -> None:
+async def purge(app: web.Application, discards: bool = True) -> None:
     """Delete ended tasks whose frontend has collected everything, or that waited past output_retention.
 
     One whose ~/shared the launcher kept waits to be cleared, or for output_retention, and the share goes with it.
+    A share that can't be pruned is tried again each poll, so a passing failure doesn't leave it behind for
+    good, until a second output_retention. Without discards, as on an acknowledgement, those wait for the poller.
     """
-    store = app[STORE]
-    for task_id in store.purgeable(app[CONFIG]["output_retention"]):
+    store, retention = app[STORE], app[CONFIG]["output_retention"]
+    for task_id in store.purgeable(retention):
         if store.share_kept(task_id):
-            await discard(app, task_id)
+            if not discards:
+                continue
+            if not await discard(app, task_id) and time.time() - store.ended_at(task_id) < 2 * retention:
+                continue
         delete_task(app, task_id)
 
 
@@ -615,7 +620,10 @@ async def forget(app: web.Application, task_id: str, delivered: str | None = Non
     kept, so only it can say. A share it keeps waits for the session to be cleared.
     """
     command = ["forget-delivered", task_id, delivered] if delivered else ["forget", task_id]
-    code, out, err = await run_remote(app[CONFIG], command)
+    try:
+        code, out, err = await run_remote(app[CONFIG], command)
+    except RuntimeError as e:
+        code, out, err = 1, "", str(e)
     if code:
         log.warning("forget %s failed: %s", task_id, err or f"exit {code}")
         return False
@@ -1278,7 +1286,7 @@ async def ack_event(request: web.Request) -> web.Response:
     # Collected, so its zip goes now, not when the session ends.
     if event.type == "output":
         (Path(request.app[CONFIG]["results_dir"]) / event.id / f"{seq}.zip").unlink(missing_ok=True)
-    await purge(request.app)
+    await purge(request.app, discards=False)
     return web.Response(status=204)
 
 
@@ -1297,8 +1305,10 @@ async def clear_task(request: web.Request) -> web.Response:
         requester = _requester(body.get("requester"))
     except (ValueError, RequestError, AttributeError):
         return web.json_response({"error": "body must have requester"}, status=400)
-    # The launcher's reason can name host paths, so it goes to the log, not the frontend.
-    if store.share_kept(task_id) and not await discard(request.app, task_id):
+    # Asked even when no share was reported kept, since a forget that failed leaves the
+    # task directory on the dejima host for discard to forget. The launcher's reason can
+    # name host paths, so it goes to the log, not the frontend.
+    if not await discard(request.app, task_id) and store.share_kept(task_id):
         return web.json_response(
             {"error": f"couldn't remove {task_id}'s ~/shared on the dejima host; the API's log says why"}, status=502,
         )
