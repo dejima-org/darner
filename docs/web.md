@@ -76,7 +76,7 @@ A session's page leads with what it's waiting on you for, a domain request or a 
 
 **Check now** has the API look at every session at once, rather than at its next `poll_interval`, for output or a request it hasn't seen yet. It can't find a signal the agent left somewhere other than `~/shared`. Checks are one every 15 seconds for darner-web, which shares one API token among its users.
 
-An ended session stays on its page, showing its output and zips, until someone presses **Clear**. That acknowledges its last events, and the API deletes it. Uncleared output is deleted after the API's `output_retention`, 7 days by default. Files are uploaded from a running session's page, not when starting a task, since a session's `~/shared` doesn't exist until it's running.
+An ended session stays on its page, showing its output and zips, until someone presses **Clear**. The API then deletes it, and has the dejima host prune its `~/shared` if that was [kept](sessions.md#whats-kept). Uncleared output is deleted after the API's `output_retention`, 7 days by default. Files are uploaded from a running session's page, not when starting a task, since a session's `~/shared` doesn't exist until it's running.
 
 ## What it keeps
 

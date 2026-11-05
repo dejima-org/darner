@@ -63,6 +63,8 @@ class Api:
         self.blurbs = ["loki", "myapp"]
         self.stops = []
         self.stop_status = 204
+        self.clears = []
+        self.clear_status = 204
         self.selftests = []
         self.configs = {"recipes": {
             "blurb": ["myapp"], "file": ["recipes-token"], "harness": "cline", "context_window": "30000", "description": "Adds <b>recipes</b>.",
@@ -91,6 +93,12 @@ class Api:
         if self.stop_status == 204:
             return web.Response(status=204)
         return web.json_response({"error": "dn-7f3k2 is not running"}, status=self.stop_status)
+
+    async def clear(self, request):
+        self.clears.append((request.match_info["id"], await request.json()))
+        if self.clear_status == 204:
+            return web.Response(status=204)
+        return web.json_response({"error": "dn-7f3k2 is still running. Stop it first."}, status=self.clear_status)
 
     async def list_blurbs(self, request):
         if self.blurbs is None:
@@ -154,6 +162,7 @@ async def api(aiohttp_server):
     app.router.add_post("/v1/tasks/{id}/answer", api.answer)
     app.router.add_get("/v1/blurbs", api.list_blurbs)
     app.router.add_post("/v1/tasks/{id}/stop", api.stop)
+    app.router.add_post("/v1/tasks/{id}/clear", api.clear)
     app.router.add_get("/v1/configs/{name}", api.describe)
     app.router.add_get("/v1/blurbs/{name}", api.blurb)
     app.router.add_get("/v1/configs", api.list_configs)
@@ -907,6 +916,31 @@ async def test_stop_needs_a_task(maubot_plugin, maubot_test_bot, api, replied):
     await send(maubot_test_bot, message("@dragonlet:example.org stop", reply_to=reply_to))
     assert api.stops == []
     assert replies(maubot_test_bot)[0].startswith("To stop a session")
+
+
+async def test_clear_by_task_id_or_by_replying(maubot_plugin, maubot_test_bot, api):
+    await send(maubot_test_bot, message("@dragonlet:example.org clear dn-7f3k2", reply_to=None))
+    maubot_test_bot.events["$ended"] = bot_message(**{"io.branderson.dejima.darner.task": "dn-7f3k2"})
+    await send(maubot_test_bot, message("@dragonlet:example.org clear", reply_to="$ended"))
+    assert api.clears == [("dn-7f3k2", {"requester": "@alice:example.org"})] * 2
+    assert replies(maubot_test_bot) == ["Cleared dn-7f3k2: its output and its ~/shared on the dejima host are deleted."] * 2
+
+
+async def test_clear_needs_a_task_and_relays_a_refusal(maubot_plugin, maubot_test_bot, api):
+    await send(maubot_test_bot, message("@dragonlet:example.org clear", reply_to=None))
+    api.clear_status = 409
+    await send(maubot_test_bot, message("@dragonlet:example.org clear dn-7f3k2", reply_to=None))
+    assert replies(maubot_test_bot)[0].startswith("To clear an ended session")
+    assert replies(maubot_test_bot)[1] == "Failed: dn-7f3k2 is still running. Stop it first."
+
+
+async def test_an_ended_notice_says_a_kept_share_waits_to_be_cleared(maubot_plugin, maubot_test_bot, api):
+    api.add(1, type="ended", summary="", data=None)
+    api.events[-1]["data"] = {"share_kept": True}
+    await maubot_plugin.poll_once()
+    assert replies(maubot_test_bot) == [
+        "dn-7f3k2 ended. Its ~/shared is kept on the dejima host until you clear it: reply clear to this, with a mention."
+    ]
 
 
 async def test_stop_failure_is_relayed(maubot_plugin, maubot_test_bot, api):

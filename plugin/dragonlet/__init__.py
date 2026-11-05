@@ -39,6 +39,8 @@ NO_MENTIONS = {"m.mentions": {}}
 PILL = re.compile(r'<a\s[^>]*href="https://matrix\.to/#/([^"?]+)[^"]*"[^>]*>(.*?)</a>', re.IGNORECASE | re.DOTALL)
 STOP = re.compile(rf"stop(?:\s+({_ID}))?", re.IGNORECASE)
 STOP_HOW = "To stop a session, reply `stop` with a mention to one of my messages about it, or send `stop dn-xxxxx` with a mention."
+CLEAR = re.compile(rf"clear(?:\s+({_ID}))?", re.IGNORECASE)
+CLEAR_HOW = "To clear an ended session, reply `clear` with a mention to one of my messages about it, or send `clear dn-xxxxx` with a mention."
 STATUS = re.compile(rf"status(?:\s+({_ID}))?", re.IGNORECASE)
 TELL = re.compile(rf"tell(?:\s+({_ID}))?\s+(\S.*)", re.IGNORECASE | re.DOTALL)
 # A session command naming something shaped like a task id that isn't one, so
@@ -99,7 +101,7 @@ allow: pypi.org, files.pythonhosted.org
 
 **Domains:** when the agent asks to reach domains, I list every one. Reply `allow` or `deny` with a mention to that message.
 
-**Sessions:** with a mention, `sessions` lists the open ones, `status dn-xxxxx` says what one is waiting on, `tell dn-xxxxx <message>` types a message into it, `upload dn-xxxxx` in reply to a file puts the file in its `~/shared/uploads`, and `stop dn-xxxxx` ends it. A named session's dn-<name> works anywhere its id does. Replying to any of my messages about a session works without either.
+**Sessions:** with a mention, `sessions` lists the open ones, `status dn-xxxxx` says what one is waiting on, `tell dn-xxxxx <message>` types a message into it, `upload dn-xxxxx` in reply to a file puts the file in its `~/shared/uploads`, `stop dn-xxxxx` ends it, and `clear dn-xxxxx` deletes what an ended one left on the dejima host. A named session's dn-<name> works anywhere its id does. Replying to any of my messages about a session works without either.
 
 Only allowlisted users can start tasks, and a message replied to must be from one of them too. Anything the agent writes is untrusted.
 """
@@ -264,7 +266,11 @@ class Dragonlet(Plugin):
             await evt.reply(f"{word} isn't one of my task ids, which look like dn-xxxxx.", markdown=False, extra_content=NO_MENTIONS)
             return
         if mentioned and (stop := STOP.fullmatch(command)):
-            await self._respond(evt, self._stop(evt, stop[1] and stop[1].lower()))
+            await self._respond(evt, self._post_to(evt, stop[1] and stop[1].lower(), "stop", STOP_HOW, "Stopped {}."))
+            return
+        if mentioned and (clear := CLEAR.fullmatch(command)):
+            done = "Cleared {}: its output and its ~/shared on the dejima host are deleted."
+            await self._respond(evt, self._post_to(evt, clear[1] and clear[1].lower(), "clear", CLEAR_HOW, done))
             return
         if mentioned and command.lower() in ("allow", "deny"):
             await self._respond(evt, self._decide_domains(evt, command.lower()))
@@ -508,14 +514,15 @@ class Dragonlet(Plugin):
         error = data.get("error") if isinstance(data, dict) else None
         return f"Failed: {error or f'HTTP {resp.status}'}", False
 
-    async def _stop(self, evt: MessageEvent, task: str | None) -> tuple[str, bool]:
+    async def _post_to(self, evt: MessageEvent, task: str | None, verb: str, how: str, done: str) -> tuple[str, bool]:
+        """Stop or clear a session, named or replied to."""
         if task is None and evt.content.get_reply_to():
             task = self._tagged_task(await self.client.get_event(evt.room_id, evt.content.get_reply_to()))
         if task is None:
-            return STOP_HOW, False
-        async with self._api("POST", f"/v1/tasks/{task}/stop", json={"requester": evt.sender}) as resp:
+            return how, False
+        async with self._api("POST", f"/v1/tasks/{task}/{verb}", json={"requester": evt.sender}) as resp:
             if resp.ok:
-                return f"Stopped {task}.", True
+                return done.format(task), True
             data = await resp.json(content_type=None)
         error = data.get("error") if isinstance(data, dict) else None
         return f"Failed: {error or f'HTTP {resp.status}'}", False
@@ -572,7 +579,10 @@ class Dragonlet(Plugin):
             await self._notice(room, ref, f"{e['id']} has run for {age}, longer than sessions may run here, so it was stopped.")
             return
         if e["type"] == "ended":
-            await self._notice(room, ref, f"{e['id']} ended" + (f": {e['summary']}." if e["summary"] else "."))
+            kept = " Its ~/shared is kept on the dejima host until you clear it: reply clear to this, with a mention." if (
+                (e.get("data") or {}).get("share_kept")
+            ) else ""
+            await self._notice(room, ref, f"{e['id']} ended" + (f": {e['summary']}." if e["summary"] else ".") + kept)
             return
         if e["type"] == "help":
             await self._help(room, ref, e)

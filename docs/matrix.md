@@ -95,6 +95,7 @@ To manage open sessions, mention the bot with one of these. Replying to any of t
 | `tell dn-xxxxx <message>` | types a message into the session, which also answers an outstanding help request; needs `--answers` on the launcher |
 | `upload dn-xxxxx` | in reply to a file: puts it in the session's `~/shared/uploads`; a file sent as a reply to one of the bot's messages about a session goes there too |
 | `stop dn-xxxxx` | ends the session, including one stuck starting |
+| `clear dn-xxxxx` | for an ended session whose `~/shared` was kept on the dejima host, which the ended notice says: deletes it, and what the API holds about the session |
 
 Replying to one of the bot's messages about a session with anything else, with a mention, sends it to the session like `tell`.
 

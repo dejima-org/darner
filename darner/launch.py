@@ -37,6 +37,8 @@ from darner.job import (
 
 FETCH_REJECTED = 3
 SHA256 = re.compile(r"[0-9a-f]{64}")
+# Where a forgotten session's kept ~/shared is recorded, under the tasks directory, until it's discarded.
+KEPT = ".kept"
 RUN_ID = re.compile(r"[0-9a-f]{16}")
 MAX_HELP = 16 * 1024
 SIGNALS = {
@@ -340,9 +342,12 @@ def run_session(args: argparse.Namespace, task_dir: Path) -> int:
     return code
 
 
-def _share_path(args: argparse.Namespace, task_dir: Path) -> tuple[str, str]:
-    """A task's ~/shared as the share root and a leaf directly under it, or ValueError."""
-    raw = (task_dir / "shared-path").read_text()
+def _share_path(args: argparse.Namespace, task_dir: Path, record: Path | None = None) -> tuple[str, str]:
+    """A task's ~/shared as the share root and a leaf directly under it, or ValueError.
+
+    Read from its task directory, or from the record kept once that's gone.
+    """
+    raw = (record or task_dir / "shared-path").read_text()
     path = raw.removesuffix("\n")
     parent, leaf = os.path.split(path)
     if not os.path.isabs(path) or "\0" in path or not archive.safe_component(leaf):
@@ -518,25 +523,68 @@ def _state(task_dir: Path) -> str:
     return "starting"
 
 
-def forget(args: argparse.Namespace, task_id: str, delivered: str | None = None) -> None:
+def forget(args: argparse.Namespace, task_id: str, delivered: str | None = None) -> dict:
     """Delete what's left of an ended session: its task directory, and with delivered, its ~/shared.
 
     The task directory holds its prompt in argv.json. The share goes only when
     the API names the zip it stored (forget-delivered <id> <sha256>), that's
-    the zip this last sent, and the share still holds exactly what it carried. Otherwise
-    it's kept, as dejima keeps a non-empty share, for an operator to recover or
-    prune by hand. The share is checked first, since its path is recorded in
-    the task directory, which goes either way.
+    the zip this last sent, and the share still holds exactly what it carried.
+    Otherwise it's kept, and recorded under KEPT, until the session is cleared
+    or the API purges it, when discard prunes it. The share is checked first,
+    since its path is recorded in the task directory, which goes either way.
+    Returns why the share was kept, if it was.
     """
     task_dir = args.tasks_dir / task_id
     if not task_dir.is_dir():
-        return
+        return {}
     if _state(task_dir) != "exited":
         raise RuntimeError(f"{task_id} hasn't ended")
-    problem = _prune_share(args, task_dir, delivered) if delivered else None
+    problem = _prune_share(args, task_dir, delivered) if delivered else "its output wasn't delivered whole"
+    kept = problem and _keep(args, task_dir, task_id)
     shutil.rmtree(task_dir)
-    if problem:
-        raise RuntimeError(f"forgot {task_id}, but kept its ~/shared for dejima-share prune --isolated by hand: {problem}")
+    if kept:
+        return {"kept": problem}
+    if problem and delivered:
+        raise RuntimeError(f"forgot {task_id}, but couldn't prune its ~/shared: {problem}")
+    return {}
+
+
+def _keep(args: argparse.Namespace, task_dir: Path, task_id: str) -> bool:
+    """Record a share that's still there, so discard can prune it once its task directory is gone."""
+    if args.keep_shared:
+        return False
+    try:
+        root, leaf = _share_path(args, task_dir)
+    except (OSError, ValueError):
+        return False
+    if not os.path.lexists(os.path.join(root, leaf)):
+        return False
+    (args.tasks_dir / KEPT).mkdir(mode=0o700, exist_ok=True)
+    _write_atomic(args.tasks_dir / KEPT / task_id, os.path.join(root, leaf))
+    return True
+
+
+def discard(args: argparse.Namespace, task_id: str) -> None:
+    """Prune an ended session's ~/shared, whatever it holds, as its frontend clears it.
+
+    A share forget kept for an operator to recover is pruned here, since
+    clearing the session is the requester's word that nothing in it is wanted.
+    """
+    task_dir, record = args.tasks_dir / task_id, args.tasks_dir / KEPT / task_id
+    if task_dir.is_dir():
+        if _state(task_dir) != "exited":
+            raise RuntimeError(f"{task_id} hasn't ended")
+        forget(args, task_id)
+    if not record.exists():
+        return
+    if not args.keep_shared:
+        try:
+            root, leaf = _share_path(args, task_dir, record)
+        except ValueError as e:
+            raise RuntimeError(f"couldn't remove {task_id}'s ~/shared: {e}")
+        if os.path.lexists(os.path.join(root, leaf)) and (problem := _prune(args, os.path.join(root, leaf))):
+            raise RuntimeError(f"couldn't remove {task_id}'s ~/shared: {problem}")
+    record.unlink()
 
 
 def _prune_share(args: argparse.Namespace, task_dir: Path, stored: str) -> str | None:
@@ -554,15 +602,31 @@ def _prune_share(args: argparse.Namespace, task_dir: Path, stored: str) -> str |
         return None  # dejima removes an empty one itself
     if problem := _changed_since_delivery(args, task_dir, stored):
         return problem
+    return _prune(args, share)
+
+
+def _dejima_share(args: argparse.Namespace) -> tuple[str | None, str | None]:
+    """dejima-share's path, or why it can't prune one share by name."""
     tool = shutil.which(args.dejima_share)
     if tool is None:
-        return f"{Path(args.dejima_share).name} not found on PATH; pass --dejima-share with its full path"
+        return None, f"{Path(args.dejima_share).name} not found on PATH; pass --dejima-share with its full path"
     try:
         # An older dejima-share's prune ignores the name and sweeps every ended
         # share, so the named form is required, as is --yes.
         usage = subprocess.run([tool, "--help"], stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=30)
-        if "prune --isolated [share]" not in usage.stdout or "--yes" not in usage.stdout:
-            return "this dejima-share can't prune one share by name; it needs a dejima release with `prune --isolated [share]` and `--yes`"
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return None, f"couldn't run {Path(args.dejima_share).name} --help: {getattr(e, 'strerror', None) or type(e).__name__}"
+    if "prune --isolated [share]" not in usage.stdout or "--yes" not in usage.stdout:
+        return None, "this dejima-share can't prune one share by name; it needs a dejima release with `prune --isolated [share]` and `--yes`"
+    return tool, None
+
+
+def _prune(args: argparse.Namespace, share: str) -> str | None:
+    """Have dejima-share remove a share directly under the share root. Why it couldn't, or None."""
+    tool, problem = _dejima_share(args)
+    if problem:
+        return problem
+    try:
         # dejima refuses anything that isn't a direct child of its isolated root,
         # or a share still mounted or held by a launch.
         result = subprocess.run(
@@ -571,7 +635,7 @@ def _prune_share(args: argparse.Namespace, task_dir: Path, stored: str) -> str |
     except subprocess.TimeoutExpired:
         return "dejima-share timed out"
     except OSError as e:
-        return f"couldn't run {args.dejima_share}: {e.strerror or type(e).__name__}"
+        return f"couldn't run {Path(args.dejima_share).name}: {e.strerror or type(e).__name__}"
     if result.returncode:
         return archive.clean_text(result.stderr, 500) or f"dejima-share prune exited {result.returncode}"
     if os.path.lexists(share):
@@ -1321,6 +1385,13 @@ def catalog(args: argparse.Namespace) -> dict:
         raise RuntimeError(f"{Path(args.dejima).name} not found on PATH; pass --dejima with its full path")
     root = dejima_root(dejima)
     default_harness, defaults = launch_defaults(args, dejima)
+    # Not fatal, but each costs something quietly: printed for the API's log.
+    if not args.keep_shared and (problem := _dejima_share(args)[1]):
+        print(f"ended sessions' ~/shared will be kept, not pruned: {problem}", file=sys.stderr)
+    for option, tool, costs in (("--dejima-allow", args.dejima_allow, "domain requests can't be granted"),
+                                ("--docker", args.docker, "sessions can't be stopped")):
+        if shutil.which(tool) is None:
+            print(f"{Path(tool).name} not found on PATH, so {costs}; pass {option} with its full path", file=sys.stderr)
     return {
         "harnesses": _names(root, "harness"), "backends": _names(root, "backend"), "default_harness": default_harness,
         "defaults": defaults, "options": harness_options(root),
@@ -1332,7 +1403,7 @@ def command(args: argparse.Namespace) -> list[str]:
     words = original.split() if original is not None else args.command
     if words in ([], ["status"], ["catalog"]) or (
         len(words) == 2
-        and words[0] in ("fetch", "help", "answer", "message", "upload", "stop", "domains", "forget")
+        and words[0] in ("fetch", "help", "answer", "message", "upload", "stop", "domains", "forget", "discard")
         and valid_task_id(words[1])
     ) or (
         len(words) == 3 and words[0] in ("allow", "deny") and valid_task_id(words[1])
@@ -1369,9 +1440,11 @@ def main(argv: list[str] | None = None) -> int:
         elif words and words[0] == "stop":
             stop(args, words[1])
         elif words and words[0] == "forget":
-            forget(args, words[1])
+            print(json.dumps(forget(args, words[1])))
         elif words and words[0] == "forget-delivered":
-            forget(args, words[1], delivered=words[2])
+            print(json.dumps(forget(args, words[1], delivered=words[2])))
+        elif words and words[0] == "discard":
+            discard(args, words[1])
         elif words and words[0] == "domains":
             print(json.dumps(domain_request(args, words[1])))
         elif words and words[0] in ("allow", "deny"):

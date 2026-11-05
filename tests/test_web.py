@@ -134,6 +134,11 @@ class FakeApi:
             await record(request, None)
             return web.Response(status=204)
 
+        async def clear(request):
+            if any(t["id"] == request.match_info["id"] for t in self.sessions):
+                return web.json_response({"error": f"{request.match_info['id']} is still running. Stop it first."}, status=409)
+            return await no_content(request)
+
         async def ack(request):
             self.calls.append((request.method, request.path, None))
             return web.Response(status=204)
@@ -181,6 +186,7 @@ class FakeApi:
         app.router.add_post("/v1/selftest", selftest)
         app.router.add_post("/v1/tasks/{id}/message", no_content)
         app.router.add_post("/v1/tasks/{id}/stop", no_content)
+        app.router.add_post("/v1/tasks/{id}/clear", clear)
 
         async def check(request):
             if self.check_status != 200:
@@ -563,12 +569,12 @@ async def test_an_empty_message_isn_t_sent(client, fake):
     assert resp.status == 400 and posted(fake) == []
 
 
-async def test_clear_refuses_a_running_session_and_acknowledges_an_ended_one(client, fake):
+async def test_clear_refuses_a_running_session_and_clears_an_ended_one(client, fake):
     resp = await client.post("/sessions/dn-aaaaa/clear", headers=POST, json={})
-    assert resp.status == 409 and "still running" in (await resp.json())["error"] and posted(fake) == []
+    assert resp.status == 409 and "still running" in (await resp.json())["error"]
     resp = await client.post("/sessions/dn-bbbbb/clear", headers=POST, json={})
-    assert resp.status == 200 and await resp.json() == {"location": "/"}
-    assert [path for path, _ in posted(fake)] == ["/v1/events/5/ack", "/v1/events/6/ack"]
+    assert resp.status == 200 and (await resp.json())["location"] == "/"
+    assert posted(fake)[-1] == ("/v1/tasks/dn-bbbbb/clear", {"requester": "web"})
 
 
 async def test_an_upload_streams_to_the_api(client, fake):
