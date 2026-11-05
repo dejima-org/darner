@@ -1858,6 +1858,20 @@ async def test_a_session_this_api_never_recorded_keeps_its_share(started, tmp_pa
     assert forgets(tmp_path, "dn-zzzzz") == ["forget"]
 
 
+async def test_a_share_kept_on_a_retried_forget_is_announced_to_be_cleared(started, tmp_path, monkeypatch):
+    app, client, task_id, status, output = started
+    status(state="exited")
+    output(zip_bytes([("RESULT.md", "done")]))
+    monkeypatch.setenv("STUB_FORGET_ERROR", "host unreachable")
+    await poll_once(app)
+    monkeypatch.delenv("STUB_FORGET_ERROR")
+    monkeypatch.setenv("STUB_FORGET_KEPT", "it changed after its output was delivered")
+    status(state="exited", ready=False)
+    await poll_once(app)
+    ended = [e.get("data") for e in await events(client) if e["type"] == "ended" and e["id"] == task_id]
+    assert ended == [None, {"share_kept": True}] and app[STORE].share_kept(task_id)
+
+
 async def test_a_failed_forget_of_a_delivered_share_is_retried_with_its_zip(started, tmp_path, monkeypatch):
     app, client, task_id, status, output = started
     status(state="exited")
@@ -1868,6 +1882,7 @@ async def test_a_failed_forget_of_a_delivered_share_is_retried_with_its_zip(star
     status(state="exited", ready=False)
     await poll_once(app)
     assert forgets(tmp_path, task_id) == ["forget-delivered", "forget-delivered"]
+    assert not [e for e in await events(client) if e["type"] == "ended" and e.get("data")]
     # Once the launcher stops listing it, an ended task isn't polled for.
     (tmp_path / "status.json").write_text("[]")
     count = tmp_path / "status-count"

@@ -586,7 +586,8 @@ def discard(args: argparse.Namespace, task_id: str) -> None:
             raise RuntimeError(f"couldn't remove {task_id}'s ~/shared: {e}")
         if os.path.lexists(os.path.join(root, leaf)) and (problem := _prune(args, os.path.join(root, leaf))):
             raise RuntimeError(f"couldn't remove {task_id}'s ~/shared: {problem}")
-    record.unlink()
+    # A clear and the poller's purge may discard it at the same time.
+    record.unlink(missing_ok=True)
 
 
 def _prune_share(args: argparse.Namespace, task_dir: Path, stored: str) -> str | None:

@@ -1807,6 +1807,36 @@ def test_discard_forgets_an_exited_session_first(env, delivered, dejima_share):
     assert not shared.exists() and not (env / "tasks" / "dn-abc23").exists()
 
 
+def test_a_share_darner_didn_t_start_is_never_pruned(env, delivered, dejima_share):
+    # A session started on the host by hand has a share beside darner's, and no task directory or record.
+    a, shared, _ = delivered
+    theirs = shared.parent / "20261025-090000-Mine99"
+    theirs.mkdir()
+    (theirs / "notes.md").write_text("mine")
+    run(a, "--dejima-share", str(dejima_share), "forget", "dn-abc23")
+    assert discard(a, dejima_share)[0] == 0
+    assert run(a, "--dejima-share", str(dejima_share), "discard", "dn-mine2")[0] == 0
+    assert prunes(env) == [f"prune --isolated --yes {shared}"] and (theirs / "notes.md").exists()
+
+
+def test_a_second_discard_at_once_still_succeeds(env, delivered, dejima_share, monkeypatch):
+    # A clear and the poller's purge racing: the record is gone by the time the second unlinks it.
+    from darner import launch as launch_module
+
+    a, shared, _ = delivered
+    run(a, "--dejima-share", str(dejima_share), "forget", "dn-abc23")
+    record = env / "tasks" / ".kept" / "dn-abc23"
+    real = launch_module._prune
+
+    def racing(args, share):
+        problem = real(args, share)
+        record.unlink()
+        return problem
+
+    monkeypatch.setattr(launch_module, "_prune", racing)
+    assert discard(a, dejima_share)[0] == 0 and not shared.exists()
+
+
 def test_discard_refuses_a_running_session(env, share, dejima_share):
     a, shared = share
     code, _, err = discard(a, dejima_share)

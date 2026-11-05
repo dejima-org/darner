@@ -663,9 +663,11 @@ async def poll_once(app: web.Application) -> None:
             # Left behind by a forget that failed, or by a task whose launch was never recorded.
             # One that ended here is retried with its output's hash, so its share is still pruned.
             if task["state"] == "exited" and task["id"] in ended:
-                await forget(app, task["id"], store.last_stored_zip(task["id"]))
-            elif task["state"] == "exited" and not store.known(task["id"]):
-                await forget(app, task["id"])
+                # Its end was announced without the share, so a kept one is announced now, to be cleared.
+                if await forget(app, task["id"], store.last_stored_zip(task["id"])):
+                    store.add_event(task["id"], "ended", data={"share_kept": True})
+            elif task["state"] == "exited" and not store.known(task["id"]) and await forget(app, task["id"]):
+                log.warning("no frontend can clear %s, so prune its ~/shared on the dejima host with `darner-launch discard %s`", task["id"], task["id"])
             continue
         # Logged once per change: it's repeated every poll until fixed.
         if app[SHARE_ERRORS].get(task["id"]) != task.get("error"):

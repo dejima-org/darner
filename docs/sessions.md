@@ -53,4 +53,6 @@ The session's `~/shared` on the dejima host, which dejima keeps if it isn't empt
 
 Otherwise it's kept: a session that was stopped or ended without output, output that was rejected or couldn't be read, files changed after the delivery, or a delivery that left out symlinks or unreadable files. A kept share holds what darner couldn't deliver, so it's left on the dejima host for you to recover until the session is cleared, from its frontend, or `output_retention` passes. Then the launcher prunes it, whatever it holds, and the API deletes the session. The API's log says why each was kept, and the frontend says it's waiting to be cleared. `--keep-shared` on the launcher keeps every share, even past a clear.
 
+darner prunes only the share dejima recorded for a session darner launched, by name, never by sweeping the share root, so a session you start on the dejima host yourself keeps its share for you to remove. A kept share whose session the API no longer knows, which no frontend can clear, is named in the API's log; remove it on the dejima host with `darner-launch discard <id>`.
+
 The API's audit log, `darner.audit`, records who did what to each session, through which frontend, so that can be answered after the session's own data is deleted. It records a message's length, never its text.
