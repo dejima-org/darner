@@ -532,13 +532,14 @@ def forget(args: argparse.Namespace, task_id: str, delivered: str | None = None)
     Otherwise it's kept, and recorded under KEPT, until the session is cleared
     or the API purges it, when discard prunes it. The share is checked first,
     since its path is recorded in the task directory, which goes either way.
-    Returns why the share was kept, if it was.
+    Returns why the share was kept, or that it was pruned, for frontends to say.
     """
     task_dir = args.tasks_dir / task_id
     if not task_dir.is_dir():
         return {}
     if _state(task_dir) != "exited":
         raise RuntimeError(f"{task_id} hasn't ended")
+    share = _existing_share(args, task_dir)
     problem = _prune_share(args, task_dir, delivered) if delivered else "its output wasn't delivered whole"
     kept = problem and _keep(args, task_dir, task_id)
     # A clear's discard may be forgetting it at the same time.
@@ -548,7 +549,17 @@ def forget(args: argparse.Namespace, task_id: str, delivered: str | None = None)
         return {"kept": problem}
     if problem and delivered:
         raise RuntimeError(f"forgot {task_id}, but couldn't prune its ~/shared: {problem}")
+    if delivered and share and not args.keep_shared and not os.path.lexists(share):
+        return {"pruned": True}
     return {}
+
+
+def _existing_share(args: argparse.Namespace, task_dir: Path) -> str | None:
+    try:
+        share = os.path.join(*_share_path(args, task_dir))
+    except (OSError, ValueError):
+        return None
+    return share if os.path.lexists(share) else None
 
 
 def _keep(args: argparse.Namespace, task_dir: Path, task_id: str) -> bool:

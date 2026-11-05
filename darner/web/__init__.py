@@ -260,9 +260,12 @@ async def session_page(request: web.Request) -> web.Response:
             return page(request, "gone.html", status=404, task_id=task_id)
         raise
     latest, history = _latest(data["session"], data["events"])
+    # What became of its ~/shared, as its latest ended event says, so the page can say where its files are.
+    ended = [e.get("data") or {} for e in data["events"] if e["type"] == "ended" and e.get("data")]
+    share = ended and ("kept" if ended[-1].get("share_kept") else "pruned" if ended[-1].get("share_pruned") else None)
     return page(
         request, "session.html", state=f"/state/sessions/{task_id}", version=_version(data), task_id=task_id,
-        latest=latest, history=history, **data,
+        latest=latest, history=history, share=share, **data,
     )
 
 

@@ -87,7 +87,7 @@ Every `poll_interval` seconds the API asks the dejima host for the status of lau
 
 | endpoint | |
 |---|---|
-| `GET /v1/events` | unacknowledged events, oldest first: `{seq, id, name, type, summary, size, answerable, target, source, created}`, `type` is `output`, `help`, `domains`, `waiting`, `expired` or `ended`; `data` holds a domain request, a waiting session's `quiet` seconds, or a stopped session's `age` |
+| `GET /v1/events` | unacknowledged events, oldest first: `{seq, id, name, type, summary, size, answerable, target, source, created}`, `type` is `output`, `help`, `domains`, `waiting`, `expired` or `ended`; `data` holds a domain request, a waiting session's `quiet` seconds, a stopped session's `age`, or for an ended one, `share_kept` or `share_pruned`: what became of its `~/shared` |
 | `GET /v1/tasks/<id>/outputs/<seq>.zip` | an `output` event's archive (`size` 0 means it was rejected, and `summary` says why) |
 | `GET /v1/tasks/<id>/events` | a task's events so far, collected or not, in the same form, without acknowledging any; gone once the task is purged |
 | `POST /v1/events/<seq>/ack` | mark an event delivered |
