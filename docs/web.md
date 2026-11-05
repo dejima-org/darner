@@ -2,7 +2,7 @@
 
 [← darner README](../README.md)
 
-A browser frontend for darner: everything the Matrix bot does, from a browser, and more. It shows this frontend's sessions at a glance, each one's events so far, the full text of blurbs and config sets, and the self-test. It can start tasks with every keyword the bot takes, showing before Start what the task will launch: its config sets combined, its agent settings and where each comes from, the defaults included, and each blurb in full, send a session a message or answer its help request, upload a file into its `~/shared/uploads`, allow or deny its domain requests, stop it, and clear it once it has ended. What you send a session isn't kept, by darner-web or the API, so its page doesn't show it. It's optional. darner runs without it, and it runs as its own container with its own API token.
+A browser frontend for darner. It shows its sessions at a glance, each one's events so far, the full text of blurbs and config sets, and the self-test. It starts tasks with [every setting](tasks.md), showing before Start what the task will launch: its config sets combined, its agent settings and where each comes from, the defaults included, and each blurb in full. It can send a session a message or answer its help request, upload a file into its `~/shared/uploads`, allow or deny its domain requests, stop it, and clear it once it has ended. What you send a session isn't kept, by darner-web or the API, so its page doesn't show it. It runs as its own container with its own API token.
 
 **It has no login of its own.** Like dejima's [remote access](https://gitbox.branderson.io/dejima/dejima/src/branch/main/docs/remote-access.md), whatever proxy you put in front of it is the whole gate. Don't open it to the public internet.
 
@@ -84,11 +84,15 @@ Nothing. It has no database and writes no files: every page is read from the API
 
 ## Setting it up
 
-1. Generate a token for it on the API host with `openssl rand -hex 32`, and add it to `api.toml`'s `[tokens]` as `web = "..."`. Restart the API.
+1. Set up the API and dejima host as in [setup.md](setup.md). If you set `FRONTEND=web` there, darner-web has its token. Otherwise generate one on the API host with `openssl rand -hex 32`, add it to `api.toml`'s `[tokens]` as `web = "..."`, and restart the API.
 2. Copy [`examples/web.toml`](../examples/web.toml) beside `api.toml` and fill it in. Under Docker Compose, `api_url` is `http://api:8080`, and `api.toml`'s `listen` must be `0.0.0.0:8080`.
 3. Start it: `docker compose --profile web up -d` with [`examples/compose.yaml`](../examples/compose.yaml), or `darner-web --config /etc/darner/web.toml` from an install with the `web` extra.
 4. Put your proxy in front, as above, and run the verifying commands if it's on the dejima host.
 5. Open **Self-test** and run it. Each check in the session it opens says what you should and shouldn't see.
+
+## Updating
+
+After the API, as in [setup.md](setup.md#updating): under Docker Compose, `sudo docker compose --profile web build --pull` and `sudo docker compose --profile web up -d`; otherwise pull its clone and reinstall it as you installed it, then restart it.
 
 ## Checking it
 

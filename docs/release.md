@@ -40,7 +40,7 @@ Pre-releases are published on this forge only. Before darner is mirrored to GitH
 The same bar as dejima's, for the same reason: one maintainer, so a gate has to be one that gets met.
 
 1. **An agentic security review of the whole `main...development` diff**, against the boundaries in [`.dejima.md`](../.dejima.md). Brief the reviewer with those boundaries specifically. A review briefed only as "look for security problems" returns generic advice. Also ask whether `.dejima/allowed-domains` gains a name, since CI reads it from `main` as already reviewed.
-2. **The maintainer runs the build** against the dejima release it names: a task from chat on each configured harness, through to its output arriving in the room.
+2. **The maintainer runs the build** against the dejima release it names: a task from each frontend you run, on each configured harness, through to its output arriving there.
 
 ## 4. The suites
 

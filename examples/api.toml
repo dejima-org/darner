@@ -24,7 +24,7 @@ launch_timeout = 120
 # dejima's web remote access base_url, to link sessions from chat.
 # remote_access_url = "https://dejima.example.com"
 
-# One token per source; the bot instance uses one of these as api_token.
+# One token per frontend, by name; each frontend's config has its own as api_token.
 [tokens]
 maubot = "replace-with-a-long-random-token"
 
