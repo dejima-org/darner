@@ -4,7 +4,7 @@
 
 A browser frontend for darner. It shows its sessions at a glance, each one's events so far, the full text of blurbs and config sets, and the self-test. It starts tasks with [every setting](tasks.md), showing before Start what the task will launch: its config sets combined, its agent settings and where each comes from, the defaults included, and each blurb in full. It can send a session a message or answer its help request, upload a file into its `~/shared/uploads`, allow or deny its domain requests, stop it, and clear it once it has ended. What you send a session isn't kept, by darner-web or the API, so its page doesn't show it. It runs as its own container with its own API token.
 
-**It has no login of its own.** Like dejima's [remote access](https://gitbox.branderson.io/dejima/dejima/src/branch/main/docs/remote-access.md), whatever proxy you put in front of it is the whole gate. Don't open it to the public internet.
+**It has no login of its own.** Like dejima's [remote access](https://github.com/dejima-org/dejima/blob/main/docs/remote-access.md), whatever proxy you put in front of it is the whole gate. Don't open it to the public internet.
 
 ## What reaching it means
 

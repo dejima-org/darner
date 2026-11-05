@@ -2,7 +2,7 @@
 
 ## What darner claims
 
-It starts dejima sessions for tasks sent from chat or another frontend, and brings their output back. It doesn't make an agent safe to run, and it isn't a sandbox: the session's boundary is [dejima](https://gitbox.branderson.io/dejima/dejima)'s.
+It starts dejima sessions for tasks sent from chat or another frontend, and brings their output back. It doesn't make an agent safe to run, and it isn't a sandbox: the session's boundary is [dejima](https://github.com/dejima-org/dejima)'s.
 
 What it does claim is that it doesn't widen that boundary. The agent is presumed hostile, as dejima presumes it:
 
@@ -54,7 +54,7 @@ Early development. Nothing here has been through outside review, an external aud
 
 Email **dejima@branderson.io**. Please don't open a public issue for a vulnerability; a report there is a disclosure.
 
-The organisation-wide policy, including what you can expect in return and which versions are supported, is [dejima's SECURITY.md](https://gitbox.branderson.io/dejima/dejima/src/branch/main/SECURITY.md). In short: only the tip of `main`, which is the latest release, is supported, and nothing is promised.
+The organisation-wide policy, including what you can expect in return and which versions are supported, is [dejima's SECURITY.md](https://github.com/dejima-org/dejima/blob/main/SECURITY.md). In short: only the tip of `main`, which is the latest release, is supported, and nothing is promised.
 
 ## No warranty
 
