@@ -1263,6 +1263,8 @@ def allow_domains(args: argparse.Namespace, task_id: str, number: int, data: obj
 
 
 def deny_domains(args: argparse.Namespace, task_id: str, number: int, data: object) -> dict:
+    if data is not None and not isinstance(data, dict):
+        raise ValueError("deny needs an object")
     task_dir = args.tasks_dir / task_id
     request = _claim_domain_request(task_dir, task_id, number)
     requester = " ".join(archive.clean_text(str((data or {}).get("requester", "")).encode(), 255).split()) or "the requester"
@@ -1474,6 +1476,10 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     except (JobError, json.JSONDecodeError, RuntimeError, ValueError) as e:
         print(f"darner-launch: {e}", file=sys.stderr)
+        return 1
+    except Exception as e:
+        # A traceback names host paths, and this is relayed to the frontend.
+        print(f"darner-launch: failed ({type(e).__name__})", file=sys.stderr)
         return 1
     return 0
 

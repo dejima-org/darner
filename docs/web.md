@@ -44,7 +44,7 @@ darner-web must have its own scheme, host and port, never a path on the host tha
 
   As soon as the check has run, stop the control with Ctrl-C in the first terminal, so it isn't left serving on the LAN. Then leave the session and delete the scratch directory with `rm -r "$d"`.
 
-  The control answering proves the session reaches the gateway on opened ports, so 8081 and 443 not answering is down to their bind. `BAD` on any line means stop and fix the bind first. `--control <host:port>`, somewhere outside the session may reach, is the fallback when you can't run a listener. It only rules out a dead network, and the script says so. Running darner-web on the API host instead of the dejima host avoids the question.
+  The control answering proves the session reaches the gateway on opened ports, so 8081 and 443 not answering is down to their bind. `BAD` on any line means stop and fix the bind first. `--control <host:port>`, somewhere outside the session may reach, is the fallback when you can't run a listener. It only rules out a dead network, and the script says so. Under Docker Compose, darner-web's container also listens on its compose network, and `containment.sh` doesn't probe that: on the dejima host, keeping sessions off it rests on Docker's isolation between bridges. Running darner-web on the API host instead of the dejima host avoids the question.
 
 ## Authenticating and authorizing the front door
 

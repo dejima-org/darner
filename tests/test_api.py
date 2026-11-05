@@ -1772,7 +1772,7 @@ async def test_a_failed_discard_leaves_the_session_to_clear_again(started, tmp_p
     assert app[STORE].known(task_id)
 
 
-async def test_a_share_that_can_t_be_pruned_is_tried_again_until_a_second_retention(started, tmp_path, monkeypatch, config):
+async def test_a_share_that_can_t_be_pruned_is_tried_again_until_a_second_retention(started, tmp_path, monkeypatch, config, caplog):
     app, client, task_id = await kept_share(started, monkeypatch)
     monkeypatch.setenv("STUB_DISCARD_ERROR", "host unreachable")
     app[STORE].db.execute("UPDATE tasks SET ended = ?", (time.time() - config["output_retention"] - 1,))
@@ -1780,8 +1780,10 @@ async def test_a_share_that_can_t_be_pruned_is_tried_again_until_a_second_retent
     await poll_once(app)
     assert len(discards(tmp_path, task_id)) == 2 and app[STORE].known(task_id)
     app[STORE].db.execute("UPDATE tasks SET ended = ?", (time.time() - 2 * config["output_retention"] - 1,))
-    await poll_once(app)
+    with caplog.at_level("ERROR", logger="darner.api"):
+        await poll_once(app)
     assert not app[STORE].known(task_id)
+    assert f"darner-launch discard {task_id}" in caplog.text
 
 
 async def test_a_forget_that_times_out_still_ends_the_task(started, tmp_path, monkeypatch):

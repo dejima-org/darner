@@ -1788,6 +1788,27 @@ def test_an_unreadable_share_is_kept_and_the_task_still_goes(env, delivered, dej
         shared.chmod(0o755)
 
 
+def test_an_unexpected_error_names_no_host_path(env, share, monkeypatch):
+    from darner import launch as launch_module
+
+    a, _ = share
+
+    def broken(*args, **kwargs):
+        raise KeyError("/home/operator/darner/tasks")
+
+    monkeypatch.setattr(launch_module, "status", broken)
+    code, _, err = run(a, "status")
+    assert code == 1 and err == "darner-launch: failed (KeyError)\n"
+
+
+def test_deny_refuses_a_body_that_isn_t_an_object(env, allow_env):
+    a, shared = allow_env
+    request_domains(a, shared, "pypi.org\n")
+    code, _, err = decide(a, "deny", 1, ["not", "an", "object"])
+    assert code == 1 and "deny needs an object" in err and "Traceback" not in err
+    assert (a.tasks_dir / "dn-abc23" / "domains-pending").exists()
+
+
 def discard(a, dejima_share, *extra):
     return run(a, "--dejima-share", str(dejima_share), *extra, "discard", "dn-abc23")
 
