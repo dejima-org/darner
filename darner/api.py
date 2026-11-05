@@ -591,8 +591,10 @@ async def purge(app: web.Application, discards: bool = True) -> None:
         if store.share_kept(task_id):
             if not discards:
                 continue
-            if not await discard(app, task_id) and time.time() - store.ended_at(task_id) < 2 * retention:
-                continue
+            if not await discard(app, task_id):
+                if time.time() - store.ended_at(task_id) < 2 * retention:
+                    continue
+                log.error("gave up pruning %s's ~/shared; prune it on the dejima host with `darner-launch discard %s`", task_id, task_id)
         delete_task(app, task_id)
 
 

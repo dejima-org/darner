@@ -65,7 +65,6 @@ This installs `~/.local/bin/darner-launch`. Make sure dejima can start a session
   jq '.fullscreenUpsellSeenCount = 3' ~/.claude.json.bak > ~/.claude.json
   ```
 
-  dejima marks an isolated session's working directory, `/dejima/work`, as trusted (dejima #428, after release 2026.10.14). With an older dejima, Claude Code also asks whether to trust that folder. Then add `| .projects["/dejima/work"].hasTrustDialogAccepted = true` to the `jq` filter. The directory is empty and container-local, so trusting it trusts no files of yours.
 
 Optionally, add a `[identity.darner]` section to dejima's config, for the git name and keys every darner session should act as (see dejima's configuration docs). Then add `--identity darner` to the launcher options in step 4.
 
