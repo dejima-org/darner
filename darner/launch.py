@@ -90,6 +90,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--answers", action="store_true", help="allow answering help requests from chat")
     p.add_argument("--paste-delay", default=0.5, type=float)
     p.add_argument("--help-interval", default=300, type=int, help="least seconds between a task's help requests")
+    p.add_argument("--done-interval", default=60, type=int, help="least seconds between a running task's deliveries")
     p.add_argument(
         "--quiet-period", default=600, type=int,
         help="seconds without changes after which an unsignalled RESULT.md is collected; 0 waits for the session to end",
@@ -150,7 +151,7 @@ def launch(args: argparse.Namespace, data: object) -> dict:
     # only close its tmux window.
     dejima = shutil.which(args.dejima)
     if dejima is None:
-        raise RuntimeError(f"{args.dejima} not found on PATH; pass --dejima with its full path")
+        raise RuntimeError(f"{Path(args.dejima).name} not found on PATH; pass --dejima with its full path")
     task_dir = args.tasks_dir / job.id
     argv = dejima_argv(args, job, task_dir, dejima)
     args.tasks_dir.mkdir(parents=True, exist_ok=True)
@@ -190,7 +191,8 @@ def _start_window(args: argparse.Namespace, job, task_dir: Path) -> dict:
         if created.returncode and subprocess.run(
             [*tmux, "has-session", "-t", f"={args.session}"], env=env, capture_output=True
         ).returncode:
-            raise RuntimeError(created.stderr.decode().strip() or "tmux new-session failed")
+            # Not tmux's own message, which names its socket's path: errors reach chat.
+            raise RuntimeError("tmux new-session failed")
     window = subprocess.run(
         [
             *tmux, "new-window", "-d", "-P", "-F", "#{session_name}:#{window_name} #{window_id} #{pane_id}",
@@ -203,7 +205,7 @@ def _start_window(args: argparse.Namespace, job, task_dir: Path) -> dict:
         text=True,
     )
     if window.returncode:
-        raise RuntimeError(window.stderr.strip() or "tmux new-window failed")
+        raise RuntimeError("tmux new-window failed")
     target, window_id, pane_id = window.stdout.strip().rsplit(" ", 2)
     # Answers target the window by id, which a rename inside the session can't change.
     (task_dir / "window").write_text(window_id)
@@ -307,7 +309,8 @@ def run_session(args: argparse.Namespace, task_dir: Path) -> int:
         delivery.start()
     try:
         proc = subprocess.Popen(dejima)
-        (task_dir / "pid").write_text(str(proc.pid))
+        started = _start_time(proc.pid)
+        (task_dir / "pid").write_text(f"{proc.pid} {started}" if started else str(proc.pid))
         code = proc.wait()
     except OSError as e:
         print(f"darner: couldn't start {dejima[0]}: {e}", file=sys.stderr)
@@ -396,7 +399,8 @@ def _consume(fd: int, task_dir: Path, kind: str, signal_id: str) -> None:
 
 
 def _request_allowed(args: argparse.Namespace, task_dir: Path, kind: str) -> bool:
-    """Rate-limit help and domain requests, so a session can't flood the room with them.
+    """Rate-limit help and domain requests, so a session can't flood the room with them,
+    and deliveries, so it can't fill the API's disk.
 
     A domain request is limited only while the last one awaits a decision:
     once it's decided, a new one is how the agent follows up, such as asking
@@ -405,7 +409,8 @@ def _request_allowed(args: argparse.Namespace, task_dir: Path, kind: str) -> boo
     if kind == "domains" and not (task_dir / "domains-pending").exists():
         return True
     last = task_dir / SIGNALS[kind][1]
-    return not last.exists() or time.time() - last.stat().st_mtime >= args.help_interval
+    interval = args.done_interval if kind == "done" else args.help_interval
+    return not last.exists() or time.time() - last.stat().st_mtime >= interval
 
 
 def _result_id(fd: int) -> str | None:
@@ -470,6 +475,8 @@ def _signals(args: argparse.Namespace, task_dir: Path) -> tuple[dict[str, bool],
         signals["result_pending"] = result is not None and not (delivered.exists() and delivered.read_text() == result)
     finally:
         os.close(fd)
+    # An exited session's last output is collected now, or never.
+    signals["done"] = signals["done"] and (_state(task_dir) == "exited" or _request_allowed(args, task_dir, "done"))
     signals["help"] = signals["help"] and _request_allowed(args, task_dir, "help")
     signals["domains"] = signals["domains"] and _request_allowed(args, task_dir, "domains")
     return signals, None
@@ -549,7 +556,7 @@ def _prune_share(args: argparse.Namespace, task_dir: Path, stored: str) -> str |
         return problem
     tool = shutil.which(args.dejima_share)
     if tool is None:
-        return f"{args.dejima_share} not found on PATH; pass --dejima-share with its full path"
+        return f"{Path(args.dejima_share).name} not found on PATH; pass --dejima-share with its full path"
     try:
         # An older dejima-share's prune ignores the name and sweeps every ended
         # share, so the named form is required, as is --yes.
@@ -771,9 +778,11 @@ def _paste(args: argparse.Namespace, task_dir: Path, task_id: str, message: str)
         # would submit, so the answer is one line.
         message = " ".join(message.split())
         keys = " " + message
-        # -- so a chunk starting with "-" isn't read as an option.
+        # -- so a chunk starting with "-" isn't read as an option. tmux takes an
+        # argument's final ";" as a command separator, and "\;" as a ";".
+        chunks = [keys[i:i + 1024] for i in range(0, len(keys), 1024)]
         steps = [
-            ([args.tmux, "send-keys", "-l", "-t", target, "--", keys[i:i + 1024]], None) for i in range(0, len(keys), 1024)
+            ([args.tmux, "send-keys", "-l", "-t", target, "--", c[:-1] + "\\;" if c.endswith(";") else c], None) for c in chunks
         ]
     else:
         steps = [
@@ -819,12 +828,23 @@ def _write_typing_log(task_dir: Path, shots: dict[str, str]) -> None:
     os.replace(tmp, task_dir / "typing.log")
 
 
+def _start_time(pid: int) -> str | None:
+    """When a process started, which tells it apart from a later one given its pid."""
+    try:
+        # After the parenthesised command name, which may contain spaces.
+        return Path(f"/proc/{pid}/stat").read_text().rpartition(")")[2].split()[19]
+    except (OSError, IndexError):
+        return None
+
+
 def _dejima_pid(task_dir: Path) -> int | None:
     try:
-        pid = int((task_dir / "pid").read_text())
+        pid, _, started = (task_dir / "pid").read_text().partition(" ")
+        pid = int(pid)
     except (OSError, ValueError):
         return None
-    return pid if Path(f"/proc/{pid}").exists() else None
+    # A launcher killed before it recorded the exit leaves a pid another process may now have.
+    return pid if _start_time(pid) is not None and _start_time(pid) == (started or _start_time(pid)) else None
 
 
 def _children(pid: int) -> list[int]:
@@ -883,9 +903,9 @@ def _session_containers(args: argparse.Namespace, task_dir: Path) -> list[str]:
 
 
 @contextlib.contextmanager
-def _domains_lock(task_dir: Path):
+def _domains_lock(task_dir: Path, name: str = "domains.lock"):
     """Serialise writing and deciding domain requests, so a decision sees one request whole."""
-    with open(task_dir / "domains.lock", "w") as lock:
+    with open(task_dir / name, "w") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         yield
 
@@ -974,7 +994,7 @@ def _domain_and_port(word: str) -> tuple[str | None, int | None]:
     host, sep, port = word.rpartition(":")
     if not sep:
         return word, None
-    if port.isascii() and port.isdigit() and 0 < int(port) < 65536:
+    if port.isascii() and port.isdigit() and len(port) <= 5 and 0 < int(port) < 65536:
         return host, int(port)
     return None, None
 
@@ -1072,6 +1092,52 @@ def _tell_agent(args: argparse.Namespace, task_dir: Path, task_id: str, message:
     return True
 
 
+def _grant(task_dir: Path, request: dict, approved: set, container: str, dejima_allow: str, limit, internal_limit):
+    """Allow a request's approved entries, within the session's limits.
+
+    The caller holds grants.lock from reading what's granted to writing it,
+    so two approvals running at once can't each pass the limits on their own.
+    """
+    # The session's limits cover every domain it holds: those it launched with
+    # and every grant since, so repeated requests can't add up past them.
+    held_file = task_dir / "domains-granted"
+    held = json.loads(held_file.read_text()) if held_file.exists() else []
+    launched_with = sum(1 for line in (task_dir / "domains").read_text().splitlines() if line.strip())
+    internal_held = json.loads((task_dir / "argv.json").read_text()).count("--internal-domain") + sum(
+        1 for h in held if isinstance(h, dict) and h["internal"]
+    )
+    granted, failed, unverified = [], [], []
+    for entry in request["domains"]:
+        if (entry["domain"], entry["internal"], entry.get("port")) not in approved:
+            continue
+        if limit is not None and launched_with + len(held) + len(granted) >= limit:
+            failed.append({"domain": entry["domain"], "error": f"over this session's limit of {limit} domains"})
+            continue
+        if entry["internal"] and internal_limit is not None and internal_held >= internal_limit:
+            failed.append({"domain": entry["domain"], "error": f"over this session's limit of {internal_limit} internal domains"})
+            continue
+        argv = [
+            dejima_allow, "--container", container,
+            *(["--internal"] if entry["internal"] else []),
+            *(["--port", str(entry["port"])] if entry.get("port") else []),
+            entry["domain"],
+        ]
+        result = subprocess.run(argv, capture_output=True, text=True)
+        message = archive.clean_text(result.stderr.encode(), 2000)
+        # dejima-allow exits 2 when the permit landed but its check that the
+        # domain answers on 443 failed, which a service on another port fails
+        # spuriously. The domain is allowed either way.
+        if result.returncode in (0, 2):
+            granted.append(entry)
+            internal_held += entry["internal"]
+            if result.returncode == 2:
+                unverified.append({"domain": entry["domain"], "warning": message})
+        else:
+            failed.append({"domain": entry["domain"], "error": message})
+    _write_atomic(held_file, json.dumps(held + granted))
+    return granted, failed, unverified
+
+
 def allow_domains(args: argparse.Namespace, task_id: str, number: int, data: object) -> dict:
     """Grant a domain request to the running session, limited to what the API passes on.
 
@@ -1083,47 +1149,29 @@ def allow_domains(args: argparse.Namespace, task_id: str, number: int, data: obj
         raise RuntimeError(f"{task_id} is not running")
     if not isinstance(data, dict) or not isinstance(data.get("requester"), str) or not isinstance(data.get("domains"), list):
         raise ValueError("allow needs requester and domains")
-    limit = data.get("max_domains")
-    if limit is not None and type(limit) is not int:
-        raise ValueError("max_domains must be a whole number")
+    limit, internal_limit = data.get("max_domains"), data.get("max_internal_domains")
+    if any(n is not None and type(n) is not int for n in (limit, internal_limit)):
+        raise ValueError("max_domains and max_internal_domains must be whole numbers")
     dejima_allow = shutil.which(args.dejima_allow)
     if dejima_allow is None:
-        raise RuntimeError(f"{args.dejima_allow} not found on PATH; pass --dejima-allow with its full path")
+        raise RuntimeError(f"{Path(args.dejima_allow).name} not found on PATH; pass --dejima-allow with its full path")
     containers = _session_containers(args, task_dir)
     if len(containers) != 1:
         raise RuntimeError(f"couldn't find {task_id}'s container")
-    request = _claim_domain_request(task_dir, task_id, number)
-    approved = {d for d in data["domains"] if isinstance(d, str)}
-    # The session's limit covers every domain it holds: those it launched with
-    # and every grant since, so repeated requests can't add up past it.
-    held_file = task_dir / "domains-granted"
-    held = json.loads(held_file.read_text()) if held_file.exists() else []
-    launched_with = sum(1 for line in (task_dir / "domains").read_text().splitlines() if line.strip())
-    granted, failed, unverified = [], [], []
-    for entry in request["domains"]:
-        if entry["domain"] not in approved:
-            continue
-        if limit is not None and launched_with + len(held) + len(granted) >= limit:
-            failed.append({"domain": entry["domain"], "error": f"over this session's limit of {limit} domains"})
-            continue
-        argv = [
-            dejima_allow, "--container", containers[0],
-            *(["--internal"] if entry["internal"] else []),
-            *(["--port", str(entry["port"])] if entry.get("port") else []),
-            entry["domain"],
-        ]
-        result = subprocess.run(argv, capture_output=True, text=True)
-        message = archive.clean_text(result.stderr.encode(), 2000)
-        # dejima-allow exits 2 when the permit landed but its check that the
-        # domain answers on 443 failed, which a service on another port fails
-        # spuriously. The domain is allowed either way.
-        if result.returncode in (0, 2):
-            granted.append(entry["domain"])
-            if result.returncode == 2:
-                unverified.append({"domain": entry["domain"], "warning": message})
-        else:
-            failed.append({"domain": entry["domain"], "error": message})
-    _write_atomic(held_file, json.dumps(held + granted))
+    # Matched as whole entries: a name approved plain doesn't grant it internal,
+    # or on any port but the one shown.
+    if not all(
+        isinstance(d, dict) and isinstance(d.get("domain"), str) and type(d.get("internal")) is bool
+        and (d.get("port") is None or type(d["port"]) is int)
+        for d in data["domains"]
+    ):
+        raise ValueError("allow's domains must be entries with domain, internal and port")
+    approved = {(d["domain"], d["internal"], d.get("port")) for d in data["domains"]}
+    # Locked before claiming, so an approval killed while it waits leaves the request to approve again.
+    with _domains_lock(task_dir, "grants.lock"):
+        request = _claim_domain_request(task_dir, task_id, number)
+        granted, failed, unverified = _grant(task_dir, request, approved, containers[0], dejima_allow, limit, internal_limit)
+    granted = [e["domain"] for e in granted]
     requester = " ".join(archive.clean_text(data["requester"].encode(), 255).split())
     note = f"Domain request from {requester}: allowed {', '.join(granted) or 'none'}"
     if failed:
@@ -1161,8 +1209,11 @@ def stop(args: argparse.Namespace, task_id: str) -> None:
     containers = _session_containers(args, task_dir)
     if containers:
         subprocess.run([args.docker, "stop", *containers], capture_output=True)
+    elif _state(task_dir) == "running" and _dejima_pid(task_dir):
+        # Ending dejima would leave its container running, unstopped and forgotten.
+        raise RuntimeError(f"couldn't find {task_id}'s container")
     elif pid := _dejima_pid(task_dir):
-        # No container yet, so dejima is still starting and has nothing to leave behind.
+        # No ~/shared yet, so dejima is still starting and has no container to leave behind.
         os.kill(pid, signal.SIGTERM)
     if not _wait_for_exit(task_dir, args.stop_timeout) and (pid := _dejima_pid(task_dir)):
         os.kill(pid, signal.SIGTERM)
@@ -1237,7 +1288,10 @@ def dejima_defaults(args: argparse.Namespace, dejima: str) -> tuple[str | None, 
     argv = [dejima, *(["--identity", args.identity] if args.identity else []), "--print-config"]
     try:
         out = subprocess.run(argv, capture_output=True, text=True, timeout=30, check=True).stdout
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, subprocess.SubprocessError) as e:
+        # Only the API's log sees this, as a successful command's stderr.
+        reason = f"exit {e.returncode}" if isinstance(e, subprocess.CalledProcessError) else type(e).__name__
+        print(f"darner-launch: dejima --print-config failed ({reason}), so dejima's defaults are unknown", file=sys.stderr)
         return None, {}
     harness, defaults = None, {}
     for line in out.splitlines():
@@ -1264,7 +1318,7 @@ def catalog(args: argparse.Namespace) -> dict:
     set to, and the defaults a launch gets."""
     dejima = shutil.which(args.dejima)
     if dejima is None:
-        raise RuntimeError(f"{args.dejima} not found on PATH; pass --dejima with its full path")
+        raise RuntimeError(f"{Path(args.dejima).name} not found on PATH; pass --dejima with its full path")
     root = dejima_root(dejima)
     default_harness, defaults = launch_defaults(args, dejima)
     return {

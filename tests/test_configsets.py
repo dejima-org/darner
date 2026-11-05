@@ -108,3 +108,12 @@ def test_file_errors_name_no_host_path(tmp_path):
 def test_description_is_the_comment_lines_at_the_top(text, expected):
     assert description(text) == expected
     parse("x", text)
+
+
+@pytest.mark.skipif(__import__("os").geteuid() == 0, reason="root ignores permissions")
+def test_an_unreadable_set_is_refused_without_its_path(tmp_path):
+    (tmp_path / "mealie").write_text(MEALIE)
+    (tmp_path / "mealie").chmod(0)
+    with pytest.raises(ConfigSetError) as e:
+        load(tmp_path, ["mealie"])
+    assert str(e.value) == "couldn't read config set 'mealie'"

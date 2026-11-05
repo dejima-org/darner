@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from darner.api import POLL_LOCK, STATUS_CACHE, STORE, make_app, poll_once
+from darner.api import COLLECT_TRIES, KEPT_ZIPS, POLL_LOCK, STATUS_CACHE, STORE, make_app, poll_once
 from darner.archive import MANIFEST_SLACK
 from darner.store import Store
 from tests.test_launch import FAKE_TMUX
@@ -39,6 +39,8 @@ elif command[:1] == ["upload"]:
     print(json.dumps({"path": "~/shared/uploads/" + header["name"], "size": len(data), "told": False}))
 elif command[:1] in (["forget"], ["forget-delivered"]):
     open(os.environ["STUB_LOG"], "a").write(json.dumps(command) + "\\n")
+    if os.environ.get("STUB_FORGET_ERROR"):
+        sys.exit("darner-launch: " + os.environ["STUB_FORGET_ERROR"])
 elif command[:1] == ["stop"]:
     open(os.environ["STUB_LOG"], "a").write(json.dumps(command) + "\\n")
     if os.environ.get("STUB_STOP_ERROR"):
@@ -304,6 +306,31 @@ async def events(client, headers=AUTH):
     resp = await client.get("/v1/events", headers=headers)
     assert resp.status == 200
     return await resp.json()
+
+
+async def test_an_acked_output_s_zip_is_deleted(started, tmp_path):
+    app, client, task_id, status, output = started
+    status()
+    output(zip_bytes([("RESULT.md", "done")]))
+    await poll_once(app)
+    [event] = await events(client)
+    assert (tmp_path / "results" / task_id / f"{event['seq']}.zip").is_file()
+    assert (await client.post(f"/v1/events/{event['seq']}/ack", headers=AUTH)).status == 204
+    assert not (tmp_path / "results" / task_id / f"{event['seq']}.zip").exists()
+
+
+async def test_only_a_task_s_latest_zips_are_kept(started, tmp_path):
+    app, client, task_id, status, output = started
+    status()
+    for i in range(KEPT_ZIPS + 2):
+        output(zip_bytes([("RESULT.md", f"take {i}")]))
+        await poll_once(app)
+    seqs = sorted(e["seq"] for e in await events(client) if e["type"] == "output")
+    assert len(seqs) == KEPT_ZIPS + 2
+    kept = sorted(int(p.stem) for p in (tmp_path / "results" / task_id).glob("*.zip"))
+    assert kept == seqs[-KEPT_ZIPS:]
+    # The older outputs keep their summaries, and aren't offered as zips.
+    assert [e["size"] > 0 for e in await events(client) if e["type"] == "output"] == [False] * 2 + [True] * KEPT_ZIPS
 
 
 async def test_ready_output_becomes_event_and_download(started, tmp_path):
@@ -711,7 +738,14 @@ async def test_allow_passes_only_what_policy_permits(requested, tmp_path):
     assert resp.status == 200 and (await resp.json())["granted"] == ["pypi.org"]
     assert fetches(tmp_path)[-1] == [
         "allow", task_id, "3",
-        {"requester": "@alice:example.org", "domains": ["pypi.org", "mirror.internal.example"], "max_domains": 3},
+        {
+            "requester": "@alice:example.org",
+            "domains": [
+                {"domain": "pypi.org", "internal": False, "port": None},
+                {"domain": "mirror.internal.example", "internal": True, "port": None},
+            ],
+            "max_domains": 3, "max_internal_domains": None,
+        },
     ]
 
 
@@ -1413,6 +1447,10 @@ async def test_output_that_can_never_be_fetched_ends_the_task_after_max_session_
     await poll_once(app)
     assert app[STORE].launched() == [task_id]
     age_task(app, task_id, 86401)
+    # A few polls' grace, for a session expire stopped, whose last output is still to come.
+    for _ in range(COLLECT_TRIES - 1):
+        await poll_once(app)
+    assert app[STORE].launched() == [task_id]
     await poll_once(app)
     assert app[STORE].launched() == []
     [ended] = [e for e in await events(client) if e["id"] == task_id]
@@ -1517,13 +1555,14 @@ async def test_an_internal_domain_request_is_marked_denied_when_internal_grants_
     path.write_text(json.dumps([{"id": task_id, "state": "running", "ready": False, "domains": True}]))
     monkeypatch.setenv("STUB_STATUS", str(path))
     monkeypatch.setenv("STUB_DOMAINS", json.dumps({"request": 1, "domains": [
-        {"domain": "recipes.example.com", "internal": True}, {"domain": "pypi.org", "internal": False},
+        {"domain": "recipes.example.com", "internal": True}, {"domain": "recipes.example.com", "internal": False},
     ]}))
     await poll_once(app)
     [event] = [e for e in await events(client) if e["type"] == "domains"]
-    assert [(d["domain"], d["denied"]) for d in event["data"]["domains"]] == [("recipes.example.com", True), ("pypi.org", False)]
+    assert [(d["internal"], d["denied"]) for d in event["data"]["domains"]] == [(True, True), (False, False)]
     await client.post(f"/v1/tasks/{task_id}/domains/1/allow", json={"requester": "@a:example.org"}, headers=AUTH)
-    assert fetches(tmp_path)[-1][3]["domains"] == ["pypi.org"]
+    # The launcher matches whole entries, so the plain one passing doesn't pass the internal one.
+    assert fetches(tmp_path)[-1][3]["domains"] == [{"domain": "recipes.example.com", "internal": False, "port": None}]
 
 
 @pytest.mark.parametrize("requester", ["@alice:example.org\nforged line", "@room\u202e", "a\u2028b", "a\u2029b", "x" * 256, "  ", 7])
@@ -1705,7 +1744,8 @@ async def test_output_that_could_never_be_fetched_keeps_the_share(started, tmp_p
     status(state="exited")
     monkeypatch.setenv("STUB_FETCH_CODE", "1")
     age_task(app, task_id, 86401)
-    await poll_once(app)
+    for _ in range(COLLECT_TRIES):
+        await poll_once(app)
     assert forgets(tmp_path, task_id) == ["forget"]
 
 
@@ -1714,6 +1754,41 @@ async def test_a_session_this_api_never_recorded_keeps_its_share(started, tmp_pa
     status(state="running", ready=False)
     await poll_once(app)
     assert forgets(tmp_path, "dn-zzzzz") == ["forget"]
+
+
+async def test_a_failed_forget_of_a_delivered_share_is_retried_with_its_zip(started, tmp_path, monkeypatch):
+    app, client, task_id, status, output = started
+    status(state="exited")
+    output(zip_bytes([("RESULT.md", "done")]))
+    monkeypatch.setenv("STUB_FORGET_ERROR", "host unreachable")
+    await poll_once(app)
+    monkeypatch.delenv("STUB_FORGET_ERROR")
+    status(state="exited", ready=False)
+    await poll_once(app)
+    assert forgets(tmp_path, task_id) == ["forget-delivered", "forget-delivered"]
+    # Once the launcher stops listing it, an ended task isn't polled for.
+    (tmp_path / "status.json").write_text("[]")
+    count = tmp_path / "status-count"
+    monkeypatch.setenv("STUB_STATUS_COUNT", str(count))
+    await poll_once(app)
+    await poll_once(app)
+    assert count.read_text().count("status") == 1
+
+
+async def test_a_collection_that_always_fails_still_expires(started, tmp_path, monkeypatch):
+    import darner.api
+
+    app, client, task_id, status, _ = started
+    status(state="exited")
+
+    async def broken(*args, **kwargs):
+        raise ValueError("malformed reply")
+
+    monkeypatch.setattr(darner.api, "collect", broken)
+    age_task(app, task_id, 86401)
+    for _ in range(COLLECT_TRIES):
+        await poll_once(app)
+    assert app[STORE].task_status("maubot", task_id) == "ended"
 
 
 async def test_forget_delivered_names_the_zip_the_api_stored(started, tmp_path):
@@ -1816,3 +1891,28 @@ async def test_a_poll_already_running_is_the_check(started, monkeypatch):
         assert not check.done()
     # Answered once the running poll is done, without another.
     assert (await check).status == 200 and polled == []
+
+
+async def test_launcher_over_the_cap_is_given_up_with_what_it_started():
+    from darner.api import run_remote
+
+    writer = "(sleep 30; echo late) & head -c 5000000 /dev/zero"
+    config = {"launch_command": ["sh", "-c", writer], "limits": {"max_bytes": 1}, "launch_timeout": 30}
+    with pytest.raises(RuntimeError, match="more than"):
+        await asyncio.wait_for(run_remote(config, []), 5)
+
+
+async def test_launcher_over_the_cap_is_given_up_not_waited_on():
+    from darner.api import run_remote
+
+    writer = "import sys; sys.stdout.buffer.write(b'x' * (5 * 1024 * 1024))"
+    config = {"launch_command": [sys.executable, "-c", writer], "limits": {"max_bytes": 1}, "launch_timeout": 30}
+    with pytest.raises(RuntimeError, match="more than"):
+        await asyncio.wait_for(run_remote(config, []), 15)
+
+
+async def test_errors_are_json_for_frontends_to_relay(client):
+    resp = await client.post("/v1/tasks/dn-recipes/message", json={"text": "hi", "requester": "@a:example.org"}, headers=AUTH)
+    assert resp.status == 404 and await resp.json() == {"error": "no session dn-recipes"}
+    resp = await client.get("/v1/nothing-here", headers=AUTH)
+    assert resp.status == 404 and await resp.json() == {"error": "Not Found"}

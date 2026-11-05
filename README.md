@@ -225,6 +225,8 @@ ssh-keygen -lf ~/.ssh/authorized_keys | grep darner-api   # no output means sshd
 
 - `command=` makes the launcher the only thing this key can run, whatever the client asks for. Its paths are absolute, since a non-interactive ssh login has a minimal `PATH` without `~/.local/bin`. That is also why `--dejima` gives dejima's full path. `--share-root` comes from dejima's own `share_dir`, since output is only read from where dejima puts isolated sessions' `~/shared`.
 - `restrict` turns off forwarding and terminals, and `from=` accepts the key only from `API_ADDR`.
+- One API per `DEJIMA_USER`. An API deletes the task directories of ended sessions it doesn't know, so two APIs sharing a user would delete each other's.
+- The launcher asks `dejima --print-config` for dejima's defaults, as this user. Check that `darner-launch catalog` run as this user shows non-empty `defaults`; if it can't read dejima's config, the API's log says so.
 - `LAUNCHER_OPTIONS` holds the defaults every session gets. Add `--identity darner` if you set one up in step 1, and `--answers` if replies in chat may be typed into sessions. Sessions use dejima's own default harness and its settings unless a task or an option such as `--harness` says otherwise, and frontends show those defaults. All options are listed under [Launcher options](#launcher-options).
 - To change the options later, delete the `darner-api` line and run this step again with new `LAUNCHER_OPTIONS`. Don't edit it in place: an option outside the quotes makes sshd skip the whole line, which shows up as `Permission denied (publickey)`.
 
@@ -433,7 +435,7 @@ The note is the task. The rest of the reply, minus the mention and the keyword l
 | `harness:` | harness for this task, overriding the default |
 | `backend:` | backend for this task, overriding the harness's default |
 | `model:` | model for this task, overriding the harness's default |
-| `effort:` | effort level for this task: `low`, `medium`, `high` or `xhigh`, or `none` for cline, which dejima passes to cline as `--thinking` |
+| `effort:` | effort level for this task, one its harness's dejima manifest lists; help shows each harness's |
 | `context_window:` | context window for this task, in tokens, for a harness that has the setting (cline). Set it a little under what the model's server allows, so cline compacts before the server refuses |
 | `network:` | `named`: the session reaches only what this task names and its model, not dejima's own allowlist (dejima's `--drop-domains`). `sealed`: that, and the session doesn't start if it could look up any name, so only addresses are reachable (`--require-sealed`). A sealed session needs its model reached by address, such as a self-hosted one, and a domain request can't grant it a name later |
 | `name:` | a name for the session, so commands can call it `dn-<name>` in place of its id. Lowercase letters, digits and hyphens, up to 32. A session holds its name until it's cleared, even once it has ended |
@@ -535,8 +537,9 @@ Otherwise it's kept: a session that was stopped or ended without output, output 
 | `--keep-shared` | off | keep every ended session's `~/shared` on the dejima host, even once its output has been delivered; separate from `--keep-records`, which keeps dejima's records |
 | `--stop-timeout SECONDS` | 60 | how long a stopped session may take to exit before dejima itself is ended |
 | `--help-interval SECONDS` | 300 | least time between a task's help requests, and between domain requests while one awaits a decision, so a session can't flood the room |
+| `--done-interval SECONDS` | 60 | least time between a running task's `.done` deliveries, so a session can't fill the API's disk; an exited session's is collected at once |
 
-The API sends one of these commands, which arrive as `SSH_ORIGINAL_COMMAND`: none (launch the job on stdin), `status`, `fetch <id>`, `catalog`, `help <id>`, `answer <id>`, `message <id>`, `upload <id>`, `stop <id>`, `domains <id>`, `allow <id> <n>` or `deny <id> <n>`. Anything else is refused.
+The API sends one of these commands, which arrive as `SSH_ORIGINAL_COMMAND`: none (launch the job on stdin), `status`, `fetch <id>`, `catalog`, `help <id>`, `answer <id>`, `message <id>`, `upload <id>`, `stop <id>`, `domains <id>`, `allow <id> <n>`, `deny <id> <n>`, `forget <id>` or `forget-delivered <id> <sha256>`. Anything else is refused.
 
 Grants use `dejima --domains FILE` and `--dependencies FILE`, and output collection uses `--shared-path-file FILE`. A task without grants passes neither grant flag.
 
@@ -565,7 +568,7 @@ Grants use `dejima --domains FILE` and `--dependencies FILE`, and output collect
 | `session_wait` | with `remote_access_url`, seconds a launch waits for dejima to register the session (default 20) |
 | `[tokens]` | one bearer token per frontend, by name. Each must be at least 32 characters, differ from the others and from `examples/api.toml`'s placeholder, or the API won't start; `openssl rand -hex 32` makes one. A token can do everything its frontend can, so see [SECURITY.md](SECURITY.md) before adding one |
 | `[policy]` | applied at launch and to every domain request; a misspelled key stops the API. `deny_domains`: refused, with their subdomains and parents. `allow_domains`: if set, only these and their subdomains. `max_domains`: also caps what a session gains through requests. `allow_internal` (default true): false refuses internal grants. `max_internal_domains`. `allow_dependency_kinds` (default `apt`, `cargo`, `npm`, `pip`): `tarball` is left out unless listed, since it has the dejima host fetch any URL on its own network |
-| `[limits]` | `max_bytes`, `max_files`: should match the launcher's `--max-output` |
+| `[limits]` | `max_bytes`, `max_files`: `max_bytes` must be at least the launcher's `--max-output`, or larger output is never collected |
 | `[catalog.HARNESS.BACKEND]` | `models`: the models to offer for that harness and backend, each an id or `{ id = "...", context_window = N }`, which fills in the context window when it's picked. Frontends offer them, and still take a model that isn't listed. A backend the harness can't use isn't offered, nor a context window if it takes none |
 
 ### API endpoints

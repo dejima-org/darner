@@ -11,6 +11,7 @@ import logging
 import os
 import re
 import shutil
+import signal
 import sys
 import tempfile
 import time
@@ -107,6 +108,13 @@ MAX_TEXT = 32 * 1024
 CONFIG = web.AppKey("config", dict)
 STORE = web.AppKey("store", Store)
 SHARE_ERRORS = web.AppKey("share_errors", dict)
+# Polls an exited task's output went uncollected, by task.
+UNCOLLECTED = web.AppKey("uncollected", dict)
+FORGOTTEN = web.AppKey("forgotten", set)
+# Polls an exited task past max_session_age gets to deliver its output before it's ended without it.
+COLLECT_TRIES = 3
+# Output zips kept for each task.
+KEPT_ZIPS = 5
 EXPIRE_FAILED = web.AppKey("expire_failed", set)
 STATUS_CACHE = web.AppKey("status_cache", dict)
 CATALOG_CACHE = web.AppKey("catalog_cache", dict)
@@ -299,11 +307,11 @@ def check_policy(policy: dict, domains: list[str], internal: list[str] = (), dep
 
 
 def _unique(items) -> list:
-    found = []
+    # By a hashable key, since a request's lists can be long, and hold anything until validated.
+    found = {}
     for item in items:
-        if item not in found:
-            found.append(item)
-    return found
+        found.setdefault(item if isinstance(item, str) else (type(item).__name__, repr(item)), item)
+    return list(found.values())
 
 
 def _without_port(domain: object) -> object:
@@ -311,7 +319,7 @@ def _without_port(domain: object) -> object:
     if not isinstance(domain, str):
         return domain
     host, sep, port = domain.lower().rpartition(":")
-    return host if sep and port.isascii() and port.isdigit() and 0 < int(port) < 65536 else domain.lower()
+    return host if sep and port.isascii() and port.isdigit() and len(port) <= 5 and 0 < int(port) < 65536 else domain.lower()
 
 
 def _build(config: dict, body: object, read_files: bool = True) -> tuple[dict, dict, str, dict, list[tuple[str, str]]]:
@@ -331,8 +339,12 @@ def _build(config: dict, body: object, read_files: bool = True) -> tuple[dict, d
         overridden = {key for key in configsets.SINGLES if body.get(key) is not None}
         sets = configsets.load(Path(config.get("configs_dir", "")), _list(body, "configs"), overridden)
         files = configsets.load_files(Path(config.get("configs_dir", "")), sets["files"], read_files)
-    except (configsets.ConfigSetError, OSError) as e:
+    except configsets.ConfigSetError as e:
         raise RequestError(400, str(e))
+    except OSError:
+        # Its reason names a host path.
+        log.exception("reading config sets failed")
+        raise RequestError(400, "couldn't read the config sets")
     internal = _unique(_without_port(d) for d in sets["internal"] + _list(grants, "internal"))
     domains = _unique(_without_port(d) for d in sets["domains"] + _list(grants, "domains") + internal)
     names = _unique(config.get("default_blurbs", []) + sets["blurbs"] + _list(body, "blurbs"))
@@ -378,14 +390,26 @@ async def _read_capped(stream: asyncio.StreamReader, cap: int) -> bytes:
     return data
 
 
+async def _drain(stream: asyncio.StreamReader) -> None:
+    while await stream.read(64 * 1024):
+        pass
+
+
 async def run_remote(config: dict, args: list[str], stdin: bytes = b"") -> tuple[int, bytes, str]:
     """Run the launcher with a command; over ssh, args become SSH_ORIGINAL_COMMAND."""
     timeout = config.get("launch_timeout", 120)
     cap = _limits(config).max_bytes + archive.MANIFEST_SLACK
-    proc = await asyncio.create_subprocess_exec(
-        *config["launch_command"], *args,
-        stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-    )
+    try:
+        # In a session of its own, so a failure ends anything it started, which could hold the pipes open.
+        proc = await asyncio.create_subprocess_exec(
+            *config["launch_command"], *args,
+            stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            start_new_session=True,
+        )
+    except OSError as e:
+        # The reason names launch_command's path, and errors reach chat.
+        log.error("couldn't run launch_command: %s", e)
+        raise RuntimeError("couldn't run the launcher; the API's log says why")
 
     async def feed():
         proc.stdin.write(stdin)
@@ -395,16 +419,25 @@ async def run_remote(config: dict, args: list[str], stdin: bytes = b"") -> tuple
             pass
         proc.stdin.close()
 
+    readers = [asyncio.ensure_future(_read_capped(proc.stdout, cap)), asyncio.ensure_future(_read_capped(proc.stderr, 64 * 1024))]
+
     async def communicate():
-        _, out, err = await asyncio.gather(feed(), _read_capped(proc.stdout, cap), _read_capped(proc.stderr, 64 * 1024))
+        _, out, err = await asyncio.gather(feed(), *readers)
         await proc.wait()
         return out, err
 
     try:
         out, err = await asyncio.wait_for(communicate(), timeout)
     except (asyncio.TimeoutError, RuntimeError) as e:
-        proc.kill()
-        await proc.wait()
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(proc.pid, signal.SIGKILL)
+        for reader in readers:
+            reader.cancel()
+        await asyncio.gather(*readers, return_exceptions=True)
+        # wait() returns only once the pipes close, and a reader stopped at its
+        # cap leaves its pipe full, so what's left is read and dropped first.
+        with contextlib.suppress(asyncio.TimeoutError):
+            await asyncio.wait_for(asyncio.gather(_drain(proc.stdout), _drain(proc.stderr), proc.wait()), 10)
         raise RuntimeError(f"launcher timed out after {timeout}s" if isinstance(e, asyncio.TimeoutError) else str(e))
     return proc.returncode, out, archive.clean_text(err, 2048).removeprefix("darner-launch: ")
 
@@ -449,6 +482,12 @@ async def collect(app: web.Application, task_id: str, signalled: bool = True) ->
     except OSError:
         store.remove_event(seq)
         raise
+    # A frontend may not collect until the session ends, so a session repeating
+    # .done can't fill the disk: only its latest zips are kept.
+    stored = sorted(int(p.stem) for p in task_dir.glob("*.zip") if p.stem.isdigit())
+    for old in stored[:-KEPT_ZIPS]:
+        (task_dir / f"{old}.zip").unlink(missing_ok=True)
+        store.drop_zip(old)
     return True
 
 
@@ -562,14 +601,17 @@ async def forget(app: web.Application, task_id: str, delivered: str | None = Non
 async def poll_once(app: web.Application) -> None:
     config, store = app[CONFIG], app[STORE]
     purge(app)
-    ours = set(store.launched())
-    if not ours:
+    # An ended task the launcher has stopped listing needs nothing more from it.
+    app[FORGOTTEN].intersection_update(store.ended())
+    ours, ended = set(store.launched()), set(store.ended()) - app[FORGOTTEN]
+    if not ours and not ended:
         return
     code, out, err = await launcher_status(app, 0)
     if code:
         log.warning("status failed: %s", err or f"exit {code}")
         return
     listed = json.loads(out)
+    app[FORGOTTEN].update(ended - {task["id"] for task in listed})
     # A task the launcher no longer lists can never report ending, such as one
     # whose task directory was removed, so it's ended once it's past its age.
     gone = ours - {task["id"] for task in listed}
@@ -579,7 +621,10 @@ async def poll_once(app: web.Application) -> None:
     for task in listed:
         if task["id"] not in ours:
             # Left behind by a forget that failed, or by a task whose launch was never recorded.
-            if task["state"] == "exited" and not store.known(task["id"]):
+            # One that ended here is retried with its output's hash, so its share is still pruned.
+            if task["state"] == "exited" and task["id"] in ended:
+                await forget(app, task["id"], store.last_stored_zip(task["id"]))
+            elif task["state"] == "exited" and not store.known(task["id"]):
                 await forget(app, task["id"])
             continue
         # Logged once per change: it's repeated every poll until fixed.
@@ -602,8 +647,9 @@ async def poll_once(app: web.Application) -> None:
             else:
                 collected = True
         except Exception:
+            # Still expired and ended below, or a fetch that always fails would keep it forever.
             log.exception("collecting %s failed", task["id"])
-            continue
+            collected = False
         check_waiting(config, store, task)
         await expire(app, task)
         if task["state"] == "exited" and collected:
@@ -614,9 +660,13 @@ async def poll_once(app: web.Application) -> None:
         elif task["state"] == "exited" and config["max_session_age"] and (
             time.time() - store.created(task["id"]) > config["max_session_age"]
         ):
-            # Its output can't be fetched, so it would otherwise be polled forever.
-            end_task(app, task["id"], "its output couldn't be collected")
-            await forget(app, task["id"])
+            # Its output can't be fetched, so it would otherwise be polled forever. A
+            # session expire stopped is always this old, so its last output gets a few polls.
+            tries = app[UNCOLLECTED][task["id"]] = app[UNCOLLECTED].get(task["id"], 0) + 1
+            if tries >= COLLECT_TRIES:
+                app[UNCOLLECTED].pop(task["id"])
+                end_task(app, task["id"], "its output couldn't be collected")
+                await forget(app, task["id"])
 
 
 async def _poll_forever(app: web.Application) -> None:
@@ -638,7 +688,7 @@ async def check_task(request: web.Request) -> web.Response:
     """
     client, task_id = _client(request), _task_id(request)
     if request.app[STORE].task_status(client, task_id) != "launched":
-        raise web.HTTPNotFound()
+        raise _not_found(f"{task_id} isn't running")
     checked = request.app[LAST_CHECK]
     wait = checked.get(client, -CHECK_INTERVAL) + CHECK_INTERVAL - time.monotonic()
     if wait > 0:
@@ -712,8 +762,23 @@ def _task_id(request: web.Request) -> str:
         return given
     found = request.app[STORE].named(_client(request), given.removeprefix("dn-"))
     if found is None:
-        raise web.HTTPNotFound()
+        raise _not_found(f"no session {given}")
     return found
+
+
+def _not_found(error: str) -> web.HTTPNotFound:
+    return web.HTTPNotFound(text=json.dumps({"error": error}), content_type="application/json")
+
+
+@web.middleware
+async def _json_errors(request: web.Request, handler) -> web.StreamResponse:
+    """Every error as JSON with an error to relay, aiohttp's own included."""
+    try:
+        return await handler(request)
+    except web.HTTPException as e:
+        if e.status < 400 or e.content_type == "application/json":
+            raise
+        return web.json_response({"error": e.reason}, status=e.status)
 
 
 def _client(request: web.Request) -> str:
@@ -727,7 +792,7 @@ async def preview_task(request: web.Request) -> web.Response:
     """What POST /v1/tasks would launch for this body, without launching it: the
     settings it asks for, those its config sets gave, and the blurbs, in full.
     A task isn't needed yet. Refused as POST /v1/tasks would refuse it, defaults included."""
-    _client(request)
+    client = _client(request)
     try:
         body = await request.json()
     except ValueError:
@@ -737,7 +802,7 @@ async def preview_task(request: web.Request) -> web.Response:
     try:
         job, _, _, sets, blurbs = _build(request.app[CONFIG], body, read_files=False)
         name = _session_name(body)
-        if name is not None and (taken := _name_taken(request.app[STORE], _client(request), name)):
+        if name is not None and (taken := _name_taken(request.app[STORE], client, name)):
             raise RequestError(409, taken)
         await check_job_harness(request.app, job)
     except RequestError as e:
@@ -859,7 +924,7 @@ async def task_events(request: web.Request) -> web.Response:
     client, store = _client(request), request.app[STORE]
     task_id = _task_id(request)
     if store.task_status(client, task_id) is None:
-        raise web.HTTPNotFound()
+        raise _not_found(f"no session {task_id}")
     return web.json_response([_event_json(request.app[CONFIG], e) for e in store.task_events(client, task_id)])
 
 
@@ -868,7 +933,7 @@ async def get_output(request: web.Request) -> web.StreamResponse:
     event = request.app[STORE].event(_client(request), seq)
     path = Path(request.app[CONFIG]["results_dir"]) / task_id / f"{seq}.zip"
     if event is None or event.id != task_id or event.type != "output" or not event.size or not path.is_file():
-        raise web.HTTPNotFound()
+        raise _not_found("no such output")
     return web.FileResponse(
         path,
         headers={
@@ -893,7 +958,7 @@ async def _type_into(request: web.Request, command: str) -> web.Response:
     task_id = _task_id(request)
     status = request.app[STORE].task_status(client, task_id)
     if status is None:
-        raise web.HTTPNotFound()
+        raise _not_found(f"no session {task_id}")
     if status == "ended":
         return web.json_response({"error": f"{task_id} has ended"}, status=409)
     try:
@@ -971,7 +1036,7 @@ async def list_sessions(request: web.Request) -> web.Response:
 async def get_session(request: web.Request) -> web.Response:
     found = await _sessions(request, _task_id(request))
     if not found:
-        raise web.HTTPNotFound()
+        raise _not_found(f"no session {_task_id(request)}")
     return web.json_response(found[0])
 
 
@@ -981,7 +1046,7 @@ async def upload_file(request: web.Request) -> web.Response:
     task_id = _task_id(request)
     status = store.task_status(client, task_id)
     if status is None:
-        raise web.HTTPNotFound()
+        raise _not_found(f"no session {task_id}")
     if status != "launched":
         return web.json_response({"error": f"{task_id} is not running"}, status=409)
     name = request.query.get("name", "")
@@ -1013,7 +1078,7 @@ async def stop_task(request: web.Request) -> web.Response:
     task_id = _task_id(request)
     status = request.app[STORE].task_status(client, task_id)
     if status is None:
-        raise web.HTTPNotFound()
+        raise _not_found(f"no session {task_id}")
     if status != "launched":
         return web.json_response({"error": f"{task_id} is not running"}, status=409)
     try:
@@ -1045,10 +1110,10 @@ async def decide_domains(request: web.Request) -> web.Response:
     store, config = request.app[STORE], request.app[CONFIG]
     task_id, number, verb = _task_id(request), int(request.match_info["n"]), request.match_info["verb"]
     if store.task_status(client, task_id) is None:
-        raise web.HTTPNotFound()
+        raise _not_found(f"no session {task_id}")
     shown = store.domain_request(client, task_id, number)
     if shown is None:
-        raise web.HTTPNotFound()
+        raise _not_found(f"no domain request {number} for {task_id}")
     try:
         body = await request.json()
         requester = _requester(body.get("requester"))
@@ -1058,8 +1123,12 @@ async def decide_domains(request: web.Request) -> web.Response:
     if verb == "allow":
         # Checked again here, in case the policy changed since the request was shown.
         policy = config.get("policy", {})
-        payload["domains"] = [d["domain"] for d in shown["domains"] if not denied_domain(policy, d["domain"], d["internal"])]
+        payload["domains"] = [
+            {"domain": d["domain"], "internal": d["internal"], "port": d["port"]}
+            for d in shown["domains"] if not denied_domain(policy, d["domain"], d["internal"])
+        ]
         payload["max_domains"] = policy.get("max_domains")
+        payload["max_internal_domains"] = policy.get("max_internal_domains")
     try:
         code, out, err = await run_remote(config, [verb, task_id, str(number)], json.dumps(payload).encode())
     except RuntimeError as e:
@@ -1083,7 +1152,7 @@ async def get_blurb(request: web.Request) -> web.Response:
     _client(request)
     blurbs_dir, name = Path(request.app[CONFIG]["blurbs_dir"]), request.match_info["name"]
     if name not in available_blurbs(blurbs_dir):
-        raise web.HTTPNotFound()
+        raise _not_found("no such blurb")
     return web.json_response(load_blurbs(blurbs_dir, [name])[0][1])
 
 
@@ -1092,7 +1161,7 @@ async def describe_config(request: web.Request) -> web.Response:
     _client(request)
     configs_dir, name = Path(request.app[CONFIG].get("configs_dir", "")), request.match_info["name"]
     if name not in configsets.available(configs_dir):
-        raise web.HTTPNotFound()
+        raise _not_found(f"no config set {name}")
     try:
         found = configsets.load(configs_dir, [name])
     except configsets.ConfigSetError as e:
@@ -1113,10 +1182,15 @@ async def _fetch_catalog(config: dict) -> dict:
     code, out, err = await run_remote(config, ["catalog"])
     if code:
         raise RuntimeError(err or f"launcher exited {code}")
+    if err:
+        log.warning("catalog: %s", err)
     try:
-        return json.loads(out)
+        found = json.loads(out)
     except ValueError:
-        raise RuntimeError("launcher sent a catalog that isn't JSON")
+        found = None
+    if not isinstance(found, dict) or not isinstance(found.get("options"), dict):
+        raise RuntimeError("launcher sent a catalog that isn't one")
+    return found
 
 
 async def check_job_harness(app: web.Application, job: dict) -> None:
@@ -1125,7 +1199,7 @@ async def check_job_harness(app: web.Application, job: dict) -> None:
     try:
         found = await fetch_catalog(app)
     except RuntimeError as e:
-        logging.warning("can't check harness settings: %s", e)
+        log.warning("can't check harness settings: %s", e)
         return
     harness = job.get("harness") or found.get("default_harness")
     defaults = found.get("defaults", {}).get(harness, {})
@@ -1160,8 +1234,13 @@ def describe_catalog(found: dict, catalog: dict) -> dict:
 
 
 async def ack_event(request: web.Request) -> web.Response:
-    if not request.app[STORE].ack(_client(request), int(request.match_info["seq"])):
-        raise web.HTTPNotFound()
+    client, seq = _client(request), int(request.match_info["seq"])
+    event = request.app[STORE].event(client, seq)
+    if event is None or not request.app[STORE].ack(client, seq):
+        raise _not_found("no such event")
+    # Collected, so its zip goes now, not when the session ends.
+    if event.type == "output":
+        (Path(request.app[CONFIG]["results_dir"]) / event.id / f"{seq}.zip").unlink(missing_ok=True)
     purge(request.app)
     return web.Response(status=204)
 
@@ -1189,7 +1268,7 @@ def make_app(config: dict, poll: bool = True) -> web.Application:
     config["catalog"] = check_catalog_config(config.get("catalog", {}))
     if config.get("remote_access_url") and not re.match(r"https?://", config["remote_access_url"]):
         raise ValueError("remote_access_url must start with http:// or https://")
-    app = web.Application(client_max_size=256 * 1024)
+    app = web.Application(client_max_size=256 * 1024, middlewares=[_json_errors])
     app[CONFIG] = config
     app[STORE] = Store(config["db_path"])
     available = available_blurbs(Path(config["blurbs_dir"]))
@@ -1198,6 +1277,8 @@ def make_app(config: dict, poll: bool = True) -> web.Application:
             raise ValueError(f"default blurb {name!r} has no {name}.md in {config['blurbs_dir']}")
     app[STORE].fail_pending()
     app[SHARE_ERRORS] = {}
+    app[UNCOLLECTED] = {}
+    app[FORGOTTEN] = set()
     app[EXPIRE_FAILED] = set()
     app[STATUS_CACHE] = {}
     app[CATALOG_CACHE] = {}
@@ -1212,8 +1293,8 @@ def make_app(config: dict, poll: bool = True) -> web.Application:
     app.router.add_get("/v1/blurbs/{name}", get_blurb)
     app.router.add_get("/v1/configs", list_configs)
     app.router.add_get(r"/v1/configs/{name:[a-z0-9][a-z0-9_-]{0,63}}", describe_config)
-    app.router.add_get(r"/v1/tasks/{id:dn-[a-z0-9][a-z0-9-]{0,31}}/outputs/{seq:\d+}.zip", get_output)
-    app.router.add_post(r"/v1/events/{seq:\d+}/ack", ack_event)
+    app.router.add_get(r"/v1/tasks/{id:dn-[a-z0-9][a-z0-9-]{0,31}}/outputs/{seq:\d{1,9}}.zip", get_output)
+    app.router.add_post(r"/v1/events/{seq:\d{1,9}}/ack", ack_event)
     app.router.add_post(r"/v1/tasks/{id:dn-[a-z0-9][a-z0-9-]{0,31}}/answer", answer_help)
     app.router.add_post(r"/v1/tasks/{id:dn-[a-z0-9][a-z0-9-]{0,31}}/stop", stop_task)
     app.router.add_post(r"/v1/tasks/{id:dn-[a-z0-9][a-z0-9-]{0,31}}/message", message_task)

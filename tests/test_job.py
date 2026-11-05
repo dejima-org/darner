@@ -93,6 +93,7 @@ def test_validate_job_full():
         {"id": "dn-abc23", "prompt": " "},
         {"id": "dn-abc23", "prompt": "p\0"},
         {"id": "dn-abc23", "prompt": "x" * 70000},
+        {"id": "dn-abc23", "prompt": "é" * 40000},
         {"id": "dn-abc23", "prompt": "p", "identity": "me"},
         {"id": "dn-abc23", "prompt": "p", "domains": "pypi.org"},
         {"id": "dn-abc23", "prompt": "p", "domains": ["localhost"]},

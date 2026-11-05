@@ -196,8 +196,9 @@ def validate_job(d: object) -> Job:
     if not valid_task_id(d.get("id")):
         raise JobError("invalid job id")
     prompt = d.get("prompt")
-    if not isinstance(prompt, str) or not prompt.strip() or len(prompt) > MAX_PROMPT:
-        raise JobError(f"prompt must be non-empty text of at most {MAX_PROMPT} characters")
+    # In bytes: the prompt is one argument to dejima, and the kernel caps an argument's bytes.
+    if not isinstance(prompt, str) or not prompt.strip() or len(prompt.encode(errors="surrogatepass")) > MAX_PROMPT:
+        raise JobError(f"prompt must be non-empty text of at most {MAX_PROMPT} bytes")
     if "\0" in prompt:
         raise JobError("prompt contains a NUL byte")
     for key, check, what in (

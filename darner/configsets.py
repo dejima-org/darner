@@ -95,7 +95,11 @@ def load(configs_dir: Path, names: list, overridden=()) -> dict:
     for name in names:
         if not isinstance(name, str) or name not in choices:
             raise ConfigSetError(f"unknown config set {name!r} (available: {', '.join(choices) or 'none'})")
-        found = parse(name, (configs_dir / name).read_text())
+        try:
+            text = (configs_dir / name).read_text()
+        except (OSError, UnicodeDecodeError):
+            raise ConfigSetError(f"couldn't read config set {name!r}")
+        found = parse(name, text)
         for field in LISTS.values():
             combined[field] += [v for v in found[field] if v not in combined[field]]
         for key in SINGLES:

@@ -153,6 +153,10 @@ class Store:
             return None
         return json.loads(row[1]).get("zip_sha256")
 
+    def drop_zip(self, seq: int) -> None:
+        """Say an output's zip is gone, so it isn't offered. Its summary stays."""
+        self.db.execute("UPDATE events SET size = 0 WHERE seq = ?", (seq,))
+
     def kept_outputs(self, task_id: str) -> set[int]:
         rows = self.db.execute("SELECT seq FROM events WHERE task_id = ? AND type = 'output' AND acked = 0", (task_id,))
         return {r[0] for r in rows}
@@ -168,6 +172,9 @@ class Store:
 
     def known(self, task_id: str) -> bool:
         return self.db.execute("SELECT 1 FROM tasks WHERE id = ?", (task_id,)).fetchone() is not None
+
+    def ended(self) -> list[str]:
+        return [r[0] for r in self.db.execute("SELECT id FROM tasks WHERE status = 'ended'")]
 
     def set_run_id(self, task_id: str, run_id: str) -> None:
         self.db.execute("UPDATE tasks SET run_id = ? WHERE id = ?", (run_id, task_id))
