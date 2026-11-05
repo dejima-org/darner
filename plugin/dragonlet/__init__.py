@@ -66,7 +66,7 @@ NO_TASK = "Tell me the task after the mention, or reply to a note to make it the
 USAGE = """\
 **darner** starts an isolated dejima session for a task.
 
-**Start a task:** reply to a note with a message that mentions me. The note is the task, and the rest of your reply is extra context. Or mention me in a message that isn't a reply, and that message is the task. Keyword lines configure the session:
+**Start a task:** mention me in a message, and that message is the task. Or reply to a message, such as a note, mentioning me: that message is the task, and the rest of your reply is extra context. Keyword lines configure the session:
 
 ```
 config: <names>    use saved sets of these keywords{configs}; anything else you give overrides them, and settles any they disagree on
@@ -101,7 +101,7 @@ allow: pypi.org, files.pythonhosted.org
 
 **Sessions:** with a mention, `sessions` lists the open ones, `status dn-xxxxx` says what one is waiting on, `tell dn-xxxxx <message>` types a message into it, `upload dn-xxxxx` in reply to a file puts the file in its `~/shared/uploads`, and `stop dn-xxxxx` ends it. A named session's dn-<name> works anywhere its id does. Replying to any of my messages about a session works without either.
 
-Only allowlisted users can start tasks, and the note must be from one of them too. Anything the agent writes is untrusted.
+Only allowlisted users can start tasks, and a message replied to must be from one of them too. Anything the agent writes is untrusted.
 """
 
 

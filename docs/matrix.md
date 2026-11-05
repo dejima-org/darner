@@ -2,7 +2,7 @@
 
 [← darner README](../README.md)
 
-A maubot plugin that starts tasks from a Matrix room, such as one you keep notes in from Element. Reply to a note, mentioning the bot, and the note becomes the task. The bot posts what the session asks for and what it delivers, and takes your replies as answers, messages and commands. It's one frontend among others, with its own API token, and sees only the sessions it started.
+A maubot plugin that starts tasks from Matrix. Mention the bot with your task, in any room it's in, from Element or any other client. The bot posts what the session asks for and what it delivers, and takes your replies as answers, messages and commands. It's one frontend among others, with its own API token, and sees only the sessions it started.
 
 ## Setting it up
 
@@ -17,7 +17,7 @@ You need a maubot server, a Matrix account for the bot, and darner's API and dej
 
 Create the bot's Matrix account, named `BOT_USER`. Use your homeserver's registration, or `register_new_matrix_user` on Synapse.
 
-On any machine, install maubot's CLI, log in to your maubot server, and log the bot in through it. The bot's homeserver has to be listed under `homeservers:` in maubot's config. `--update-client` creates the bot's client in maubot with a device of its own, which encrypted rooms need.
+Add the bot to maubot as a client, in maubot's web UI under **Clients** or with maubot's CLI. Give it a device of its own, which encrypted rooms need. With the CLI, on any machine, the bot's homeserver has to be listed under `homeservers:` in maubot's config, and `--update-client` creates the client with its own device:
 
 ```sh
 MAUBOT_URL=https://maubot.example.org
@@ -39,11 +39,11 @@ In maubot's web UI:
    - `allowlist`: your Matrix ID, and anyone else's who may start tasks, e.g. `["@you:example.org"]`
    - `api_url`: where the API is reachable from maubot. That's `http://127.0.0.1:8080` with the defaults on the same machine, or `http://api:8080` from a container on the same Docker network
    - `api_token`: the bot's token
-3. Invite the bot to the room you keep notes in, and accept the invite. The simplest way is to turn on **Autojoin** on the bot's client, invite it, then turn autojoin off again, so only rooms you choose matter.
+3. Invite the bot to a room, or start a direct chat with it, and accept the invite. The simplest way is to turn on **Autojoin** on the bot's client, invite it, then turn autojoin off again, so only rooms you choose matter.
 
 Encrypted rooms need maubot's encryption support installed on the maubot server; see maubot's documentation.
 
-To check it, send a message in the room that mentions the bot and says `help`. The reply lists your context blurbs, which also shows that the bot reaches the API. Then reply to a note, mentioning the bot, with a line of context. The bot answers with the task id, and when the agent finishes, it replies again with its summary and a zip.
+To check it, send a message in the room that mentions the bot and says `help`. The reply lists your context blurbs, which also shows that the bot reaches the API. Then mention the bot with a small task. The bot answers with the task id, and when the agent finishes, it replies again with its summary and a zip.
 
 ### Instance config
 
@@ -55,7 +55,7 @@ To check it, send a message in the room that mentions the bot and says `help`. T
 
 ## Starting a task
 
-Reply to a note with a message that mentions the bot:
+Mention the bot with the task, and keyword lines for what it needs:
 
 ```
 @dragonlet the import job started failing after the deploy, find out why
@@ -66,11 +66,13 @@ harness: cline
 backend: openrouter
 ```
 
-The note is the task. The rest of the reply, minus the mention and the keyword lines, is extra context. Or send the task directly, in a message that mentions the bot and isn't a reply. That message, minus the mention and the keyword lines, is the task, with no extra context. Every keyword is in [tasks.md](tasks.md).
+The message, minus the mention and the keyword lines, is the task. Every keyword is in [tasks.md](tasks.md).
+
+Or reply to an existing message, such as a note, mentioning the bot. The replied-to message is then the task, and your reply, minus the mention and the keyword lines, is extra context.
 
 A mention is a pill for the bot, whatever its text, or the bot's full user ID typed out, such as `@dragonlet:example.org`. The bot's name on its own isn't one, so a room can talk about the bot without starting tasks, and neither is replying to one of its messages without a mention.
 
-The bot replies with the task id and its tmux target, plus a link to the session if the API has `remote_access_url` set, or with why it was refused. It only acts when both the reply and the note are from users in its `allowlist`, since the note becomes the agent's instructions.
+The bot replies with the task id and its tmux target, plus a link to the session if the API has `remote_access_url` set, or with why it was refused. It only acts for users in its `allowlist`. For a reply, the replied-to message's sender must be in it too, since that message becomes the agent's instructions.
 
 `@dragonlet help` replies with this usage, including the available context blurbs and each harness's effort levels.
 
