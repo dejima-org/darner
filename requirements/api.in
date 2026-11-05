@@ -1,0 +1,6 @@
+# What the API image installs. Regenerate api.txt with pip-tools after changing
+# this or pyproject.toml's api extra:
+#   pip-compile --generate-hashes --allow-unsafe -o requirements/api.txt requirements/api.in
+aiohttp>=3.9
+# The build backend, installed first so the package itself builds without fetching.
+setuptools>=77

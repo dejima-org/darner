@@ -1,8 +1,10 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Brad Anderson
 import html
 import re
 import time
 from typing import Awaitable, Type
-from urllib.parse import unquote
+from urllib.parse import quote, unquote
 
 from maubot import MessageEvent, Plugin
 from maubot.handlers import event
@@ -23,51 +25,85 @@ from mautrix.types import (
 from mautrix.util.config import BaseProxyConfig, ConfigUpdateHelper
 
 from .markdown import render
-from .parse import ParseError, parse_reply, strip_mention
+from .parse import MARKDOWN_LINK, ParseError, parse_reply, strip_mention
 
-TASK_ID = re.compile(r"ms-[a-z2-7]{5}")
-# Marks each of the bot's messages about a task, so a reply to any of them can name it.
-TASK_TAG = "io.meeseeks.task"
+TASK_ID = re.compile(r"dn-[a-z2-7]{5}")
+# What a command takes for a session: its id, or dn-<name>, which the API resolves.
+_ID = r"dn-[a-z0-9][a-z0-9-]{0,31}"
+SESSION = re.compile(_ID, re.IGNORECASE)
+# Content keys on the bot's messages. TASK_TAG marks each message about a task, so a reply to any of them can name it.
+TAG = "io.branderson.dejima.darner"
+TASK_TAG, HELP_TAG, DOMAINS_TAG = f"{TAG}.task", f"{TAG}.help", f"{TAG}.domains"
+# Every message the bot sends mentions no one, whatever text it carries.
+NO_MENTIONS = {"m.mentions": {}}
 PILL = re.compile(r'<a\s[^>]*href="https://matrix\.to/#/([^"?]+)[^"]*"[^>]*>(.*?)</a>', re.IGNORECASE | re.DOTALL)
-STOP = re.compile(r"stop(?:\s+(ms-[a-z2-7]{5}))?", re.IGNORECASE)
-STOP_HOW = "To stop a session, reply `stop` with a mention to one of my messages about it, or send `stop ms-xxxxx` with a mention."
-STATUS = re.compile(r"status(?:\s+(ms-[a-z2-7]{5}))?", re.IGNORECASE)
-TELL = re.compile(r"tell(?:\s+(ms-[a-z2-7]{5}))?\s+(\S.*)", re.IGNORECASE | re.DOTALL)
-UPLOAD = re.compile(r"upload\s+(ms-[a-z2-7]{5})", re.IGNORECASE)
-STATUS_HOW = "Send `status ms-xxxxx` with a mention, or reply `status` with a mention to one of my messages about the session."
+STOP = re.compile(rf"stop(?:\s+({_ID}))?", re.IGNORECASE)
+STOP_HOW = "To stop a session, reply `stop` with a mention to one of my messages about it, or send `stop dn-xxxxx` with a mention."
+CLEAR = re.compile(rf"clear(?:\s+({_ID}))?", re.IGNORECASE)
+CLEAR_HOW = "To clear an ended session, reply `clear` with a mention to one of my messages about it, or send `clear dn-xxxxx` with a mention."
+STATUS = re.compile(rf"status(?:\s+({_ID}))?", re.IGNORECASE)
+TELL = re.compile(rf"tell(?:\s+({_ID}))?\s+(\S.*)", re.IGNORECASE | re.DOTALL)
+# A session command naming something shaped like a task id that isn't one, so
+# a mistyped or foreign id is refused rather than taken as a new task.
+# Only as the whole argument, so "stop re-using the old client" is still a task. After
+# tell, words follow anyway, so the word must have a digit, as most ids do.
+NOT_AN_ID = re.compile(
+    r"(?:stop|clear|status|upload)\s+([a-z0-9]{2}-[a-z0-9]{5})|tell\s+([a-z0-9]{2}-(?=[a-z]*\d)[a-z0-9]{5})\s.*",
+    re.IGNORECASE | re.DOTALL,
+)
+# Pages of a note's edits read looking for its author's latest.
+MAX_EDIT_PAGES = 20
+# Delivery attempts before an event is given up on, acknowledged and logged.
+MAX_ATTEMPTS = 5
+UPLOAD = re.compile(rf"upload\s+({_ID})", re.IGNORECASE)
+DESCRIBE = re.compile(r"describe\s+(\S.*)", re.IGNORECASE | re.DOTALL)
+MAX_DESCRIBED = 10
+# Each blurb shown is cut here, so a reply doesn't fill the room. Lines wrap,
+# so characters are capped too.
+MAX_BLURB_LINES, MAX_BLURB_CHARS = 20, 1000
+STATUS_HOW = "Send `status dn-xxxxx` with a mention, or reply `status` with a mention to one of my messages about the session."
 DECIDE_HOW = "To allow or deny domains, reply `allow` or `deny` with a mention to my message listing them."
 NO_TASK = "Tell me the task after the mention, or reply to a note to make it the task. Send `help` with a mention for usage."
 
 USAGE = """\
-**Meeseeks** starts an isolated dejima session for a task.
+**darner** starts an isolated dejima session for a task.
 
-**Start a task:** reply to a note with a message that mentions me. The note is the task, and the rest of your reply is extra context. Or mention me in a message that isn't a reply, and that message is the task. Keyword lines configure the session:
+**Start a task:** mention me in a message, and that message is the task. Or reply to a message, such as a note, mentioning me: that message is the task, and the rest of your reply is extra context. Keyword lines configure the session:
 
 ```
-ctx: <names>       add context blurbs{blurbs}
+config: <names>    use saved sets of these keywords{configs}; anything else you give overrides them, and settles any they disagree on
+blurb: <names>     add context blurbs{blurbs}
 allow: <domains>   let the session reach these domains
-deps: <specs>      install dependencies (apt:, pip:, cargo:, npm:, tarball:)
-harness: <name>    use this harness instead of the default
-backend: <name>    use this backend instead of the harness's default
+internal: <domains>  let it reach these domains inside your network
+dependency: <specs>  install dependencies (apt:, pip:, cargo:, npm:, tarball:)
+harness: <name>    use this harness instead of the default{harnesses}
+backend: <name>    use this backend instead of the harness's default{backends}
 model: <name>      use this model instead of the harness's default
-effort: <level>    Claude Code's effort level: low, medium, high or xhigh
+effort: <level>    effort level, as the harness takes{efforts}
+context_window: <tokens>  cline's context window, for a self-hosted model
+network: <reach>   named: only what this task names, not dejima's own allowlist; sealed: that, and refuse to start if the session can resolve any name
+name: <name>       name the session, so commands can call it dn-<name>; it holds the name until it's cleared
 ```
 
 Values are separated by commas or spaces, and keywords can repeat. For example:
 
 ```
-@meeseeks find out why the import job fails since the deploy
-ctx: myapp
+{bot} find out why the import job fails since the deploy
+blurb: myapp
 allow: pypi.org, files.pythonhosted.org
 ```
+
+**Config sets and blurbs:** with a mention, `list configs` and `list blurbs` name them, and `describe <names>` shows what each config set applies and what each blurb says.
+
+**Self-test:** `selftest` with a mention sends hostile text through the paths an agent's text takes, to check I show it safely.
 
 **Updates:** I reply when the session starts, when it delivers output (a summary and a zip), when it needs something from you, and when it ends. When a help request says "Reply to this message to answer", reply to it and your answer is typed into the session.
 
 **Domains:** when the agent asks to reach domains, I list every one. Reply `allow` or `deny` with a mention to that message.
 
-**Sessions:** with a mention, `sessions` lists the open ones, `status ms-xxxxx` says what one is waiting on, `tell ms-xxxxx <message>` types a message into it, `upload ms-xxxxx` in reply to a file puts the file in its `~/shared/uploads`, and `stop ms-xxxxx` ends it. Replying to any of my messages about a session works without the id.
+**Sessions:** with a mention, `sessions` lists the open ones, `status dn-xxxxx` says what one is waiting on, `tell dn-xxxxx <message>` types a message into it, `upload dn-xxxxx` in reply to a file puts the file in its `~/shared/uploads`, `stop dn-xxxxx` ends it, and `clear dn-xxxxx` deletes what an ended one left on the dejima host. A named session's dn-<name> works anywhere its id does. Replying to any of my messages about a session works without either.
 
-Only allowlisted users can start tasks, and the note must be from one of them too. Anything the agent writes is untrusted.
+Only allowlisted users can start tasks, and a message replied to must be from one of them too. Anything the agent writes is untrusted.
 """
 
 
@@ -83,15 +119,10 @@ class Config(BaseProxyConfig):
         helper.copy("poll_interval")
 
 
-class MeeseeksBot(Plugin):
+class Dragonlet(Plugin):
     async def start(self) -> None:
         self.config.load_and_update()
-        self.names = [self.client.mxid]
-        try:
-            if name := await self.client.get_displayname(self.client.mxid):
-                self.names.append(name)
-        except Exception:
-            self.log.warning("Couldn't fetch own display name", exc_info=True)
+        self._attempts: dict[int, int] = {}
         self.sched.run_periodically(self.config["poll_interval"], self.poll_once)
 
     @classmethod
@@ -107,23 +138,30 @@ class MeeseeksBot(Plugin):
         )
 
     def _names(self, evt: MessageEvent) -> list[str]:
-        """The bot's names, plus whatever text a client gave a pill linking to it.
+        """The bot's user ID, plus the text of any pill or markdown link to it.
 
         A pill's plain-text body is its visible text, usually the bot's display
-        name in that room, which needn't match the names known at startup.
+        name in that room, so that's what's stripped from the body.
         """
-        names = list(self.names)
+        names = [self.client.mxid]
         for target, text in PILL.findall(evt.content.formatted_body or ""):
             if unquote(target) == self.client.mxid:
                 names.append(html.unescape(re.sub(r"<[^>]+>", "", text)).strip())
+        for text, target in MARKDOWN_LINK.findall(evt.content.body):
+            linked = re.search(r"(@[^/?#\s]+)(?:\?.*)?$", unquote(target))
+            if linked and linked[1] == self.client.mxid:
+                names.append(text.strip())
         return names
 
     def _mentioned(self, evt: MessageEvent, names: list[str]) -> bool:
-        mentions = evt.content.get("m.mentions") or {}
-        body = evt.content.body.lower()
-        return self.client.mxid in mentions.get("user_ids", []) or any(
-            n and n.lower() in body for n in names
-        )
+        """Whether the message mentions the bot directly: a pill, or its user ID written out.
+
+        Not its display name, which is also a word people use about it, and not
+        m.mentions alone, which clients fill in for every reply to the bot.
+        """
+        return len(names) > 1 or re.search(
+            rf"(?<![\w@]){re.escape(self.client.mxid)}(?![\w-]|[.:]\w)", evt.content.body, re.IGNORECASE
+        ) is not None
 
     async def _note_body(self, note: Event | None) -> str:
         if note is None:
@@ -131,8 +169,12 @@ class MeeseeksBot(Plugin):
         # The note becomes the agent's instructions, so it must come from someone trusted to give them.
         if note.sender not in self.config["allowlist"]:
             raise NoteError(f"the note is from {note.sender}, who isn't allowed to start tasks")
+        # A note that replies to someone quotes them in its body, and they needn't be allowlisted.
+        note.content.trim_reply_fallback()
         edited = await self._latest_edit(note)
-        return note.content.body if edited is None else edited
+        if edited is None:
+            return note.content.body
+        return _without_quote(edited) if note.content.get_reply_to() else edited
 
     async def _latest_edit(self, note: Event) -> str | None:
         """The text of the note's latest edit by its author, if it has one.
@@ -141,22 +183,28 @@ class MeeseeksBot(Plugin):
         bundled relations, which a decrypted event doesn't carry.
         """
         path = Path.v1.rooms[note.room_id].relations[note.event_id]["m.replace"]
-        try:
-            resp = await self.client.api.request(Method.GET, path, query_params={"dir": "b", "limit": "50"})
-        except Exception as e:
-            raise NoteError(f"couldn't check the note for edits: {e}")
-        for raw in resp.get("chunk", []):
-            edit = Event.deserialize({"room_id": note.room_id, **raw})
-            if edit.sender != note.sender:
-                continue
-            if isinstance(edit, EncryptedEvent):
-                try:
-                    edit = await self.client.crypto.decrypt_megolm_event(edit)
-                except (DecryptionError, AttributeError):
-                    raise NoteError("couldn't decrypt the note's latest edit")
-            if isinstance(edit, RawMessageEvent):
-                return edit.content.body
-        return None
+        query = {"dir": "b", "limit": "50"}
+        # Paged through, since anyone in the room can add edits that bury the author's.
+        for _ in range(MAX_EDIT_PAGES):
+            try:
+                resp = await self.client.api.request(Method.GET, path, query_params=query)
+            except Exception as e:
+                raise NoteError(f"couldn't check the note for edits: {e}")
+            for raw in resp.get("chunk", []):
+                edit = Event.deserialize({"room_id": note.room_id, **raw})
+                if edit.sender != note.sender:
+                    continue
+                if isinstance(edit, EncryptedEvent):
+                    try:
+                        edit = await self.client.crypto.decrypt_megolm_event(edit)
+                    except (DecryptionError, AttributeError):
+                        raise NoteError("couldn't decrypt the note's latest edit")
+                if isinstance(edit, RawMessageEvent):
+                    return edit.content.body
+            if not resp.get("next_batch"):
+                return None
+            query = {**query, "from": resp["next_batch"]}
+        raise NoteError("the note has too many edits by others to find its author's latest")
 
     async def _submit(self, evt: MessageEvent, replied: Event | None = None) -> tuple[str, bool]:
         """Start a task: a reply's note is the task, otherwise the message itself is."""
@@ -174,17 +222,19 @@ class MeeseeksBot(Plugin):
             "task": task,
             "context": context,
             "blurbs": req.blurbs,
-            "grants": {"domains": req.domains, "dependencies": req.dependencies},
+            "configs": req.configs,
+            "grants": {"domains": req.domains, "internal": req.internal_domains, "dependencies": req.dependencies},
             "requester": evt.sender,
             "source": {"kind": "matrix", "ref": evt.event_id, "channel": evt.room_id},
         }
-        for key in ("harness", "backend", "model", "effort"):
+        for key in ("harness", "backend", "model", "effort", "context_window", "network", "name"):
             if value := getattr(req, key):
                 payload[key] = value
         async with self._api("POST", "/v1/tasks", json=payload) as resp:
             data = await resp.json(content_type=None)
         if resp.status in (200, 201):
-            text = f"Started {data['id']} → {data['target']}"
+            text = f"Started {data['id']}" + (f", named dn-{data['name']}" if data.get("name") else "")
+            text += f" → {data['target']}"
             if data.get("link"):
                 text += f"\nOpen the session: {data['link']}"
             content = TextMessageEventContent(msgtype=MessageType.TEXT, body=text)
@@ -210,15 +260,31 @@ class MeeseeksBot(Plugin):
         mentioned = self._mentioned(evt, names)
         command = strip_mention(content.body, names).strip()
         if mentioned and command.lower() == "help":
-            await evt.reply(await self._usage())
+            await evt.reply(await self._usage(), extra_content=NO_MENTIONS)
+            return
+        if mentioned and (wrong := NOT_AN_ID.fullmatch(command)) and not SESSION.fullmatch(word := wrong[1] or wrong[2]):
+            await evt.reply(f"{word} isn't one of my task ids, which look like dn-xxxxx.", markdown=False, extra_content=NO_MENTIONS)
             return
         if mentioned and (stop := STOP.fullmatch(command)):
-            await self._respond(evt, self._stop(evt, stop[1] and stop[1].lower()))
+            await self._respond(evt, self._post_to(evt, stop[1] and stop[1].lower(), "stop", STOP_HOW, "Stopped {}."))
+            return
+        if mentioned and (clear := CLEAR.fullmatch(command)):
+            done = "Cleared {}: its output and its ~/shared on the dejima host are deleted."
+            await self._respond(evt, self._post_to(evt, clear[1] and clear[1].lower(), "clear", CLEAR_HOW, done))
             return
         if mentioned and command.lower() in ("allow", "deny"):
             await self._respond(evt, self._decide_domains(evt, command.lower()))
             return
-        if mentioned and command.lower() in ("sessions", "list"):
+        if mentioned and (describe := DESCRIBE.fullmatch(command)):
+            await self._respond(evt, self._describe(list(dict.fromkeys(re.split(r"[,\s]+", describe[1].strip())))))
+            return
+        if mentioned and command.lower() == "selftest":
+            await self._respond(evt, self._selftest(evt))
+            return
+        if mentioned and command.lower() in ("list blurbs", "list configs"):
+            await self._respond(evt, self._list(command.lower().split()[1]))
+            return
+        if mentioned and command.lower() in ("sessions", "list", "list sessions"):
             await self._respond(evt, self._sessions())
             return
         if mentioned and (status := STATUS.fullmatch(command)):
@@ -242,7 +308,7 @@ class MeeseeksBot(Plugin):
         except Exception as e:
             self.log.warning("Couldn't fetch the replied-to event", exc_info=True)
             if mentioned:
-                await evt.reply(_failure(e), markdown=False)
+                await evt.reply(_failure(e), markdown=False, extra_content=NO_MENTIONS)
                 await evt.react("❌")
             return
         if task := self._help_task(replied):
@@ -252,7 +318,7 @@ class MeeseeksBot(Plugin):
             if command:
                 await self._respond(evt, self._tell(evt, task, command))
             else:
-                await evt.reply(f"Say what to tell {task} after the mention.", markdown=False)
+                await evt.reply(f"Say what to tell {task} after the mention.", markdown=False, extra_content=NO_MENTIONS)
         elif mentioned:
             await self._respond(evt, self._submit(evt, replied))
 
@@ -264,13 +330,37 @@ class MeeseeksBot(Plugin):
             self.log.warning("Couldn't list context blurbs", exc_info=True)
             blurbs = None
         listed = f" (available: {', '.join(blurbs) or 'none'})" if isinstance(blurbs, list) else ""
-        return USAGE.format(blurbs=listed)
+        try:
+            async with self._api("GET", "/v1/catalog", raise_for_status=True) as resp:
+                catalog = await resp.json()
+        except Exception:
+            self.log.warning("Couldn't list harnesses and backends", exc_info=True)
+            catalog = {}
+        harnesses = backends = ""
+        if catalog.get("harnesses"):
+            harnesses = f" ({', '.join(catalog['harnesses'])}"
+            harnesses += f"; default {catalog['default_harness']})" if catalog.get("default_harness") else ")"
+        if catalog.get("backends"):
+            backends = f" ({', '.join(catalog['backends'])})"
+        efforts = "; ".join(
+            f"{name}: {', '.join(o['efforts']) or 'none taken'}"
+            for name, o in (catalog.get("options") or {}).items() if isinstance(o, dict) and isinstance(o.get("efforts"), list)
+        )
+        efforts = f" ({efforts})" if efforts else ""
+        try:
+            async with self._api("GET", "/v1/configs", raise_for_status=True) as resp:
+                configs = await resp.json()
+        except Exception:
+            self.log.warning("Couldn't list config sets", exc_info=True)
+            configs = None
+        configs = f" (available: {', '.join(configs) or 'none'})" if isinstance(configs, list) else ""
+        return USAGE.format(blurbs=listed, harnesses=harnesses, backends=backends, efforts=efforts, configs=configs, bot=self.client.mxid)
 
     def _help_task(self, replied: Event | None) -> str | None:
         # Only the bot's own tag counts, so a user can't steer an answer into another task
         if not isinstance(replied, RawMessageEvent) or replied.sender != self.client.mxid:
             return None
-        tag = replied.content.get("io.meeseeks.help")
+        tag = replied.content.get(HELP_TAG)
         task = tag.get("task") if isinstance(tag, dict) else None
         return task if isinstance(task, str) and TASK_ID.fullmatch(task) else None
 
@@ -285,7 +375,7 @@ class MeeseeksBot(Plugin):
         """The task and request number of one of the bot's own domain request messages."""
         if not isinstance(replied, RawMessageEvent) or replied.sender != self.client.mxid:
             return None
-        tag = replied.content.get("io.meeseeks.domains")
+        tag = replied.content.get(DOMAINS_TAG)
         if not isinstance(tag, dict):
             return None
         task, number = tag.get("task"), tag.get("request")
@@ -345,6 +435,46 @@ class MeeseeksBot(Plugin):
             session = await resp.json()
         return _status_notice(session), True
 
+    async def _selftest(self, evt: MessageEvent) -> tuple[str, bool]:
+        payload = {"requester": evt.sender, "source": {"kind": "matrix", "ref": evt.event_id, "channel": evt.room_id}}
+        async with self._api("POST", "/v1/selftest", json=payload) as resp:
+            data = await resp.json(content_type=None)
+        if not resp.ok:
+            return f"Failed: {data.get('error') if isinstance(data, dict) else f'HTTP {resp.status}'}", False
+        return (
+            f"Self-test {data['id']}: its output, help request and waiting notice follow, written like a hostile"
+            " agent's. Each numbered line says what you should see.",
+            True,
+        )
+
+    async def _list(self, what: str) -> tuple[str, bool]:
+        kind = {"blurbs": "context blurbs", "configs": "config sets"}[what]
+        async with self._api("GET", f"/v1/{what}", raise_for_status=True) as resp:
+            names = await resp.json()
+        if not names:
+            return f"There are no {kind}.", True
+        return f"{kind.capitalize()}: {', '.join(names)}. Send `describe <names>` with a mention to see them.", True
+
+    async def _describe(self, names: list[str]) -> tuple[str | TextMessageEventContent, bool]:
+        """Each name's config set, then its blurb, for every name that has either."""
+        if len(names) > MAX_DESCRIBED:
+            return f"I can describe up to {MAX_DESCRIBED} at once.", False
+        sections, missing = [], []
+        for name in names:
+            found = False
+            for kind, path in (("config set", "configs"), ("blurb", "blurbs")):
+                async with self._api("GET", f"/v1/{path}/{quote(name, safe='')}") as resp:
+                    if resp.status == 404:
+                        continue
+                    data = await resp.json(content_type=None)
+                    if not resp.ok:
+                        return f"Failed: {data.get('error') if isinstance(data, dict) else f'HTTP {resp.status}'}", False
+                sections.append((name, kind, data))
+                found = True
+            if not found:
+                missing.append(name)
+        return _described_notice(sections, missing), bool(sections) and not missing
+
     async def _upload_replied_file(self, evt: MessageEvent, task: str) -> tuple[str, bool]:
         file_event = None
         if evt.content.get_reply_to():
@@ -384,14 +514,15 @@ class MeeseeksBot(Plugin):
         error = data.get("error") if isinstance(data, dict) else None
         return f"Failed: {error or f'HTTP {resp.status}'}", False
 
-    async def _stop(self, evt: MessageEvent, task: str | None) -> tuple[str, bool]:
+    async def _post_to(self, evt: MessageEvent, task: str | None, verb: str, how: str, done: str) -> tuple[str, bool]:
+        """Stop or clear a session, named or replied to."""
         if task is None and evt.content.get_reply_to():
             task = self._tagged_task(await self.client.get_event(evt.room_id, evt.content.get_reply_to()))
         if task is None:
-            return STOP_HOW, False
-        async with self._api("POST", f"/v1/tasks/{task}/stop") as resp:
+            return how, False
+        async with self._api("POST", f"/v1/tasks/{task}/{verb}", json={"requester": evt.sender}) as resp:
             if resp.ok:
-                return f"Stopped {task}.", True
+                return done.format(task), True
             data = await resp.json(content_type=None)
         error = data.get("error") if isinstance(data, dict) else None
         return f"Failed: {error or f'HTTP {resp.status}'}", False
@@ -418,7 +549,7 @@ class MeeseeksBot(Plugin):
             self.log.warning("Request failed", exc_info=True)
             text, ok = _failure(e), False
         if text:
-            await evt.reply(text, markdown=False)
+            await evt.reply(text, markdown=False, extra_content=NO_MENTIONS)
         await evt.react("✅" if ok else "❌")
         await self.client.redact(evt.room_id, pending)
 
@@ -428,18 +559,36 @@ class MeeseeksBot(Plugin):
         for e in events:
             try:
                 await self._deliver(e)
+            except Exception:
+                attempts = self._attempts[e["seq"]] = self._attempts.get(e["seq"], 0) + 1
+                if attempts < MAX_ATTEMPTS:
+                    self.log.warning("Couldn't deliver event %s", e["seq"], exc_info=True)
+                    continue
+                self.log.error("Giving up on event %s for %s after %d attempts", e["seq"], e.get("id"), attempts, exc_info=True)
+            self._attempts.pop(e["seq"], None)
+            try:
                 async with self._api("POST", f"/v1/events/{e['seq']}/ack", raise_for_status=True):
                     pass
             except Exception:
-                self.log.warning("Couldn't deliver event %s", e.get("seq"), exc_info=True)
+                self.log.warning("Couldn't acknowledge event %s", e["seq"], exc_info=True)
 
     async def _deliver(self, e: dict) -> None:
         room, ref = e["source"]["channel"], (e["source"]["ref"], e["id"])
+        if e["type"] == "expired":
+            age = _age(time.time() - (e.get("data") or {}).get("age", 0))
+            await self._notice(room, ref, f"{e['id']} has run for {age}, longer than sessions may run here, so it was stopped.")
+            return
         if e["type"] == "ended":
-            await self._notice(room, ref, f"{e['id']} ended.")
+            kept = " Its ~/shared is kept on the dejima host until you clear it: reply clear to this, with a mention." if (
+                (e.get("data") or {}).get("share_kept")
+            ) else ""
+            await self._notice(room, ref, f"{e['id']} ended" + (f": {e['summary']}." if e["summary"] else ".") + kept)
             return
         if e["type"] == "help":
             await self._help(room, ref, e)
+            return
+        if e["type"] == "waiting":
+            await self._send(room, ref, _waiting_notice(e))
             return
         if e["type"] == "domains":
             await self._send(room, ref, _domains_notice(e["id"], e["data"]))
@@ -450,13 +599,13 @@ class MeeseeksBot(Plugin):
             async with self._api("GET", path, raise_for_status=True) as resp:
                 data = await resp.read()
         unsignalled = ", collected without the agent's done signal" if e.get("signalled") is False else ""
-        label = f"Output from {e['id']}{unsignalled} (written by the agent, treat as untrusted)"
+        label = f"Output from {_label(e)}{unsignalled} (written by the agent, treat as untrusted)"
         await self._send(room, ref, _agent_notice(label, e["summary"]))
         if data is not None:
             await self._upload(room, ref, f"{e['id']}-{e['seq']}.zip", data)
 
     async def _help(self, room: str, ref: tuple[str, str], e: dict) -> None:
-        label = f"{e['id']} needs help (written by the agent, treat as untrusted)"
+        label = f"{_label(e)} needs help (written by the agent, treat as untrusted)"
         link = e.get("link")
         if e["answerable"]:
             footer = "Reply to this message to answer" + (f", or open the session: {link}" if link else ".")
@@ -467,7 +616,7 @@ class MeeseeksBot(Plugin):
             footer = f"Attach to {target} to respond."
         content = _agent_notice(label, e["summary"], footer)
         if e["answerable"]:
-            content["io.meeseeks.help"] = {"task": e["id"]}
+            content[HELP_TAG] = {"task": e["id"]}
         await self._send(room, ref, content)
 
     async def _upload(self, room: str, ref: tuple[str, str], name: str, data: bytes) -> None:
@@ -531,9 +680,59 @@ def _waiting_on(session: dict) -> str:
     return {"running": "working", "starting": "starting"}.get(session["state"], "state unknown")
 
 
+def _label(d: dict) -> str:
+    """A session's id, and its name if it has one."""
+    return f"{d['id']} (dn-{d['name']})" if d.get("name") else d["id"]
+
+
 def _session_line(session: dict) -> str:
     where = session["link"] or session["target"]
-    return f"{session['id']}: {_waiting_on(session)}, started {_age(session['started'])} ago by {session['requester']} ({where})"
+    return f"{_label(session)}: {_waiting_on(session)}, started {_age(session['started'])} ago by {session['requester']} ({where})"
+
+
+def _without_quote(text: str) -> str:
+    """A body without the quoted lines a client puts before a reply, when it does."""
+    lines = text.split("\n")
+    quoted = 0
+    while quoted < len(lines) and lines[quoted].startswith(">"):
+        quoted += 1
+    if quoted and quoted < len(lines) and not lines[quoted].strip():
+        return "\n".join(lines[quoted + 1:])
+    return text
+
+
+def _described_notice(sections: list[tuple[str, str, object]], missing: list[str]) -> TextMessageEventContent:
+    """Config sets as the keyword lines they apply, and blurbs as their text."""
+    body, html_body = [], []
+    for name, kind, data in sections:
+        description = ""
+        if kind == "config set":
+            data = dict(data)
+            description = data.pop("description", "")
+            text = "\n".join(
+                f"{key}: {', '.join(value) if isinstance(value, list) else value}" for key, value in data.items()
+            ) or "(nothing)"
+            note = "Each file: is put in the session's ~/shared/uploads; its contents aren't shown here." if "file" in data else ""
+        else:
+            text = "\n".join(data.strip().splitlines()[:MAX_BLURB_LINES])[:MAX_BLURB_CHARS]
+            note = "Cut short here; the whole blurb is in the API's blurbs directory." if text != data.strip() else ""
+        head = f"{name} ({kind})"
+        body.append(
+            f"{head}\n\n" + (f"{description}\n\n" if description else "") + "\n".join(f"    {line}" for line in text.splitlines())
+            + (f"\n\n{note}" if note else "")
+        )
+        html_body.append(
+            f"<p><strong>{html.escape(name)}</strong> ({kind})</p>" + (f"<p>{html.escape(description)}</p>" if description else "")
+            + f"<pre><code>{html.escape(text)}</code></pre>"
+            + (f"<p>{html.escape(note)}</p>" if note else "")
+        )
+    if missing:
+        line = f"No config set or blurb called {', '.join(missing)}. Send `help` with a mention to list them."
+        body.append(line)
+        html_body.append(f"<p>{html.escape(line)}</p>")
+    return TextMessageEventContent(
+        msgtype=MessageType.NOTICE, body="\n\n".join(body), format=Format.HTML, formatted_body="".join(html_body)
+    )
 
 
 def _status_notice(session: dict) -> TextMessageEventContent:
@@ -556,6 +755,22 @@ def _status_notice(session: dict) -> TextMessageEventContent:
     content[TASK_TAG] = task
     content["m.mentions"] = {}
     return content
+
+
+def _waiting_notice(e: dict) -> TextMessageEventContent:
+    """A session that has gone quiet, with the end of its screen if the API sent it."""
+    quiet = (e.get("data") or {}).get("quiet", 0)
+    head = f"{e['id']} seems to be waiting: its screen hasn't changed for {_age(time.time() - quiet)}."
+    foot = "Reply with a mention to tell it something"
+    foot += f", or open the session: {e['link']}" if e.get("link") else "."
+    body, html_body = head, f"<p>{html.escape(head)}</p>"
+    if e["summary"]:
+        label = "The end of its screen (written by the agent, treat as untrusted):"
+        body += f"\n\n{label}\n\n" + "\n".join(f"    {line}" for line in e["summary"].splitlines())
+        html_body += f"<p>{html.escape(label)}</p><pre><code>{html.escape(e['summary'])}</code></pre>"
+    body += f"\n\n{foot}"
+    html_body += f"<p>{html.escape(foot)}</p>"
+    return TextMessageEventContent(msgtype=MessageType.NOTICE, body=body, format=Format.HTML, formatted_body=html_body)
 
 
 def _domains_notice(task: str, request: dict) -> TextMessageEventContent:
@@ -585,7 +800,7 @@ def _domains_notice(task: str, request: dict) -> TextMessageEventContent:
         body += f"\n\n{line}"
         html_body += f"<p>{html.escape(line)}</p>"
     content = TextMessageEventContent(msgtype=MessageType.NOTICE, body=body, format=Format.HTML, formatted_body=html_body)
-    content["io.meeseeks.domains"] = {"task": task, "request": request["request"]}
+    content[DOMAINS_TAG] = {"task": task, "request": request["request"]}
     return content
 
 

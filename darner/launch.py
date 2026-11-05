@@ -1,10 +1,12 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Brad Anderson
 """Start dejima sessions and collect their output.
 
 Meant to be the forced command of the API's key in authorized_keys, so the
-only command a client can send is SSH_ORIGINAL_COMMAND, and only three forms
-of it are accepted: none (launch the job on stdin), `status`, `fetch <id>`,
-`help <id>`, `answer <id>`, `message <id>`, `upload <id>`, `stop <id>`, `domains <id>`, and `allow <id> <n>` and
-`deny <id> <n>` for domain request n.
+only command a client can send is SSH_ORIGINAL_COMMAND, and command() accepts
+only a fixed set of forms: none (launch the job on stdin), `status`, `catalog`,
+a command naming a task id, such as `fetch <id>` or `stop <id>`, and
+`allow <id> <n>` and `deny <id> <n>` for domain request n.
 
 The dejima argv is written to the task directory and the tmux window re-invokes
 this module with --exec to run it, since tmux limits the size of a command
@@ -14,6 +16,8 @@ sent to its server and the prompt is passed as a single argument.
 import argparse
 import contextlib
 import fcntl
+import hashlib
+import threading
 import json
 import os
 import re
@@ -22,13 +26,19 @@ import signal
 import stat
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
-from meeseeks import archive
-from meeseeks.job import JobError, valid_domain, valid_effort, valid_model, valid_name, valid_task_id, validate_job
+from darner import archive
+from darner.job import (
+    JobError, check_harness, valid_context_window, valid_domain, valid_effort, valid_model, valid_name, valid_task_id, validate_job,
+)
 
 FETCH_REJECTED = 3
+SHA256 = re.compile(r"[0-9a-f]{64}")
+# Where a forgotten session's kept ~/shared is recorded, under the tasks directory, until it's discarded.
+KEPT = ".kept"
 RUN_ID = re.compile(r"[0-9a-f]{16}")
 MAX_HELP = 16 * 1024
 SIGNALS = {
@@ -38,6 +48,7 @@ SIGNALS = {
 }
 MAX_DOMAIN_REQUEST = 20
 DOMAINS_QUIET = 30
+CLINE_QUESTION = "Cline is asking a question"
 
 
 def _per_harness(what: str, check):
@@ -53,6 +64,10 @@ def _per_harness(what: str, check):
 _backend_default = _per_harness("backend", valid_name)
 
 
+def _context_window(s: str) -> bool:
+    return s.isascii() and s.isdecimal() and valid_context_window(int(s))
+
+
 def _name(value: str) -> str:
     if not valid_name(value):
         raise argparse.ArgumentTypeError(f"not a valid name: {value!r}")
@@ -60,9 +75,9 @@ def _name(value: str) -> str:
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
-    p = argparse.ArgumentParser(prog="meeseeks-launch")
-    p.add_argument("--session", default="meeseeks", type=_name)
-    p.add_argument("--tasks-dir", default=Path.home() / "meeseeks" / "tasks", type=Path)
+    p = argparse.ArgumentParser(prog="darner-launch")
+    p.add_argument("--session", default="darner", type=_name)
+    p.add_argument("--tasks-dir", default=Path.home() / "darner" / "tasks", type=Path)
     p.add_argument("--dejima", default="dejima")
     p.add_argument("--tmux", default="tmux")
     p.add_argument("--identity", type=_name)
@@ -70,12 +85,14 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--backend", type=_backend_default, action="append", default=[])
     p.add_argument("--model", type=_per_harness("model", valid_model), action="append", default=[])
     p.add_argument("--effort", type=_per_harness("effort", valid_effort), action="append", default=[])
+    p.add_argument("--context-window", type=_per_harness("context_window", _context_window), action="append", default=[])
     p.add_argument("--share-root", default=Path.home() / ".local/share/dejima/shared/isolated", type=Path)
     p.add_argument("--max-output", default=archive.Limits.max_bytes, type=int)
     p.add_argument("--fetch-timeout", default=60, type=int)
     p.add_argument("--answers", action="store_true", help="allow answering help requests from chat")
     p.add_argument("--paste-delay", default=0.5, type=float)
     p.add_argument("--help-interval", default=300, type=int, help="least seconds between a task's help requests")
+    p.add_argument("--done-interval", default=60, type=int, help="least seconds between a running task's deliveries")
     p.add_argument(
         "--quiet-period", default=600, type=int,
         help="seconds without changes after which an unsignalled RESULT.md is collected; 0 waits for the session to end",
@@ -84,6 +101,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--max-upload", default=50 * 1024 * 1024, type=int, help="largest file a requester can upload, in bytes")
     p.add_argument("--docker", default="docker")
     p.add_argument("--dejima-allow", default="dejima-allow")
+    p.add_argument("--dejima-share", default="dejima-share")
+    p.add_argument("--keep-shared", action="store_true", help="keep an ended session's ~/shared rather than pruning it")
     p.add_argument("--stop-timeout", default=60, type=int, help="seconds to wait for a stopped session to exit")
     p.add_argument("--exec", dest="exec_dir", type=Path, help=argparse.SUPPRESS)
     p.add_argument("command", nargs="*", help=argparse.SUPPRESS)
@@ -92,22 +111,36 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 
 def dejima_argv(args: argparse.Namespace, job, task_dir: Path, dejima: str) -> list[str]:
     harness = job.harness or args.harness
+    # Left out of argv when neither names one, but checked as the harness dejima picks.
+    default_harness, defaults = launch_defaults(args, dejima)
+    used = harness or default_harness
     # Each default is the one for the harness actually used, so overriding
     # the harness never pairs it with another harness's setting.
-    backend = job.backend or dict(args.backend).get(harness)
-    model = job.model or dict(args.model).get(harness)
-    effort = job.effort or dict(args.effort).get(harness)
+    backend = job.backend or dict(args.backend).get(used)
+    model = job.model or dict(args.model).get(used)
+    effort = job.effort or dict(args.effort).get(used)
+    context_window = job.context_window or dict(args.context_window).get(used)
+    # Checked again with dejima's own defaults filled in too, which the argv leaves to it.
+    d = defaults.get(used, {})
+    check_harness(
+        harness_options(dejima_root(dejima)), used, backend or d.get("backend"), effort or d.get("effort"),
+        int(context_window) if context_window else d.get("context_window"),
+    )
     argv = [dejima, "--isolated", "--no-pause", "--shared-path-file", str(task_dir / "shared-path")]
     if args.keep_records:
         argv.append("--keep-records")
     for flag, value in (
         ("--identity", args.identity), ("--harness", harness), ("--backend", backend),
-        ("--model", model), ("--effort", effort),
+        ("--model", model), ("--effort", effort), ("--context-window", context_window and str(context_window)),
     ):
         if value:
             argv += [flag, value]
+    if job.network:
+        argv.append({"named": "--drop-domains", "sealed": "--require-sealed"}[job.network])
     if job.domains:
         argv += ["--domains", str(task_dir / "domains")]
+    for name in job.internal_domains:
+        argv += ["--internal-domain", name]
     if job.dependencies:
         argv += ["--dependencies", str(task_dir / "dependencies")]
     return argv + ["--", job.prompt]
@@ -120,14 +153,38 @@ def launch(args: argparse.Namespace, data: object) -> dict:
     # only close its tmux window.
     dejima = shutil.which(args.dejima)
     if dejima is None:
-        raise RuntimeError(f"{args.dejima} not found on PATH ({os.environ.get('PATH', '')}); pass --dejima with its full path")
+        raise RuntimeError(f"{Path(args.dejima).name} not found on PATH; pass --dejima with its full path")
     task_dir = args.tasks_dir / job.id
+    argv = dejima_argv(args, job, task_dir, dejima)
     args.tasks_dir.mkdir(parents=True, exist_ok=True)
-    task_dir.mkdir(mode=0o700)
+    try:
+        task_dir.mkdir(mode=0o700)
+    except FileExistsError:
+        raise RuntimeError(f"{job.id} is already in use")
     (task_dir / "domains").write_text("".join(f"{d}\n" for d in job.domains))
     (task_dir / "dependencies").write_text("".join(f"{d}\n" for d in job.dependencies))
-    (task_dir / "argv.json").write_text(json.dumps(dejima_argv(args, job, task_dir, dejima)))
+    (task_dir / "argv.json").write_text(json.dumps(argv))
+    try:
+        _hold_files(job, task_dir)
+        return _start_window(args, job, task_dir)
+    except BaseException:
+        # No window means no run_session to deliver or remove them.
+        shutil.rmtree(task_dir / "files", ignore_errors=True)
+        raise
 
+
+def _hold_files(job, task_dir: Path) -> None:
+    """Keep the job's files owner-only until the session's ~/shared exists; see _deliver_files."""
+    if not job.files:
+        return
+    pending = task_dir / "files"
+    pending.mkdir(mode=0o700)
+    for name, data in job.files:
+        with os.fdopen(os.open(pending / name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600), "wb") as f:
+            f.write(data)
+
+
+def _start_window(args: argparse.Namespace, job, task_dir: Path) -> dict:
     env = _tmux_env()
     tmux = [args.tmux]
     if subprocess.run([*tmux, "has-session", "-t", f"={args.session}"], env=env, capture_output=True).returncode:
@@ -136,20 +193,21 @@ def launch(args: argparse.Namespace, data: object) -> dict:
         if created.returncode and subprocess.run(
             [*tmux, "has-session", "-t", f"={args.session}"], env=env, capture_output=True
         ).returncode:
-            raise RuntimeError(created.stderr.decode().strip() or "tmux new-session failed")
+            # Not tmux's own message, which names its socket's path: errors reach chat.
+            raise RuntimeError("tmux new-session failed")
     window = subprocess.run(
         [
             *tmux, "new-window", "-d", "-P", "-F", "#{session_name}:#{window_name} #{window_id} #{pane_id}",
             "-t", f"={args.session}:", "-n", job.id, "-c", str(task_dir),
             "-e", f"XDG_RUNTIME_DIR={env['XDG_RUNTIME_DIR']}",
-            "--", sys.executable, "-m", "meeseeks.launch", "--exec", str(task_dir),
+            "--", sys.executable, "-m", "darner.launch", "--share-root", str(args.share_root), "--exec", str(task_dir),
         ],
         env=env,
         capture_output=True,
         text=True,
     )
     if window.returncode:
-        raise RuntimeError(window.stderr.strip() or "tmux new-window failed")
+        raise RuntimeError("tmux new-window failed")
     target, window_id, pane_id = window.stdout.strip().rsplit(" ", 2)
     # Answers target the window by id, which a rename inside the session can't change.
     (task_dir / "window").write_text(window_id)
@@ -170,7 +228,7 @@ def session_run_id(task_dir: Path) -> str | None:
     """dejima's run id for the session in this task's pane, once dejima has registered it.
 
     dejima records each session's tmux pane in its remote-access registry, so
-    the pane meeseeks created is what identifies the session there. Nothing
+    the pane darner created is what identifies the session there. Nothing
     is registered unless dejima's remote access is enabled.
     """
     try:
@@ -195,33 +253,88 @@ def _tmux_env() -> dict:
     return env
 
 
-def run_session(task_dir: Path) -> int:
+def _deliver_files(args: argparse.Namespace, task_dir: Path, stop: threading.Event) -> None:
+    """Write the task's files into ~/shared/uploads as soon as dejima has made it.
+
+    dejima records the share path before the container starts, so they're
+    there before the agent is. The task directory's copies are removed as
+    each is written.
+    """
+    pending = task_dir / "files"
+    while not (task_dir / "shared-path").exists():
+        if stop.wait(0.2):
+            return
+    try:
+        uploads = _open_uploads(args, task_dir)
+    except RuntimeError as e:
+        print(f"darner: couldn't give the session its files: {e}", file=sys.stderr)
+        return
+    delivered = []
+    try:
+        for path in sorted(pending.iterdir()):
+            delivered.append(_write_new(uploads, path.name, path.read_bytes(), 0o600))
+            _write_atomic(task_dir / "files-delivered", json.dumps(delivered))
+            path.unlink()
+    finally:
+        os.close(uploads)
+
+
+def _remove_files(args: argparse.Namespace, task_dir: Path) -> None:
+    """Take the task's files back out of ~/shared, which dejima keeps after the session if it's not empty."""
+    record = task_dir / "files-delivered"
+    if record.exists():
+        with contextlib.suppress(RuntimeError, OSError, ValueError):
+            names = json.loads(record.read_text())
+            uploads = _open_uploads(args, task_dir)
+            try:
+                # Each on its own: a name the session replaced with something
+                # unlink refuses mustn't keep the rest in place.
+                for name in names:
+                    with contextlib.suppress(OSError):
+                        os.unlink(name, dir_fd=uploads)
+            finally:
+                os.close(uploads)
+        record.unlink(missing_ok=True)
+    shutil.rmtree(task_dir / "files", ignore_errors=True)
+
+
+def run_session(args: argparse.Namespace, task_dir: Path) -> int:
     """Run dejima and record how it exited, so `status` can report it."""
     # Handlers, unlike SIG_IGN, are reset by exec, so dejima still gets these
     # signals as usual while this process stays to record the exit.
     for sig in (signal.SIGINT, signal.SIGHUP, signal.SIGTERM, signal.SIGQUIT):
         signal.signal(sig, lambda *_: None)
     dejima = json.loads((task_dir / "argv.json").read_text())
+    stop = threading.Event()
+    delivery = threading.Thread(target=_deliver_files, args=(args, task_dir, stop), daemon=True)
+    if (task_dir / "files").is_dir():
+        delivery.start()
     try:
         proc = subprocess.Popen(dejima)
-        (task_dir / "pid").write_text(str(proc.pid))
+        started = _start_time(proc.pid)
+        (task_dir / "pid").write_text(f"{proc.pid} {started}" if started else str(proc.pid))
         code = proc.wait()
     except OSError as e:
-        print(f"meeseeks: couldn't start {dejima[0]}: {e}", file=sys.stderr)
+        print(f"darner: couldn't start {dejima[0]}: {e}", file=sys.stderr)
         code = 127
     if code < 0:
         code = 128 - code
+    stop.set()
+    # Delivery writes only new files, so it can't block; waiting for it
+    # means cleanup sees everything it wrote.
+    if delivery.is_alive():
+        delivery.join()
+    _remove_files(args, task_dir)
     tmp = task_dir / "exit.tmp"
     tmp.write_text(f"{code}\n")
     os.replace(tmp, task_dir / "exit")
     # An isolated session keeps no records unless asked to, and the typing
     # log holds screens from it.
-    keep_records = "--" in dejima and "--keep-records" in dejima[: dejima.index("--")]
-    if not keep_records:
+    if not _keeps_records(dejima):
         (task_dir / "typing.log").unlink(missing_ok=True)
     if code:
         # The window closes when this process exits, taking the error with it.
-        print(f"\nmeeseeks: dejima exited with status {code}. Press Enter to close this window.")
+        print(f"\ndarner: dejima exited with status {code}. Press Enter to close this window.")
         try:
             input()
         except EOFError:
@@ -229,9 +342,12 @@ def run_session(task_dir: Path) -> int:
     return code
 
 
-def open_share(args: argparse.Namespace, task_dir: Path) -> int:
-    """Open a task's ~/shared, which must be a directory directly under the share root."""
-    raw = (task_dir / "shared-path").read_text()
+def _share_path(args: argparse.Namespace, task_dir: Path, record: Path | None = None) -> tuple[str, str]:
+    """A task's ~/shared as the share root and a leaf directly under it, or ValueError.
+
+    Read from its task directory, or from the record kept once that's gone.
+    """
+    raw = (record or task_dir / "shared-path").read_text()
     path = raw.removesuffix("\n")
     parent, leaf = os.path.split(path)
     if not os.path.isabs(path) or "\0" in path or not archive.safe_component(leaf):
@@ -239,6 +355,16 @@ def open_share(args: argparse.Namespace, task_dir: Path) -> int:
     root = os.path.realpath(args.share_root)
     if os.path.realpath(parent) != root:
         raise ValueError(f"shared path {path!r} is not under {root}")
+    return root, leaf
+
+
+def _keeps_records(dejima: list[str]) -> bool:
+    return "--" in dejima and "--keep-records" in dejima[: dejima.index("--")]
+
+
+def open_share(args: argparse.Namespace, task_dir: Path) -> int:
+    """Open a task's ~/shared, which must be a directory directly under the share root."""
+    root, leaf = _share_path(args, task_dir)
     parent_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
     try:
         return os.open(leaf, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=parent_fd)
@@ -278,7 +404,8 @@ def _consume(fd: int, task_dir: Path, kind: str, signal_id: str) -> None:
 
 
 def _request_allowed(args: argparse.Namespace, task_dir: Path, kind: str) -> bool:
-    """Rate-limit help and domain requests, so a session can't flood the room with them.
+    """Rate-limit help and domain requests, so a session can't flood the room with them,
+    and deliveries, so it can't fill the API's disk.
 
     A domain request is limited only while the last one awaits a decision:
     once it's decided, a new one is how the agent follows up, such as asking
@@ -287,7 +414,8 @@ def _request_allowed(args: argparse.Namespace, task_dir: Path, kind: str) -> boo
     if kind == "domains" and not (task_dir / "domains-pending").exists():
         return True
     last = task_dir / SIGNALS[kind][1]
-    return not last.exists() or time.time() - last.stat().st_mtime >= args.help_interval
+    interval = args.done_interval if kind == "done" else args.help_interval
+    return not last.exists() or time.time() - last.stat().st_mtime >= interval
 
 
 def _result_id(fd: int) -> str | None:
@@ -336,7 +464,7 @@ def _signals(args: argparse.Namespace, task_dir: Path) -> tuple[dict[str, bool],
 
     No shared-path yet just means the session is still starting.
     """
-    none = {"done": False, "help": False, "domains": False, "unsignalled": False}
+    none = {"done": False, "help": False, "domains": False, "unsignalled": False, "result_pending": False}
     try:
         fd = open_share(args, task_dir)
     except FileNotFoundError as e:
@@ -347,11 +475,44 @@ def _signals(args: argparse.Namespace, task_dir: Path) -> tuple[dict[str, bool],
         signals = {kind: _signal(fd, task_dir, kind) is not None for kind in SIGNALS}
         signals["domains"] = signals["domains"] or _domains_changed(fd, task_dir)
         signals["unsignalled"] = not signals["done"] and _unsignalled(args, fd, task_dir) is not None
+        delivered = task_dir / "delivered-result"
+        result = _result_id(fd)
+        signals["result_pending"] = result is not None and not (delivered.exists() and delivered.read_text() == result)
     finally:
         os.close(fd)
+    # An exited session's last output is collected now, or never.
+    signals["done"] = signals["done"] and (_state(task_dir) == "exited" or _request_allowed(args, task_dir, "done"))
     signals["help"] = signals["help"] and _request_allowed(args, task_dir, "help")
     signals["domains"] = signals["domains"] and _request_allowed(args, task_dir, "domains")
     return signals, None
+
+
+def _screen(args: argparse.Namespace, task_dir: Path) -> tuple[float | None, str]:
+    """How long the session's screen has gone unchanged, and its last lines.
+
+    Recorded per task, so a session that has stopped at a prompt with no
+    one there to answer shows as quiet whatever the harness.
+    """
+    window = task_dir / "window"
+    target = window.read_text() if window.exists() else f"={args.session}:={task_dir.name}"
+    try:
+        shown = subprocess.run([args.tmux, "capture-pane", "-p", "-t", target], env=_tmux_env(), capture_output=True)
+    except OSError:
+        return None, ""
+    if shown.returncode:
+        return None, ""
+    digest = hashlib.sha256(shown.stdout).hexdigest()
+    record = task_dir / "screen"
+    now = time.time()
+    try:
+        last = json.loads(record.read_text())
+    except (OSError, ValueError):
+        last = {}
+    if last.get("hash") != digest:
+        last = {"hash": digest, "since": now}
+        _write_atomic(record, json.dumps(last))
+    lines = [line.rstrip() for line in archive.clean_text(shown.stdout, 256 * 1024).splitlines() if line.strip()]
+    return now - last["since"], "\n".join(lines[-20:])[-3000:]
 
 
 def _state(task_dir: Path) -> str:
@@ -362,6 +523,169 @@ def _state(task_dir: Path) -> str:
     return "starting"
 
 
+def forget(args: argparse.Namespace, task_id: str, delivered: str | None = None) -> dict:
+    """Delete what's left of an ended session: its task directory, and with delivered, its ~/shared.
+
+    The task directory holds its prompt in argv.json. The share goes only when
+    the API names the zip it stored (forget-delivered <id> <sha256>), that's
+    the zip this last sent, and the share still holds exactly what it carried.
+    Otherwise it's kept, and recorded under KEPT, until the session is cleared
+    or the API purges it, when discard prunes it. The share is checked first,
+    since its path is recorded in the task directory, which goes either way.
+    Returns why the share was kept, or that it was pruned, for frontends to say.
+    """
+    task_dir = args.tasks_dir / task_id
+    if not task_dir.is_dir():
+        return {}
+    if _state(task_dir) != "exited":
+        raise RuntimeError(f"{task_id} hasn't ended")
+    share = _existing_share(args, task_dir)
+    problem = _prune_share(args, task_dir, delivered) if delivered else "its output wasn't delivered whole"
+    kept = problem and _keep(args, task_dir, task_id)
+    # A clear's discard may be forgetting it at the same time.
+    with contextlib.suppress(FileNotFoundError):
+        shutil.rmtree(task_dir)
+    if kept:
+        return {"kept": problem}
+    if problem and delivered:
+        raise RuntimeError(f"forgot {task_id}, but couldn't prune its ~/shared: {problem}")
+    if delivered and share and not args.keep_shared and not os.path.lexists(share):
+        return {"pruned": True}
+    return {}
+
+
+def _existing_share(args: argparse.Namespace, task_dir: Path) -> str | None:
+    try:
+        share = os.path.join(*_share_path(args, task_dir))
+    except (OSError, ValueError):
+        return None
+    return share if os.path.lexists(share) else None
+
+
+def _keep(args: argparse.Namespace, task_dir: Path, task_id: str) -> bool:
+    """Record a share that's still there, so discard can prune it once its task directory is gone."""
+    if args.keep_shared:
+        return False
+    try:
+        root, leaf = _share_path(args, task_dir)
+    except (OSError, ValueError):
+        return False
+    if not os.path.lexists(os.path.join(root, leaf)):
+        return False
+    (args.tasks_dir / KEPT).mkdir(mode=0o700, exist_ok=True)
+    _write_atomic(args.tasks_dir / KEPT / task_id, os.path.join(root, leaf))
+    return True
+
+
+def discard(args: argparse.Namespace, task_id: str) -> None:
+    """Prune an ended session's ~/shared, whatever it holds, as its frontend clears it.
+
+    A share forget kept for an operator to recover is pruned here, since
+    clearing the session is the requester's word that nothing in it is wanted.
+    """
+    task_dir, record = args.tasks_dir / task_id, args.tasks_dir / KEPT / task_id
+    if task_dir.is_dir():
+        if _state(task_dir) != "exited":
+            raise RuntimeError(f"{task_id} hasn't ended")
+        forget(args, task_id)
+    if not record.exists():
+        return
+    if not args.keep_shared:
+        try:
+            root, leaf = _share_path(args, task_dir, record)
+        except ValueError as e:
+            raise RuntimeError(f"couldn't remove {task_id}'s ~/shared: {e}")
+        if os.path.lexists(os.path.join(root, leaf)) and (problem := _prune(args, os.path.join(root, leaf))):
+            raise RuntimeError(f"couldn't remove {task_id}'s ~/shared: {problem}")
+    # A clear and the poller's purge may discard it at the same time.
+    record.unlink(missing_ok=True)
+
+
+def _prune_share(args: argparse.Namespace, task_dir: Path, stored: str) -> str | None:
+    """Have dejima remove an ended session's delivered share. Why it couldn't, or None."""
+    if args.keep_shared:
+        return None
+    try:
+        root, leaf = _share_path(args, task_dir)
+    except FileNotFoundError:
+        return None  # the session never got as far as a share
+    except ValueError as e:
+        return str(e)
+    share = os.path.join(root, leaf)
+    if not os.path.lexists(share):
+        return None  # dejima removes an empty one itself
+    if problem := _changed_since_delivery(args, task_dir, stored):
+        return problem
+    return _prune(args, share)
+
+
+def _dejima_share(args: argparse.Namespace) -> tuple[str | None, str | None]:
+    """dejima-share's path, or why it can't prune one share by name."""
+    tool = shutil.which(args.dejima_share)
+    if tool is None:
+        return None, f"{Path(args.dejima_share).name} not found on PATH; pass --dejima-share with its full path"
+    try:
+        # An older dejima-share's prune ignores the name and sweeps every ended
+        # share, so the named form is required, as is --yes.
+        usage = subprocess.run([tool, "--help"], stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return None, f"couldn't run {Path(args.dejima_share).name} --help: {getattr(e, 'strerror', None) or type(e).__name__}"
+    if "prune --isolated [share]" not in usage.stdout or "--yes" not in usage.stdout:
+        return None, "this dejima-share can't prune one share by name; it needs a dejima release with `prune --isolated [share]` and `--yes`"
+    return tool, None
+
+
+def _prune(args: argparse.Namespace, share: str) -> str | None:
+    """Have dejima-share remove a share directly under the share root. Why it couldn't, or None."""
+    tool, problem = _dejima_share(args)
+    if problem:
+        return problem
+    try:
+        # dejima refuses anything that isn't a direct child of its isolated root,
+        # or a share still mounted or held by a launch.
+        result = subprocess.run(
+            [tool, "prune", "--isolated", "--yes", share], stdin=subprocess.DEVNULL, capture_output=True, timeout=60,
+        )
+    except subprocess.TimeoutExpired:
+        return "dejima-share timed out"
+    except OSError as e:
+        return f"couldn't run {Path(args.dejima_share).name}: {e.strerror or type(e).__name__}"
+    if result.returncode:
+        return archive.clean_text(result.stderr, 500) or f"dejima-share prune exited {result.returncode}"
+    if os.path.lexists(share):
+        said = archive.clean_text(result.stdout + result.stderr, 500)
+        return "dejima-share exited 0 but the share is still there" + (f": {said}" if said else "")
+    return None
+
+
+def _changed_since_delivery(args: argparse.Namespace, task_dir: Path, stored: str) -> str | None:
+    """Why the share isn't exactly the zip the API stored, which must be the one last sent, or None."""
+    try:
+        delivery = json.loads((task_dir / "delivered-share").read_text())
+    except (OSError, ValueError):
+        return "no complete delivery of its output was recorded"
+    if delivery.get("zip") != stored:
+        return "its last delivery isn't the output the API stored, so that output is only in the share"
+    if delivery.get("skipped"):
+        return f"its delivery left out {len(delivery['skipped'])} entries, which are only in the share"
+    try:
+        fd = open_share(args, task_dir)
+    except OSError as e:
+        return f"couldn't open it to compare with its delivery: {e.strerror or type(e).__name__}"
+    signal.signal(signal.SIGALRM, _timeout)
+    signal.alarm(args.fetch_timeout)
+    try:
+        data, _ = archive.build(fd, archive.Limits(max_bytes=args.max_output))
+    except (archive.ArchiveError, _Timeout) as e:
+        return f"couldn't read it to compare with its delivery: {e or 'timed out'}"
+    finally:
+        signal.alarm(0)
+        os.close(fd)
+    if hashlib.sha256(data).hexdigest() != stored:
+        return "it changed after its output was delivered"
+    return None
+
+
 def status(args: argparse.Namespace) -> list[dict]:
     tasks = []
     if not args.tasks_dir.is_dir():
@@ -370,7 +694,11 @@ def status(args: argparse.Namespace) -> list[dict]:
         if not valid_task_id(task_dir.name):
             continue
         state = _state(task_dir)
+        if state == "exited":
+            # Held files a session never took, if its launcher was killed before removing them.
+            shutil.rmtree(task_dir / "files", ignore_errors=True)
         signals, error = _signals(args, task_dir)
+        quiet, screen = _screen(args, task_dir) if state != "exited" else (None, "")
         tasks.append({
             "id": task_dir.name,
             "state": state,
@@ -379,6 +707,9 @@ def status(args: argparse.Namespace) -> list[dict]:
             "help": signals["help"],
             "domains": signals["domains"],
             "awaiting_answer": (task_dir / "help-pending").exists(),
+            "result_pending": signals["result_pending"],
+            "quiet": quiet,
+            "screen": screen,
             "domain_request": _pending_request_number(task_dir),
             "answerable": args.answers and state == "running",
             "run_id": session_run_id(task_dir) if state == "running" else None,
@@ -406,18 +737,25 @@ def fetch(args: argparse.Namespace, task_id: str) -> int:
         signal.signal(signal.SIGALRM, _timeout)
         signal.alarm(args.fetch_timeout)
         try:
-            data, _ = archive.build(fd, archive.Limits(max_bytes=args.max_output))
+            data, manifest = archive.build(fd, archive.Limits(max_bytes=args.max_output))
         except (archive.ArchiveError, _Timeout) as e:
             # Retrying would fail the same way, so the output is consumed.
             _delivered(fd, task_dir, signal_id, result)
+            (task_dir / "delivered-share").unlink(missing_ok=True)
             reason = e if isinstance(e, archive.ArchiveError) else f"took longer than {args.fetch_timeout}s to read"
-            print(f"meeseeks-launch: {reason}", file=sys.stderr)
+            print(f"darner-launch: {reason}", file=sys.stderr)
             return FETCH_REJECTED
         finally:
             signal.alarm(0)
         sys.stdout.buffer.write(data)
         sys.stdout.buffer.flush()
         _delivered(fd, task_dir, signal_id, result)
+        # What this delivery carried, so the share is only ever pruned while it
+        # still holds exactly that: the zip is reproducible, sorted with fixed dates.
+        _write_atomic(task_dir / "delivered-share", json.dumps({
+            "zip": hashlib.sha256(data).hexdigest(),
+            "skipped": [path for path, _ in manifest.skipped if path != repr(archive.UPLOADS)],
+        }))
     finally:
         os.close(fd)
     return 0
@@ -475,7 +813,6 @@ def answer(args: argparse.Namespace, task_id: str, data: object, message: bool =
     # Stripping control characters, ESC above all, keeps the text from ending
     # the bracketed paste early and having the rest read as keystrokes.
     text = archive.clean_text(data["text"].encode(), MAX_HELP)
-    requester = " ".join(archive.clean_text(data["requester"].encode(), 255).split())
     if not text:
         raise ValueError("the answer is empty")
 
@@ -488,11 +825,8 @@ def answer(args: argparse.Namespace, task_id: str, data: object, message: bool =
         if not message:
             raise RuntimeError(f"{task_id} has no help request awaiting an answer")
         claimed = False
-    # The prefix also means the message never starts with a character the
-    # harness treats as a command, such as Claude Code's ! (shell) or / (slash).
-    heading = "Message" if message else "Reply"
     try:
-        _paste(args, task_dir, task_id, f"{heading} from {requester}:\n\n{text}")
+        _paste(args, task_dir, task_id, text)
     except BaseException:
         if claimed:
             os.rename(answering, pending)
@@ -505,7 +839,7 @@ def _paste(args: argparse.Namespace, task_dir: Path, task_id: str, message: str)
     env = _tmux_env()
     window = task_dir / "window"
     target = window.read_text() if window.exists() else f"={args.session}:={task_id}"
-    buffer = f"meeseeks-{task_id}-{os.getpid()}"
+    buffer = f"darner-{task_id}-{os.getpid()}"
     def screen() -> str:
         result = subprocess.run([args.tmux, "capture-pane", "-p", "-J", "-t", target], env=env, capture_output=True, text=True)
         return result.stdout if result.returncode == 0 else ""
@@ -515,10 +849,25 @@ def _paste(args: argparse.Namespace, task_dir: Path, task_id: str, message: str)
             raise RuntimeError("couldn't type into the session")
 
     shots = {"before": screen()}
-    for argv, stdin in (
-        ([args.tmux, "load-buffer", "-b", buffer, "-"], message),
-        ([args.tmux, "paste-buffer", "-p", "-d", "-b", buffer, "-t", target], None),
-    ):
+    if any(line.strip(" │") == CLINE_QUESTION for line in shots["before"].splitlines()):
+        # cline's question drops pastes but takes typed keys. A first printable
+        # key switches it to a typed answer, except a digit, which picks that
+        # option; the answer is trimmed, so a leading space is safe. Enter
+        # would submit, so the answer is one line.
+        message = " ".join(message.split())
+        keys = " " + message
+        # -- so a chunk starting with "-" isn't read as an option. tmux takes an
+        # argument's final ";" as a command separator, and "\;" as a ";".
+        chunks = [keys[i:i + 1024] for i in range(0, len(keys), 1024)]
+        steps = [
+            ([args.tmux, "send-keys", "-l", "-t", target, "--", c[:-1] + "\\;" if c.endswith(";") else c], None) for c in chunks
+        ]
+    else:
+        steps = [
+            ([args.tmux, "load-buffer", "-b", buffer, "-"], message),
+            ([args.tmux, "paste-buffer", "-p", "-d", "-b", buffer, "-t", target], None),
+        ]
+    for argv, stdin in steps:
         # tmux's own error names sockets and paths, which shouldn't reach the chat.
         if subprocess.run(argv, input=stdin, env=env, capture_output=True, text=True).returncode:
             raise RuntimeError("couldn't type into the session")
@@ -557,12 +906,23 @@ def _write_typing_log(task_dir: Path, shots: dict[str, str]) -> None:
     os.replace(tmp, task_dir / "typing.log")
 
 
+def _start_time(pid: int) -> str | None:
+    """When a process started, which tells it apart from a later one given its pid."""
+    try:
+        # After the parenthesised command name, which may contain spaces.
+        return Path(f"/proc/{pid}/stat").read_text().rpartition(")")[2].split()[19]
+    except (OSError, IndexError):
+        return None
+
+
 def _dejima_pid(task_dir: Path) -> int | None:
     try:
-        pid = int((task_dir / "pid").read_text())
+        pid, _, started = (task_dir / "pid").read_text().partition(" ")
+        pid = int(pid)
     except (OSError, ValueError):
         return None
-    return pid if Path(f"/proc/{pid}").exists() else None
+    # A launcher killed before it recorded the exit leaves a pid another process may now have.
+    return pid if _start_time(pid) is not None and _start_time(pid) == (started or _start_time(pid)) else None
 
 
 def _children(pid: int) -> list[int]:
@@ -621,16 +981,18 @@ def _session_containers(args: argparse.Namespace, task_dir: Path) -> list[str]:
 
 
 @contextlib.contextmanager
-def _domains_lock(task_dir: Path):
+def _domains_lock(task_dir: Path, name: str = "domains.lock"):
     """Serialise writing and deciding domain requests, so a decision sees one request whole."""
-    with open(task_dir / "domains.lock", "w") as lock:
+    with open(task_dir / name, "w") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         yield
 
 
 def _write_atomic(path: Path, text: str) -> None:
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(text)
+    # A temporary name of its own, since the poller and an API request can run status at once.
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
+    with os.fdopen(fd, "w") as f:
+        f.write(text)
     os.replace(tmp, path)
 
 
@@ -710,7 +1072,7 @@ def _domain_and_port(word: str) -> tuple[str | None, int | None]:
     host, sep, port = word.rpartition(":")
     if not sep:
         return word, None
-    if port.isascii() and port.isdigit() and 0 < int(port) < 65536:
+    if port.isascii() and port.isdigit() and len(port) <= 5 and 0 < int(port) < 65536:
         return host, int(port)
     return None, None
 
@@ -729,11 +1091,44 @@ def _claim_domain_request(task_dir: Path, task_id: str, number: int) -> dict:
     return request
 
 
-def _upload_name(name: str) -> str:
-    """A safe file name for an upload, from the name the requester's client gave it."""
-    name = name.rsplit("/", 1)[-1].replace(" ", "-")
-    name = "".join(c for c in name if c.isascii() and (c.isalnum() or c in "._+-")).lstrip("._+-")[:200]
-    return name if archive.safe_component(name) else "upload"
+def _open_uploads(args: argparse.Namespace, task_dir: Path) -> int:
+    """Open the session's ~/shared/uploads, creating it, without following a link."""
+    try:
+        fd = open_share(args, task_dir)
+    except (OSError, ValueError):
+        # The reason names host paths, and this error is relayed to the chat.
+        raise RuntimeError("couldn't open the session's ~/shared")
+    try:
+        try:
+            os.mkdir(archive.UPLOADS, 0o755, dir_fd=fd)
+        except FileExistsError:
+            pass
+        try:
+            return os.open(archive.UPLOADS, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=fd)
+        except OSError:
+            raise RuntimeError("~/shared/uploads in the session isn't a directory")
+    finally:
+        os.close(fd)
+
+
+def _write_new(uploads: int, base: str, data: bytes, mode: int = 0o644) -> str:
+    """Create a file in uploads that didn't exist, numbering the name if it's taken. Returns its name."""
+    stem, dot, ext = base.partition(".")
+    for n in range(1, 101):
+        name = base if n == 1 else f"{stem}-{n}{dot}{ext}"
+        try:
+            out = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, mode, dir_fd=uploads)
+        except FileExistsError:
+            continue
+        try:
+            with os.fdopen(out, "wb") as f:
+                f.write(data)
+        except OSError:
+            with contextlib.suppress(OSError):
+                os.unlink(name, dir_fd=uploads)
+            raise
+        return name
+    raise RuntimeError("too many uploads with that name")
 
 
 def upload(args: argparse.Namespace, task_id: str, stream) -> dict:
@@ -746,42 +1141,16 @@ def upload(args: argparse.Namespace, task_id: str, stream) -> dict:
     task_dir = args.tasks_dir / task_id
     if _state(task_dir) != "running":
         raise RuntimeError(f"{task_id} is not running")
-    header = json.loads(stream.readline(4096))
+    # Room for a name and requester at their longest, every character escaped.
+    header = json.loads(stream.readline(16384))
     if not isinstance(header, dict) or not isinstance(header.get("name"), str) or not isinstance(header.get("requester"), str):
         raise ValueError("upload needs a header with name and requester")
     data = stream.read(args.max_upload + 1)
     if len(data) > args.max_upload:
         raise ValueError(f"the file is over the {args.max_upload}-byte upload limit")
+    uploads = _open_uploads(args, task_dir)
     try:
-        fd = open_share(args, task_dir)
-    except (OSError, ValueError):
-        # The reason names host paths, and this error is relayed to the chat.
-        raise RuntimeError("couldn't open the session's ~/shared")
-    try:
-        try:
-            os.mkdir(archive.UPLOADS, 0o755, dir_fd=fd)
-        except FileExistsError:
-            pass
-        try:
-            uploads = os.open(archive.UPLOADS, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=fd)
-        except OSError:
-            raise RuntimeError("~/shared/uploads in the session isn't a directory")
-    finally:
-        os.close(fd)
-    try:
-        base = _upload_name(header["name"])
-        stem, dot, ext = base.partition(".")
-        for n in range(1, 101):
-            name = base if n == 1 else f"{stem}-{n}{dot}{ext}"
-            try:
-                out = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o644, dir_fd=uploads)
-                break
-            except FileExistsError:
-                continue
-        else:
-            raise RuntimeError("too many uploads with that name")
-        with os.fdopen(out, "wb") as f:
-            f.write(data)
+        name = _write_new(uploads, archive.upload_name(header["name"]), data)
     finally:
         os.close(uploads)
     path = f"~/shared/uploads/{name}"
@@ -801,6 +1170,52 @@ def _tell_agent(args: argparse.Namespace, task_dir: Path, task_id: str, message:
     return True
 
 
+def _grant(task_dir: Path, request: dict, approved: set, container: str, dejima_allow: str, limit, internal_limit):
+    """Allow a request's approved entries, within the session's limits.
+
+    The caller holds grants.lock from reading what's granted to writing it,
+    so two approvals running at once can't each pass the limits on their own.
+    """
+    # The session's limits cover every domain it holds: those it launched with
+    # and every grant since, so repeated requests can't add up past them.
+    held_file = task_dir / "domains-granted"
+    held = json.loads(held_file.read_text()) if held_file.exists() else []
+    launched_with = sum(1 for line in (task_dir / "domains").read_text().splitlines() if line.strip())
+    internal_held = json.loads((task_dir / "argv.json").read_text()).count("--internal-domain") + sum(
+        1 for h in held if isinstance(h, dict) and h["internal"]
+    )
+    granted, failed, unverified = [], [], []
+    for entry in request["domains"]:
+        if (entry["domain"], entry["internal"], entry.get("port")) not in approved:
+            continue
+        if limit is not None and launched_with + len(held) + len(granted) >= limit:
+            failed.append({"domain": entry["domain"], "error": f"over this session's limit of {limit} domains"})
+            continue
+        if entry["internal"] and internal_limit is not None and internal_held >= internal_limit:
+            failed.append({"domain": entry["domain"], "error": f"over this session's limit of {internal_limit} internal domains"})
+            continue
+        argv = [
+            dejima_allow, "--container", container,
+            *(["--internal"] if entry["internal"] else []),
+            *(["--port", str(entry["port"])] if entry.get("port") else []),
+            entry["domain"],
+        ]
+        result = subprocess.run(argv, capture_output=True, text=True)
+        message = archive.clean_text(result.stderr.encode(), 2000)
+        # dejima-allow exits 2 when the permit landed but its check that the
+        # domain answers on 443 failed, which a service on another port fails
+        # spuriously. The domain is allowed either way.
+        if result.returncode in (0, 2):
+            granted.append(entry)
+            internal_held += entry["internal"]
+            if result.returncode == 2:
+                unverified.append({"domain": entry["domain"], "warning": message})
+        else:
+            failed.append({"domain": entry["domain"], "error": message})
+    _write_atomic(held_file, json.dumps(held + granted))
+    return granted, failed, unverified
+
+
 def allow_domains(args: argparse.Namespace, task_id: str, number: int, data: object) -> dict:
     """Grant a domain request to the running session, limited to what the API passes on.
 
@@ -812,47 +1227,29 @@ def allow_domains(args: argparse.Namespace, task_id: str, number: int, data: obj
         raise RuntimeError(f"{task_id} is not running")
     if not isinstance(data, dict) or not isinstance(data.get("requester"), str) or not isinstance(data.get("domains"), list):
         raise ValueError("allow needs requester and domains")
-    limit = data.get("max_domains")
-    if limit is not None and type(limit) is not int:
-        raise ValueError("max_domains must be a whole number")
+    limit, internal_limit = data.get("max_domains"), data.get("max_internal_domains")
+    if any(n is not None and type(n) is not int for n in (limit, internal_limit)):
+        raise ValueError("max_domains and max_internal_domains must be whole numbers")
     dejima_allow = shutil.which(args.dejima_allow)
     if dejima_allow is None:
-        raise RuntimeError(f"{args.dejima_allow} not found on PATH; pass --dejima-allow with its full path")
+        raise RuntimeError(f"{Path(args.dejima_allow).name} not found on PATH; pass --dejima-allow with its full path")
     containers = _session_containers(args, task_dir)
     if len(containers) != 1:
         raise RuntimeError(f"couldn't find {task_id}'s container")
-    request = _claim_domain_request(task_dir, task_id, number)
-    approved = {d for d in data["domains"] if isinstance(d, str)}
-    # The session's limit covers every domain it holds: those it launched with
-    # and every grant since, so repeated requests can't add up past it.
-    held_file = task_dir / "domains-granted"
-    held = json.loads(held_file.read_text()) if held_file.exists() else []
-    launched_with = sum(1 for line in (task_dir / "domains").read_text().splitlines() if line.strip())
-    granted, failed, unverified = [], [], []
-    for entry in request["domains"]:
-        if entry["domain"] not in approved:
-            continue
-        if limit is not None and launched_with + len(held) + len(granted) >= limit:
-            failed.append({"domain": entry["domain"], "error": f"over this session's limit of {limit} domains"})
-            continue
-        argv = [
-            dejima_allow, "--container", containers[0],
-            *(["--internal"] if entry["internal"] else []),
-            *(["--port", str(entry["port"])] if entry.get("port") else []),
-            entry["domain"],
-        ]
-        result = subprocess.run(argv, capture_output=True, text=True)
-        message = archive.clean_text(result.stderr.encode(), 2000)
-        # dejima-allow exits 2 when the permit landed but its check that the
-        # domain answers on 443 failed, which a service on another port fails
-        # spuriously. The domain is allowed either way.
-        if result.returncode in (0, 2):
-            granted.append(entry["domain"])
-            if result.returncode == 2:
-                unverified.append({"domain": entry["domain"], "warning": message})
-        else:
-            failed.append({"domain": entry["domain"], "error": message})
-    _write_atomic(held_file, json.dumps(held + granted))
+    # Matched as whole entries: a name approved plain doesn't grant it internal,
+    # or on any port but the one shown.
+    if not all(
+        isinstance(d, dict) and isinstance(d.get("domain"), str) and type(d.get("internal")) is bool
+        and (d.get("port") is None or type(d["port"]) is int)
+        for d in data["domains"]
+    ):
+        raise ValueError("allow's domains must be entries with domain, internal and port")
+    approved = {(d["domain"], d["internal"], d.get("port")) for d in data["domains"]}
+    # Locked before claiming, so an approval killed while it waits leaves the request to approve again.
+    with _domains_lock(task_dir, "grants.lock"):
+        request = _claim_domain_request(task_dir, task_id, number)
+        granted, failed, unverified = _grant(task_dir, request, approved, containers[0], dejima_allow, limit, internal_limit)
+    granted = [e["domain"] for e in granted]
     requester = " ".join(archive.clean_text(data["requester"].encode(), 255).split())
     note = f"Domain request from {requester}: allowed {', '.join(granted) or 'none'}"
     if failed:
@@ -866,6 +1263,8 @@ def allow_domains(args: argparse.Namespace, task_id: str, number: int, data: obj
 
 
 def deny_domains(args: argparse.Namespace, task_id: str, number: int, data: object) -> dict:
+    if data is not None and not isinstance(data, dict):
+        raise ValueError("deny needs an object")
     task_dir = args.tasks_dir / task_id
     request = _claim_domain_request(task_dir, task_id, number)
     requester = " ".join(archive.clean_text(str((data or {}).get("requester", "")).encode(), 255).split()) or "the requester"
@@ -884,13 +1283,17 @@ def stop(args: argparse.Namespace, task_id: str) -> None:
     the container gone, dejima exits as usual and cleans up after it.
     """
     task_dir = args.tasks_dir / task_id
-    if _state(task_dir) != "running":
+    # A session stuck starting, such as at one of dejima's prompts, can be stopped too.
+    if not task_dir.is_dir() or _state(task_dir) == "exited":
         raise RuntimeError(f"{task_id} is not running")
     containers = _session_containers(args, task_dir)
     if containers:
         subprocess.run([args.docker, "stop", *containers], capture_output=True)
+    elif _state(task_dir) == "running" and _dejima_pid(task_dir):
+        # Ending dejima would leave its container running, unstopped and forgotten.
+        raise RuntimeError(f"couldn't find {task_id}'s container")
     elif pid := _dejima_pid(task_dir):
-        # No container yet, so dejima is still starting and has nothing to leave behind.
+        # No ~/shared yet, so dejima is still starting and has no container to leave behind.
         os.kill(pid, signal.SIGTERM)
     if not _wait_for_exit(task_dir, args.stop_timeout) and (pid := _dejima_pid(task_dir)):
         os.kill(pid, signal.SIGTERM)
@@ -900,16 +1303,129 @@ def stop(args: argparse.Namespace, task_id: str) -> None:
     subprocess.run([args.tmux, "kill-window", "-t", target], env=_tmux_env(), capture_output=True)
 
 
+def dejima_root(dejima: str) -> Path:
+    """Where dejima keeps each harness and backend, as a directory holding a harness.conf or backend.conf."""
+    return Path(dejima).resolve().parent.parent
+
+
+# dejima's directory for each kind.
+PROVIDER_DIRS = {"harness": "harnesses", "backend": "backends"}
+
+
+def _names(root: Path, kind: str) -> list[str]:
+    directory = root / PROVIDER_DIRS[kind]
+    if not directory.is_dir():
+        return []
+    return sorted(p.name for p in directory.iterdir() if valid_name(p.name) and (p / f"{kind}.conf").is_file())
+
+
+def _manifest(path: Path) -> dict[str, str]:
+    """A dejima manifest's key = value lines."""
+    found = {}
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if line and line[0] not in "#;" and "=" in line:
+            key, value = line.split("=", 1)
+            found[key.strip()] = value.strip()
+    return found
+
+
+def harness_options(root: Path) -> dict:
+    """What each of dejima's harnesses can be set to, as its manifests declare: the
+    backends speaking one of its api_styles (any, if it names none), the levels of
+    its effort enum, and whether it has a context_window key."""
+    styles = {b: _manifest(root / "backends" / b / "backend.conf").get("api_style") for b in _names(root, "backend")}
+    options = {}
+    for harness in _names(root, "harness"):
+        manifest = _manifest(root / "harnesses" / harness / "harness.conf")
+        speaks = manifest.get("api_styles", "").split()
+        keys = dict(k.split(":", 1) if ":" in k else (k, "") for k in manifest.get("keys", "").split())
+        effort = keys.get("effort", "").lstrip("?").split("=", 1)[0]
+        if "effort" not in keys:
+            efforts = []
+        elif effort.startswith("enum:"):
+            efforts = effort[len("enum:"):].split("|")
+        else:
+            efforts = None  # not an enum, so any level is dejima's to check
+        options[harness] = {
+            "backends": [b for b, style in styles.items() if not speaks or style in speaks],
+            "efforts": efforts,
+            "context_window": "context_window" in keys,
+        }
+    return options
+
+
+_SETTING = re.compile(r"harness\.([a-z0-9][a-z0-9_-]{0,63})\.(backend|model|effort|context_window)")
+_SETTING_CHECKS = {"backend": valid_name, "model": valid_model, "effort": valid_effort, "context_window": _context_window}
+
+
+def dejima_defaults(args: argparse.Namespace, dejima: str) -> tuple[str | None, dict]:
+    """dejima's own default harness and each harness's settings, from --print-config.
+
+    Only those keys are read, since the rest of the config holds host paths.
+    Nothing, if this dejima can't say.
+    """
+    argv = [dejima, *(["--identity", args.identity] if args.identity else []), "--print-config"]
+    try:
+        out = subprocess.run(argv, capture_output=True, text=True, timeout=30, check=True).stdout
+    except (OSError, subprocess.SubprocessError) as e:
+        # Only the API's log sees this, as a successful command's stderr.
+        reason = f"exit {e.returncode}" if isinstance(e, subprocess.CalledProcessError) else type(e).__name__
+        print(f"darner-launch: dejima --print-config failed ({reason}), so dejima's defaults are unknown", file=sys.stderr)
+        return None, {}
+    harness, defaults = None, {}
+    for line in out.splitlines():
+        key, _, value = line.partition("=")
+        if key == "core.harness" and valid_name(value):
+            harness = value
+        elif (m := _SETTING.fullmatch(key)) and _SETTING_CHECKS[m[2]](value):
+            defaults.setdefault(m[1], {})[m[2]] = int(value) if m[2] == "context_window" else value
+    return harness, defaults
+
+
+def launch_defaults(args: argparse.Namespace, dejima: str) -> tuple[str | None, dict]:
+    """The harness a launch gets when its job names none, and each harness's settings:
+    dejima's own, with this launcher's flags in their place."""
+    default_harness, defaults = dejima_defaults(args, dejima)
+    for key in ("backend", "model", "effort", "context_window"):
+        for harness, value in getattr(args, key):
+            defaults.setdefault(harness, {})[key] = int(value) if key == "context_window" else value
+    return args.harness or default_harness, defaults
+
+
+def catalog(args: argparse.Namespace) -> dict:
+    """The harnesses and backends the configured dejima has, what each harness can be
+    set to, and the defaults a launch gets."""
+    dejima = shutil.which(args.dejima)
+    if dejima is None:
+        raise RuntimeError(f"{Path(args.dejima).name} not found on PATH; pass --dejima with its full path")
+    root = dejima_root(dejima)
+    default_harness, defaults = launch_defaults(args, dejima)
+    # Not fatal, but each costs something quietly: printed for the API's log.
+    if not args.keep_shared and (problem := _dejima_share(args)[1]):
+        print(f"ended sessions' ~/shared will be kept, not pruned: {problem}", file=sys.stderr)
+    for option, tool, costs in (("--dejima-allow", args.dejima_allow, "domain requests can't be granted"),
+                                ("--docker", args.docker, "sessions can't be stopped")):
+        if shutil.which(tool) is None:
+            print(f"{Path(tool).name} not found on PATH, so {costs}; pass {option} with its full path", file=sys.stderr)
+    return {
+        "harnesses": _names(root, "harness"), "backends": _names(root, "backend"), "default_harness": default_harness,
+        "defaults": defaults, "options": harness_options(root),
+    }
+
+
 def command(args: argparse.Namespace) -> list[str]:
     original = os.environ.get("SSH_ORIGINAL_COMMAND")
     words = original.split() if original is not None else args.command
-    if words in ([], ["status"]) or (
+    if words in ([], ["status"], ["catalog"]) or (
         len(words) == 2
-        and words[0] in ("fetch", "help", "answer", "message", "upload", "stop", "domains")
+        and words[0] in ("fetch", "help", "answer", "message", "upload", "stop", "domains", "forget", "discard")
         and valid_task_id(words[1])
     ) or (
         len(words) == 3 and words[0] in ("allow", "deny") and valid_task_id(words[1])
         and words[2].isascii() and words[2].isdigit() and len(words[2]) <= 9
+    ) or (
+        len(words) == 3 and words[0] == "forget-delivered" and valid_task_id(words[1]) and SHA256.fullmatch(words[2])
     ):
         return words
     raise ValueError("unknown command")
@@ -918,15 +1434,17 @@ def command(args: argparse.Namespace) -> list[str]:
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(sys.argv[1:] if argv is None else argv)
     if args.exec_dir:
-        return run_session(args.exec_dir)
+        return run_session(args, args.exec_dir)
     try:
         words = command(args)
     except ValueError as e:
-        print(f"meeseeks-launch: {e}", file=sys.stderr)
+        print(f"darner-launch: {e}", file=sys.stderr)
         return 2
     try:
         if words == ["status"]:
             print(json.dumps(status(args)))
+        elif words == ["catalog"]:
+            print(json.dumps(catalog(args)))
         elif words and words[0] == "fetch":
             return fetch(args, words[1])
         elif words and words[0] == "help":
@@ -937,6 +1455,12 @@ def main(argv: list[str] | None = None) -> int:
             answer(args, words[1], json.load(sys.stdin), message=True)
         elif words and words[0] == "stop":
             stop(args, words[1])
+        elif words and words[0] == "forget":
+            print(json.dumps(forget(args, words[1])))
+        elif words and words[0] == "forget-delivered":
+            print(json.dumps(forget(args, words[1], delivered=words[2])))
+        elif words and words[0] == "discard":
+            discard(args, words[1])
         elif words and words[0] == "domains":
             print(json.dumps(domain_request(args, words[1])))
         elif words and words[0] in ("allow", "deny"):
@@ -946,8 +1470,16 @@ def main(argv: list[str] | None = None) -> int:
             answer(args, words[1], json.load(sys.stdin))
         else:
             print(json.dumps(launch(args, json.load(sys.stdin))))
-    except (JobError, json.JSONDecodeError, RuntimeError, OSError, ValueError) as e:
-        print(f"meeseeks-launch: {e}", file=sys.stderr)
+    except OSError as e:
+        # The message is relayed to chat, so it names no host path.
+        print(f"darner-launch: {e.strerror or type(e).__name__}", file=sys.stderr)
+        return 1
+    except (JobError, json.JSONDecodeError, RuntimeError, ValueError) as e:
+        print(f"darner-launch: {e}", file=sys.stderr)
+        return 1
+    except Exception as e:
+        # A traceback names host paths, and this is relayed to the frontend.
+        print(f"darner-launch: failed ({type(e).__name__})", file=sys.stderr)
         return 1
     return 0
 

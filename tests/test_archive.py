@@ -1,11 +1,13 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Brad Anderson
 import io
 import os
 import zipfile
 
 import pytest
 
-from meeseeks import archive
-from meeseeks.archive import ArchiveError, Limits, build, repack, safe_component
+from darner import archive
+from darner.archive import ArchiveError, Limits, build, repack, safe_component
 
 SECRET = b"host secret that must never leave"
 
@@ -299,3 +301,20 @@ def test_requesters_uploads_are_not_sent_back(tree):
     data, manifest = zip_of(root)
     assert names(data) == ["Uploads-analysis.md", "notes/uploads/kept.txt", "MANIFEST.txt"]
     assert ("'uploads'", "uploaded by the requester, not sent back") in manifest.skipped
+
+
+def test_archive_over_what_the_api_reads_is_refused(tree, monkeypatch):
+    root, _ = tree
+    monkeypatch.setattr(archive, "MANIFEST_SLACK", 100)
+    for i in range(5):
+        (root / f"{'n' * 200}{i}").touch()
+    with pytest.raises(ArchiveError, match="too large"):
+        zip_of(root, Limits(max_bytes=0))
+
+
+def test_manifest_skip_lines_are_capped(tree):
+    root, _ = tree
+    for i in range(archive.MAX_SKIPPED + 5):
+        (root / f".hidden{i}").touch()
+    text = zipfile.ZipFile(io.BytesIO(zip_of(root)[0])).read("MANIFEST.txt").decode()
+    assert text.count(": unsafe name") == archive.MAX_SKIPPED and text.endswith("  and 5 more\n")

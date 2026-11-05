@@ -1,8 +1,11 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Brad Anderson
 import pytest
 
-from meeseeks.job import (
+from darner.job import (
     OUTPUT_INSTRUCTIONS,
     JobError,
+    check_harness,
     compose_prompt,
     new_task_id,
     valid_dependency,
@@ -71,7 +74,7 @@ def test_names():
 def test_validate_job_full():
     job = validate_job(
         {
-            "id": "ms-abc23",
+            "id": "dn-abc23",
             "prompt": "do it",
             "domains": ["pypi.org"],
             "dependencies": ["pip:pytest"],
@@ -87,17 +90,18 @@ def test_validate_job_full():
     [
         [],
         {"id": "x", "prompt": "p"},
-        {"id": "ms-abc23", "prompt": " "},
-        {"id": "ms-abc23", "prompt": "p\0"},
-        {"id": "ms-abc23", "prompt": "x" * 70000},
-        {"id": "ms-abc23", "prompt": "p", "identity": "me"},
-        {"id": "ms-abc23", "prompt": "p", "domains": "pypi.org"},
-        {"id": "ms-abc23", "prompt": "p", "domains": ["localhost"]},
-        {"id": "ms-abc23", "prompt": "p", "dependencies": ["x"]},
-        {"id": "ms-abc23", "prompt": "p", "harness": "Bad Name"},
-        {"id": "ms-abc23", "prompt": "p", "session_wait": 61},
-        {"id": "ms-abc23", "prompt": "p", "session_wait": True},
-        {"id": "ms-abc23", "prompt": "p", "session_wait": "5"},
+        {"id": "dn-abc23", "prompt": " "},
+        {"id": "dn-abc23", "prompt": "p\0"},
+        {"id": "dn-abc23", "prompt": "x" * 70000},
+        {"id": "dn-abc23", "prompt": "é" * 40000},
+        {"id": "dn-abc23", "prompt": "p", "identity": "me"},
+        {"id": "dn-abc23", "prompt": "p", "domains": "pypi.org"},
+        {"id": "dn-abc23", "prompt": "p", "domains": ["localhost"]},
+        {"id": "dn-abc23", "prompt": "p", "dependencies": ["x"]},
+        {"id": "dn-abc23", "prompt": "p", "harness": "Bad Name"},
+        {"id": "dn-abc23", "prompt": "p", "session_wait": 61},
+        {"id": "dn-abc23", "prompt": "p", "session_wait": True},
+        {"id": "dn-abc23", "prompt": "p", "session_wait": "5"},
     ],
 )
 def test_validate_job_rejects(d):
@@ -119,13 +123,95 @@ def test_compose_prompt_default_output_instructions():
 
 @pytest.mark.parametrize("model", ["opus", "claude-opus-5[1m]", "z-ai/glm-5.3", "deepseek/deepseek-r1:free", "llama3:8b"])
 def test_valid_models(model):
-    assert validate_job({"id": "ms-abc23", "prompt": "p", "model": model}).model == model
+    assert validate_job({"id": "dn-abc23", "prompt": "p", "model": model}).model == model
 
 
 @pytest.mark.parametrize("job", [
     {"model": "-opus"}, {"model": "op us"}, {"model": "opus\n"}, {"model": "a" * 201},
-    {"effort": "max"}, {"effort": "HIGH"}, {"effort": 3},
+    {"effort": "-high"}, {"effort": "HIGH"}, {"effort": 3}, {"effort": "None"}, {"effort": "a" * 33},
+    {"context_window": 511}, {"context_window": 100_000_001}, {"context_window": "32768"}, {"context_window": True},
 ])
 def test_invalid_model_and_effort(job):
     with pytest.raises(JobError):
-        validate_job({"id": "ms-abc23", "prompt": "p", **job})
+        validate_job({"id": "dn-abc23", "prompt": "p", **job})
+
+
+def test_context_window():
+    assert validate_job({"id": "dn-abc23", "prompt": "p", "context_window": 32768}).context_window == 32768
+
+
+@pytest.mark.parametrize("effort", ["none", "low", "xhigh"])
+def test_valid_efforts(effort):
+    assert validate_job({"id": "dn-abc23", "prompt": "p", "effort": effort}).effort == effort
+
+
+OPTIONS = {
+    "claude-code": {"backends": ["anthropic", "anthropic-api-key"], "efforts": ["low", "medium", "high", "xhigh"], "context_window": False},
+    "cline": {"backends": ["anthropic", "openrouter", "self-hosted"], "efforts": ["none", "low", "high"], "context_window": True},
+    "free": {"backends": ["self-hosted"], "efforts": None, "context_window": False},
+    "plain": {"backends": ["self-hosted"], "efforts": [], "context_window": False},
+}
+
+
+@pytest.mark.parametrize("settings", [
+    ("cline", "self-hosted", "none", 120000),
+    ("claude-code", "anthropic-api-key", "xhigh", None),
+    ("other", "anything", "none", 4096),
+    (None, "openrouter", "none", None),
+    ("free", None, "max", None),
+])
+def test_settings_a_harness_can_take(settings):
+    check_harness(OPTIONS, *settings)
+
+
+@pytest.mark.parametrize("settings", [
+    ("claude-code", "self-hosted", None, None),
+    ("claude-code", None, "none", None),
+    ("claude-code", None, None, 4096),
+    ("free", "openrouter", None, None),
+])
+def test_settings_a_harness_can_t_take(settings):
+    with pytest.raises(JobError):
+        check_harness(OPTIONS, *settings)
+
+
+def test_a_harness_without_effort_levels_says_so():
+    with pytest.raises(JobError, match="^plain takes no effort level$"):
+        check_harness(OPTIONS, "plain", None, "low", None)
+
+
+@pytest.mark.parametrize("network", ["named", "sealed"])
+def test_networks(network):
+    assert validate_job({"id": "dn-abc23", "prompt": "p", "network": network}).network == network
+
+
+@pytest.mark.parametrize("network", ["open", "Sealed", "", True])
+def test_invalid_networks(network):
+    with pytest.raises(JobError, match="network"):
+        validate_job({"id": "dn-abc23", "prompt": "p", "network": network})
+
+
+def test_internal_domains_must_be_permitted():
+    with pytest.raises(JobError, match="internal domains must also be permitted: recipes.example.com"):
+        validate_job({"id": "dn-abc23", "prompt": "p", "domains": ["pypi.org"], "internal_domains": ["recipes.example.com"]})
+
+
+def test_files_are_validated():
+    import base64
+
+    good = {"name": "token", "data": base64.b64encode(b"s").decode()}
+    assert validate_job({"id": "dn-abc23", "prompt": "p", "files": [good]}).files == [("token", b"s")]
+    for files in (
+        [{"name": "../x", "data": ""}],
+        [{"name": "token", "data": "not base64!"}],
+        [good, good],
+        [{"name": "big", "data": base64.b64encode(b"x" * (1024 * 1024 + 1)).decode()}],
+        "token",
+    ):
+        with pytest.raises(JobError):
+            validate_job({"id": "dn-abc23", "prompt": "p", "files": files})
+
+
+def test_prompt_lists_files():
+    assert "## Files for this task\nThe requester provided these, and they may hold credentials:\n- ~/shared/uploads/token" in compose_prompt("T", [], "", "", ["token"])
+

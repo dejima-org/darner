@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+{% block title %}New task · darner{% endblock %}
+{% block main %}
+<h1>New task</h1>
+<form method="post" data-action="/tasks" class="new">
+<input type="hidden" name="ref" value="{{ ref }}">
+<label for="task">Task</label>
+<textarea id="task" name="task" rows="4" required></textarea>
+<label for="name">Name <span class="quiet">optional: lowercase letters, digits and hyphens, unique among open sessions</span></label>
+<input id="name" name="name" maxlength="35" pattern="(dn-)?[a-z0-9][a-z0-9\-]{0,31}" autocomplete="off" placeholder="its id, such as dn-k3x7q">
+{% if configs %}
+<fieldset><legend>Config sets</legend>
+<div class="choices">{% for name in configs %}<label class="choice"><input type="checkbox" name="configs" value="{{ name }}"> <a href="/configs/{{ name | urlencode }}">{{ name }}</a></label>{% endfor %}</div>
+</fieldset>
+{% endif %}
+{% if blurbs %}
+<fieldset><legend>Context blurbs</legend>
+<div class="choices">{% for name in blurbs %}<label class="choice"><input type="checkbox" name="blurbs" value="{{ name }}"> <a href="/blurbs/{{ name | urlencode }}">{{ name }}</a></label>{% endfor %}</div>
+</fieldset>
+{% endif %}
+<fieldset><legend>Access</legend>
+<label for="domains">Domains it may reach</label>
+<input id="domains" name="domains" placeholder="pypi.org, files.pythonhosted.org">
+<label for="internal">Domains inside your network it may reach</label>
+<input id="internal" name="internal" placeholder="recipes.example.com:8443">
+<label for="dependencies">Dependencies (apt:, pip:, cargo:, npm:, tarball:)</label>
+<input id="dependencies" name="dependencies" placeholder="apt:jq pip:pytest-xdist">
+<label for="network">Beyond what's named here</label>
+<select id="network" name="network"><option value="">No change</option><option value="named">nothing: only what's named (--drop-domains)</option><option value="sealed">nothing, and refuse to start if it can look up any name (--require-sealed)</option></select>
+</fieldset>
+<fieldset data-catalog='{{ catalog | tojson }}'><legend>Agent</legend>
+<p class="quiet">Changes to what the task gets from its config sets, or else from the defaults.</p>
+<div class="grid">
+<label for="harness">Harness</label>
+<select id="harness" name="harness"><option value="">No change</option>{% for name in catalog.harnesses %}<option>{{ name }}</option>{% endfor %}</select>
+<label for="backend">Backend</label>
+<select id="backend" name="backend"><option value="">No change</option>{% for name in catalog.backends %}<option>{{ name }}</option>{% endfor %}</select>
+<label for="model">Model</label>
+<input id="model" name="model" list="models" placeholder="No change">
+<datalist id="models"></datalist>
+<label for="effort">Effort</label>
+<select id="effort" name="effort"><option value="">No change</option>{% for level in efforts %}<option>{{ level }}</option>{% endfor %}</select>
+<label for="context_window">Context window, in tokens</label>
+<input id="context_window" name="context_window" inputmode="numeric" placeholder="No change">
+</div>
+</fieldset>
+<p class="quiet">Files can be uploaded from the session's page once it's running.</p>
+<section class="well preview" aria-live="polite">
+<h2>Start launches</h2>
+<dl id="preview"></dl>
+<div id="preview-blurbs"></div>
+<p class="refusal" hidden></p>
+</section>
+<button type="submit" data-busy="Starting the session">Start</button>
+<p class="status" role="status" hidden data-text="dejima is building the sandbox and starting the agent, which can take a minute. The session's page opens when it's ready."></p>
+<p class="alert" role="alert" hidden></p>
+</form>
+{% endblock %}

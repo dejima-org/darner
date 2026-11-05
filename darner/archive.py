@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Brad Anderson
 """Zip a session's ~/shared without trusting anything in it.
 
 The session may be hostile and may change the tree while it is read, so the
@@ -24,6 +26,8 @@ UPLOADS = "uploads"
 SUMMARY = "RESULT.md"
 MAX_SUMMARY = 16 * 1024
 MANIFEST_SLACK = 2 * 1024 * 1024
+MAX_SKIPPED = 1000
+MAX_SKIPPED_PATH = 300
 _CHUNK = 64 * 1024
 _DATE = (1980, 1, 1, 0, 0, 0)
 
@@ -52,7 +56,9 @@ class Manifest:
     def render(self) -> str:
         lines = ["Included:"] + [f"  {path} ({size} bytes)" for path, size in self.included]
         if self.skipped:
-            lines += ["", "Skipped:"] + [f"  {path}: {reason}" for path, reason in self.skipped]
+            lines += ["", "Skipped:"] + [f"  {path[:MAX_SKIPPED_PATH]}: {reason}" for path, reason in self.skipped[:MAX_SKIPPED]]
+            if len(self.skipped) > MAX_SKIPPED:
+                lines.append(f"  and {len(self.skipped) - MAX_SKIPPED} more")
         return "\n".join(lines) + "\n"
 
 
@@ -62,6 +68,13 @@ def safe_component(name: str) -> bool:
         and not name.endswith((".", " "))
         and _RESERVED.fullmatch(name) is None
     )
+
+
+def upload_name(name: str) -> str:
+    """A safe file name for a file given to a session, from whatever name it came with."""
+    name = name.rsplit("/", 1)[-1].replace(" ", "-")
+    name = "".join(c for c in name if c.isascii() and (c.isalnum() or c in "._+-")).lstrip("._+-")[:200]
+    return name if safe_component(name) else "upload"
 
 
 def _entry(path: str) -> zipfile.ZipInfo:
@@ -203,7 +216,12 @@ def build(root_fd: int, limits: Limits = Limits()) -> tuple[bytes, Manifest]:
         builder = _Builder(zf, limits)
         builder.walk(root_fd, "", 0)
         zf.writestr(_entry(MANIFEST), builder.manifest.render())
-    return buf.getvalue(), builder.manifest
+    data = buf.getvalue()
+    # Long names make headers and the manifest outgrow the slack the API
+    # allows for them, and an archive it can't read would be fetched forever.
+    if len(data) > limits.max_bytes + MANIFEST_SLACK:
+        raise ArchiveError("archive too large, with its names and manifest")
+    return data, builder.manifest
 
 
 def clean_text(raw: bytes, limit: int = MAX_SUMMARY) -> str:
@@ -237,7 +255,7 @@ def repack(data: bytes, limits: Limits = Limits()) -> tuple[bytes, str]:
             or len(name.encode()) > limits.max_path
             or not all(safe_component(c) for c in name.split("/"))
         ):
-            raise ArchiveError(f"unsafe entry name {name!r}")
+            raise ArchiveError(f"unsafe entry name {name[:MAX_SKIPPED_PATH]!r}")
         if info.external_attr >> 16 not in (0, 0o100644):
             raise ArchiveError(f"entry {name!r} is not a plain file")
         if info.compress_type not in (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED):

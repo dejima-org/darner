@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block main %}
+<h1>{{ title }}</h1>
+{% if names %}
+<ul class="names">
+{% for name in names %}<li><a href="/{{ kind }}/{{ name | urlencode }}">{{ name }}</a></li>{% endfor %}
+</ul>
+{% else %}
+<p class="lead">None.</p>
+{% endif %}
+{% endblock %}

@@ -1,11 +1,18 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Brad Anderson
 import re
 from dataclasses import dataclass, field
 from urllib.parse import unquote
 
 MARKDOWN_LINK = re.compile(r"\[([^\]\n]*)\]\(([^)\s]+)\)")
-KEYWORD = re.compile(r"^\s*(ctx|allow|deps|harness|backend|model|effort)\s*:(.*)$", re.IGNORECASE)
-SINGLE = ("harness", "backend", "model", "effort")
-FIELDS = {"ctx": "blurbs", "allow": "domains", "deps": "dependencies"}
+KEYWORD = re.compile(
+    r"^\s*(config|blurb|ctx|allow|internal|dependency|deps|harness|backend|model|effort|context_window|network|name)\s*:(.*)$",
+    re.IGNORECASE,
+)
+# Earlier spellings, still read.
+ALIASES = {"ctx": "blurb", "deps": "dependency"}
+SINGLE = ("harness", "backend", "model", "effort", "context_window", "network", "name")
+FIELDS = {"config": "configs", "blurb": "blurbs", "allow": "domains", "internal": "internal_domains", "dependency": "dependencies"}
 
 
 class ParseError(ValueError):
@@ -15,13 +22,18 @@ class ParseError(ValueError):
 @dataclass
 class Request:
     context: str = ""
+    configs: list[str] = field(default_factory=list)
     blurbs: list[str] = field(default_factory=list)
     domains: list[str] = field(default_factory=list)
+    internal_domains: list[str] = field(default_factory=list)
     dependencies: list[str] = field(default_factory=list)
     harness: str | None = None
     backend: str | None = None
     model: str | None = None
     effort: str | None = None
+    context_window: str | None = None
+    network: str | None = None
+    name: str | None = None
 
 
 def _mention(names: list[str]) -> str:
@@ -63,7 +75,7 @@ def parse_reply(body: str, bot_names: list[str]) -> Request:
     for line in lines:
         line = strip_mention(line, bot_names)
         if m := KEYWORD.match(line):
-            seen = values[m[1].lower()]
+            seen = values[ALIASES.get(m[1].lower(), m[1].lower())]
             seen += [v for v in dict.fromkeys(re.split(r"[,\s]+", m[2])) if v and v not in seen]
         else:
             context.append(re.sub(mention, "", line, flags=re.IGNORECASE) if mention else line)

@@ -1,9 +1,22 @@
 listen = "127.0.0.1:8080"
-db_path = "/var/lib/meeseeks/tasks.db"
-blurbs_dir = "/etc/meeseeks/blurbs"
+db_path = "/var/lib/darner/tasks.db"
+blurbs_dir = "/etc/darner/blurbs"
+# Config sets: saved keyword lines a request names with `config:`. Defaults to
+# configs beside blurbs_dir.
+# configs_dir = "/etc/darner/configs"
+
+# Say a session seems to be waiting once its screen is unchanged this long, and
+# whether to include the end of its screen.
+# waiting_after = 300
+# Stop a session once it has run this long, so none is left running forgotten; 0
+# never stops one.
+# max_session_age = 86400
+# Keep an ended session's output this long for a frontend that hasn't collected it.
+# output_retention = 604800
+# waiting_screen = true
 # Blurbs added to every task, such as how the network reaches internal services.
 # default_blurbs = ["network"]
-results_dir = "/var/lib/meeseeks/results"
+results_dir = "/var/lib/darner/results"
 poll_interval = 30
 launch_command = ["ssh", "-T", "-o", "BatchMode=yes", "operator@dejima.example.com"]
 launch_timeout = 120
@@ -11,15 +24,31 @@ launch_timeout = 120
 # dejima's web remote access base_url, to link sessions from chat.
 # remote_access_url = "https://dejima.example.com"
 
-# One token per source; the bot instance uses one of these as api_token.
+# One token per frontend, by name; each frontend's config has its own as api_token.
 [tokens]
 maubot = "replace-with-a-long-random-token"
 
 [policy]
 deny_domains = []
 max_domains = 20
+# Only these domains and their subdomains, if set: deny by default, like dejima.
+# allow_domains = ["example.org"]
+# Internal grants reach your network past dejima's private-address block.
+# allow_internal = true
+# max_internal_domains = 5
+# tarball: has the dejima host fetch any URL on its own network, so it's left out.
+# allow_dependency_kinds = ["apt", "cargo", "npm", "pip"]
 
-# Should match the launcher's --max-output; a smaller value rejects output the launcher collected.
+# Models to offer for each harness and backend. A frontend still takes one that
+# isn't listed. A context window is filled in when its model is picked.
+# [catalog.claude-code.anthropic]
+# models = ["claude-opus-5-5[1m]", "claude-sonnet-5-5"]
+# [catalog.cline.openrouter]
+# models = ["z-ai/glm-5.3"]
+# [catalog.cline.self-hosted]
+# models = [{ id = "qwen3.5-4b", context_window = 120000 }]
+
+# Must be at least the launcher's --max-output: output over this can't be collected, and is fetched again every poll.
 [limits]
 max_bytes = 52428800
 max_files = 1000

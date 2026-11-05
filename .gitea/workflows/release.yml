@@ -2,9 +2,16 @@
 # release, so installing or updating the bot needs no local build.
 #
 # A push to main whose version has no tag yet creates the release, and with it
-# the v<version> tag at that commit. Creating the tag from here is not left to a
+# the v<version> tag at that commit. A push to development creates a
+# pre-release of <version>.dev<run>, which the forge's latest release skips
+# and maubot orders before <version>, so a stable release supersedes it. Creating the tag from here is not left to a
 # second workflow, because Gitea doesn't start workflows from events caused by a
-# job's own token. Pushing a v* tag by hand releases that tag the same way.
+# job's own token.
+#
+# A pushed tag releases nothing. It used to, checked only against the version
+# in the tagged commit, which whoever pushed it wrote, so any ref that could be
+# pushed could ship a plugin no one reviewed. Only main and development, which
+# the forge must protect, publish anything (docs/release.md).
 #
 # A .mbp is a zip of maubot.yaml, the plugin's modules and its extra files,
 # which is all `mbc build` writes. The stdlib's zipfile CLI builds the same
@@ -16,15 +23,14 @@ on:
   push:
     branches:
       - main
-    tags:
-      - "v*"
+      - development
 
 jobs:
   plugin:
     runs-on: dejima-confined
     name: confined (plugin release)
     container:
-      image: node:20-bookworm
+      image: node:20-bookworm@sha256:8f693eaa7e0a8e71560c9a82b55fd54c2ae920a2ba5d2cde28bac7d1c01c9ba5  # by digest, as the Dockerfile's base
     steps:
       - uses: actions/checkout@v4
 
@@ -39,22 +45,43 @@ jobs:
             echo "plugin/maubot.yaml ($plugin) and pyproject.toml ($package) disagree on the version" >&2
             exit 1
           fi
-          tag="v$plugin"
+          version="$plugin"
+          prerelease=false
           case "$GITHUB_REF" in
-            refs/tags/*)
-              if [ "$GITHUB_REF_NAME" != "$tag" ]; then
-                echo "tag $GITHUB_REF_NAME does not match the version in the repository ($plugin)" >&2
-                exit 1
-              fi ;;
+            refs/heads/development)
+              version="$plugin.dev$GITHUB_RUN_NUMBER"
+              prerelease=true ;;
             *)
               if curl -fsS -o /dev/null -H "Authorization: token $TOKEN" \
-                "$GITHUB_SERVER_URL/api/v1/repos/$GITHUB_REPOSITORY/tags/$tag"; then
-                echo "$tag already exists, so there is nothing new to release"
+                "$GITHUB_SERVER_URL/api/v1/repos/$GITHUB_REPOSITORY/tags/v$version"; then
+                echo "v$version already exists, so there is nothing new to release"
                 echo "release=false" >> "$GITHUB_OUTPUT"
                 exit 0
               fi ;;
           esac
-          echo "TAG=$tag" >> "$GITHUB_ENV"
+          # A stable release names the dejima release it trails (docs/release.md),
+          # and its changelog entry is the release's notes.
+          notes="$RUNNER_TEMP/notes.md"
+          : > "$notes"
+          if [ "$prerelease" = false ]; then
+            python3 - "$version" CHANGELOG.md > "$notes" <<'EOF'
+          import re, sys
+          version, path = sys.argv[1], sys.argv[2]
+          entry = re.search(rf"^## {re.escape(version)}\n(.*?)(?=^## |\Z)", open(path).read(), re.M | re.S)
+          if not entry:
+              sys.exit(f"{path} has no entry for {version}")
+          dejima = re.search(r"^Released against dejima: *(\S+) *$", entry[1], re.M)
+          if not dejima or dejima[1] == "N/A":
+              sys.exit(f"{path}'s entry for {version} must name the dejima release it was released against")
+          print(entry[1].strip())
+          EOF
+          fi
+          {
+            echo "NOTES=$notes"
+            echo "VERSION=$version"
+            echo "TAG=v$version"
+            echo "PRERELEASE=$prerelease"
+          } >> "$GITHUB_ENV"
           echo "release=true" >> "$GITHUB_OUTPUT"
 
       - name: Build the plugin
@@ -62,8 +89,10 @@ jobs:
         working-directory: plugin
         run: |
           id="$(sed -n 's/^id: *//p' maubot.yaml)"
+          # A development build carries its own version, in this checkout only.
+          sed -i "s/^version: .*/version: $VERSION/" maubot.yaml
           echo "MBP=$id-$TAG.mbp" >> "$GITHUB_ENV"
-          python3 -m zipfile -c "../$id-$TAG.mbp" maubot.yaml meeseeks_bot base-config.yaml
+          python3 -m zipfile -c "../$id-$TAG.mbp" maubot.yaml dragonlet base-config.yaml ../LICENSE
           python3 -m zipfile -l "../$id-$TAG.mbp"
 
       - name: Attach it to the release
@@ -76,8 +105,8 @@ jobs:
           # A rerun finds the release the first run created. Creating one with a
           # target creates its tag there too, when the tag doesn't exist yet.
           if ! release="$(curl -fsS -H "$auth" "$api/releases/tags/$TAG")"; then
-            release="$(curl -fsS -X POST -H "$auth" -H "Content-Type: application/json" \
-              -d "{\"tag_name\": \"$TAG\", \"name\": \"$TAG\", \"target_commitish\": \"$GITHUB_SHA\"}" "$api/releases")"
+            body="$(python3 -c 'import json, os; e = os.environ; print(json.dumps({"tag_name": e["TAG"], "name": e["TAG"], "target_commitish": e["GITHUB_SHA"], "prerelease": e["PRERELEASE"] == "true", "body": open(e["NOTES"]).read()}))')"
+            release="$(curl -fsS -X POST -H "$auth" -H "Content-Type: application/json" -d "$body" "$api/releases")"
           fi
           if printf '%s' "$release" | python3 -c 'import json, os, sys; sys.exit(not any(a["name"] == os.environ["MBP"] for a in json.load(sys.stdin)["assets"]))'; then
             echo "$MBP is already attached"

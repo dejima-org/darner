@@ -1,0 +1,15 @@
+# Recipe imports into Mealie, on the self-hosted model.
+
+# Comment lines at the top are the description, shown with the set; a blank
+# line ends it. A recurring task on a self-hosted model, with the context and
+# access it always needs. A request names it with `config: recipes` and adds only what
+# changes, such as `allow:` for the recipe's website.
+blurb: myapp
+harness: cline
+backend: self-hosted
+model: qwen3-14b
+# A little under what the model's server allows.
+context_window: 30000
+internal: recipes.example.com:8443
+# Gives each session configs_dir/files/recipes-token in ~/shared/uploads.
+file: recipes-token

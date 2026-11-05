@@ -1,7 +1,10 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Brad Anderson
 import contextlib
 import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 import zipfile
@@ -9,7 +12,8 @@ from pathlib import Path
 
 import pytest
 
-from meeseeks.launch import launch, main, parse_args, status
+from darner.job import JobError
+from darner.launch import FETCH_REJECTED, launch, main, parse_args, status
 
 FAKE_TMUX = """#!/bin/sh
 python3 -c 'import json, sys; print(json.dumps(sys.argv[1:]))' "$@" >> "$FAKE_TMUX_LOG"
@@ -18,16 +22,18 @@ case "$1" in
     load-buffer) cat > "$FAKE_TMUX_LOG.buffer" ;;
     capture-pane) cat "$FAKE_TMUX_LOG.screen" 2>/dev/null ;;
     paste-buffer) cut -c "$(( ${FAKE_TMUX_DROP:-0} + 1 ))-" "$FAKE_TMUX_LOG.buffer" | head -c 4000 >> "$FAKE_TMUX_LOG.screen" ;;
-    send-keys) if [ "$4" = Enter ] && [ -z "$FAKE_TMUX_EAT_ENTER" ]; then echo "[submitted]" >> "$FAKE_TMUX_LOG.screen"; fi ;;
+    send-keys) if [ "$2" = -l ]; then printf '%s' "$6" >> "$FAKE_TMUX_LOG.screen"; elif [ "$4" = Enter ] && [ -z "$FAKE_TMUX_EAT_ENTER" ]; then echo "[submitted]" >> "$FAKE_TMUX_LOG.screen"; fi ;;
     new-window)
         # Every window gets its own ids, as tmux gives them: @7 %7 for the first.
         n=$(( $(cat "$FAKE_TMUX_LOG.n" 2>/dev/null || echo 6) + 1 )); echo "$n" > "$FAKE_TMUX_LOG.n"
-        while [ "$1" != -n ]; do shift; done; echo "meeseeks:$2 @$n %$n" ;;
+        while [ "$1" != -n ]; do shift; done; echo "darner:$2 @$n %$n" ;;
 esac
 """
 
 FAKE_DEJIMA = """#!/usr/bin/env python3
 import json, os, sys
+if sys.argv[-1] == "--print-config":
+    sys.exit(sys.stdout.write(os.environ.get("FAKE_DEJIMA_CONFIG", "")) and 0)
 open(os.environ["FAKE_DEJIMA_LOG"], "w").write(json.dumps(sys.argv[1:]))
 """
 
@@ -43,10 +49,29 @@ def env(tmp_path, monkeypatch):
     bin_dir.mkdir()
     (bin_dir / "dejima").write_text(FAKE_DEJIMA)
     (bin_dir / "dejima").chmod(0o755)
+    install_manifests(tmp_path)
     monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
     monkeypatch.setenv("FAKE_TMUX_LOG", str(tmp_path / "tmux.log"))
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "run"))
     return tmp_path
+
+
+# What dejima's own manifests declare that the launcher reads.
+MANIFESTS = {
+    ("harness", "claude-code"): "# Anthropic only\napi_styles = anthropic\nkeys = backend:?provider:backend model:?modelid effort:?enum:low|medium|high|xhigh\n",
+    ("harness", "cline"): "api_styles = anthropic openai\nkeys = model:?modelid context_window:?int:512:100000000 effort:?enum:none|low|medium|high|xhigh\n",
+    ("backend", "anthropic"): "api_style = anthropic\n",
+    ("backend", "anthropic-api-key"): "api_style       = anthropic\n",
+    ("backend", "openrouter"): "api_style = openai\n",
+    ("backend", "self-hosted"): "; served by the operator\napi_style = openai\n",
+}
+
+
+def install_manifests(root: Path, manifests: dict = MANIFESTS) -> None:
+    for (kind, name), text in manifests.items():
+        directory = root / {"harness": "harnesses", "backend": "backends"}[kind] / name
+        directory.mkdir(parents=True)
+        (directory / f"{kind}.conf").write_text(text)
 
 
 def args(tmp_path: Path, *extra: str):
@@ -62,23 +87,24 @@ def written_argv(tmp_path: Path, task_id: str) -> list[str]:
 
 
 def test_launch_creates_session_and_window(env):
-    job = {"id": "ms-abc23", "prompt": PROMPT, "domains": ["pypi.org"], "dependencies": ["pip:pytest"]}
+    job = {"id": "dn-abc23", "prompt": PROMPT, "domains": ["pypi.org"], "dependencies": ["pip:pytest"]}
     result = launch(args(env), job)
-    assert result == {"id": "ms-abc23", "target": "meeseeks:ms-abc23"}
+    assert result == {"id": "dn-abc23", "target": "darner:dn-abc23"}
 
     calls = tmux_calls(env)
     assert [c[0] for c in calls] == ["has-session", "new-session", "new-window"]
     window = calls[2]
-    assert window[window.index("-n") + 1] == "ms-abc23"
+    assert window[window.index("-n") + 1] == "dn-abc23"
     assert window[window.index("--") + 1 :] == [
-        sys.executable, "-m", "meeseeks.launch", "--exec", str(env / "tasks" / "ms-abc23"),
+        sys.executable, "-m", "darner.launch", "--share-root", str(Path.home() / ".local/share/dejima/shared/isolated"),
+        "--exec", str(env / "tasks" / "dn-abc23"),
     ]
 
-    task = env / "tasks" / "ms-abc23"
+    task = env / "tasks" / "dn-abc23"
     assert task.stat().st_mode & 0o777 == 0o700
     assert (task / "domains").read_text() == "pypi.org\n"
     assert (task / "dependencies").read_text() == "pip:pytest\n"
-    assert written_argv(env, "ms-abc23") == [
+    assert written_argv(env, "dn-abc23") == [
         str(env / "bin" / "dejima"), "--isolated", "--no-pause", "--shared-path-file", str(task / "shared-path"),
         "--domains", str(task / "domains"), "--dependencies", str(task / "dependencies"),
         "--", PROMPT,
@@ -87,20 +113,20 @@ def test_launch_creates_session_and_window(env):
 
 def test_existing_session_is_reused(env, monkeypatch):
     monkeypatch.setenv("FAKE_TMUX_HAS", "0")
-    launch(args(env), {"id": "ms-abc23", "prompt": "p"})
+    launch(args(env), {"id": "dn-abc23", "prompt": "p"})
     assert [c[0] for c in tmux_calls(env)] == ["has-session", "new-window"]
 
 
 def test_duplicate_id_rejected(env):
-    launch(args(env), {"id": "ms-abc23", "prompt": "p"})
-    with pytest.raises(FileExistsError):
-        launch(args(env), {"id": "ms-abc23", "prompt": "p"})
+    launch(args(env), {"id": "dn-abc23", "prompt": "p"})
+    with pytest.raises(RuntimeError, match="dn-abc23 is already in use$"):
+        launch(args(env), {"id": "dn-abc23", "prompt": "p"})
 
 
 def test_no_grants_or_names_leaves_flags_out(env):
-    launch(args(env), {"id": "ms-abc23", "prompt": "p"})
-    shared = str(env / "tasks" / "ms-abc23" / "shared-path")
-    assert written_argv(env, "ms-abc23") == [
+    launch(args(env), {"id": "dn-abc23", "prompt": "p"})
+    shared = str(env / "tasks" / "dn-abc23" / "shared-path")
+    assert written_argv(env, "dn-abc23") == [
         str(env / "bin" / "dejima"), "--isolated", "--no-pause", "--shared-path-file", shared, "--", "p",
     ]
 
@@ -109,22 +135,42 @@ def test_no_grants_or_names_leaves_flags_out(env):
     "job,expected",
     [
         ({}, ["--harness", "claude-code", "--backend", "anthropic"]),
-        ({"backend": "openrouter"}, ["--harness", "claude-code", "--backend", "openrouter"]),
+        ({"backend": "anthropic-api-key"}, ["--harness", "claude-code", "--backend", "anthropic-api-key"]),
         ({"harness": "cline"}, ["--harness", "cline", "--backend", "self-hosted"]),
         ({"harness": "other"}, ["--harness", "other"]),
     ],
 )
 def test_harness_and_backend_resolution(env, job, expected):
     a = args(
-        env, "--identity", "meeseeks", "--harness", "claude-code",
+        env, "--identity", "darner", "--harness", "claude-code",
         "--backend", "claude-code=anthropic", "--backend", "cline=self-hosted",
     )
-    launch(a, {"id": "ms-abc23", "prompt": "p", **job})
-    assert written_argv(env, "ms-abc23")[5:-2] == ["--identity", "meeseeks", *expected]
+    launch(a, {"id": "dn-abc23", "prompt": "p", **job})
+    assert written_argv(env, "dn-abc23")[5:-2] == ["--identity", "darner", *expected]
+
+
+@pytest.mark.parametrize("job,defaults", [
+    ({"backend": "openrouter"}, ["--harness", "claude-code"]),
+    ({"harness": "claude-code"}, ["--backend", "claude-code=openrouter"]),
+    ({"effort": "none"}, ["--harness", "claude-code"]),
+    ({"context_window": 120000}, ["--harness", "claude-code"]),
+])
+def test_a_job_its_harness_can_t_take_with_the_defaults_is_refused(env, job, defaults):
+    # The API checks only what the job names; this is the pairing once the launcher's defaults fill in the rest.
+    with pytest.raises(JobError):
+        launch(args(env, *defaults), {"id": "dn-abc23", "prompt": "p", **job})
+    assert not (env / "tasks" / "dn-abc23").exists()
+
+
+@pytest.mark.parametrize("network,flag", [("named", "--drop-domains"), ("sealed", "--require-sealed")])
+def test_network_reaches_dejima(env, network, flag):
+    launch(args(env), {"id": "dn-abc23", "prompt": "p", "network": network})
+    argv = written_argv(env, "dn-abc23")
+    assert flag in argv[:argv.index("--")]
 
 
 def test_main_reports_invalid_job(env, monkeypatch, capsys):
-    monkeypatch.setattr(sys, "stdin", io.StringIO('{"id": "ms-abc23", "prompt": "p", "identity": "x"}'))
+    monkeypatch.setattr(sys, "stdin", io.StringIO('{"id": "dn-abc23", "prompt": "p", "identity": "x"}'))
     assert main(["--tmux", str(env / "tmux"), "--tasks-dir", str(env / "tasks")]) == 1
     assert "unknown job keys: identity" in capsys.readouterr().err
 
@@ -133,14 +179,14 @@ def test_exec_runs_dejima_with_prompt_as_one_argument(env):
     dejima = env / "dejima"
     dejima.write_text(FAKE_DEJIMA)
     dejima.chmod(0o755)
-    launch(args(env, "--dejima", str(dejima)), {"id": "ms-abc23", "prompt": PROMPT})
+    launch(args(env, "--dejima", str(dejima)), {"id": "dn-abc23", "prompt": PROMPT})
     subprocess.run(
-        [sys.executable, "-m", "meeseeks.launch", "--exec", str(env / "tasks" / "ms-abc23")],
+        [sys.executable, "-m", "darner.launch", "--exec", str(env / "tasks" / "dn-abc23")],
         env={"FAKE_DEJIMA_LOG": str(env / "dejima.log"), "PATH": "/usr/bin:/bin"},
         cwd=Path(__file__).parent.parent,
         check=True,
     )
-    shared = str(env / "tasks" / "ms-abc23" / "shared-path")
+    shared = str(env / "tasks" / "dn-abc23" / "shared-path")
     assert json.loads((env / "dejima.log").read_text()) == [
         "--isolated", "--no-pause", "--shared-path-file", shared, "--", PROMPT,
     ]
@@ -155,10 +201,10 @@ def test_exec_records_exit_status(env):
     dejima = env / "dejima"
     dejima.write_text(EXITING_DEJIMA)
     dejima.chmod(0o755)
-    launch(args(env, "--dejima", str(dejima)), {"id": "ms-abc23", "prompt": "p"})
-    task = env / "tasks" / "ms-abc23"
+    launch(args(env, "--dejima", str(dejima)), {"id": "dn-abc23", "prompt": "p"})
+    task = env / "tasks" / "dn-abc23"
     result = subprocess.run(
-        [sys.executable, "-m", "meeseeks.launch", "--exec", str(task)], cwd=Path(__file__).parent.parent
+        [sys.executable, "-m", "darner.launch", "--exec", str(task)], cwd=Path(__file__).parent.parent
     )
     assert result.returncode == 3
     assert (task / "exit").read_text() == "3\n"
@@ -171,8 +217,8 @@ def share(env):
     shared = root / "20261025-120000-AbC123"
     shared.mkdir(parents=True)
     a = args(env, "--share-root", str(root))
-    launch(a, {"id": "ms-abc23", "prompt": "p"})
-    (env / "tasks" / "ms-abc23" / "shared-path").write_text(f"{shared}\n")
+    launch(a, {"id": "dn-abc23", "prompt": "p"})
+    (env / "tasks" / "dn-abc23" / "shared-path").write_text(f"{shared}\n")
     return a, shared
 
 
@@ -189,19 +235,19 @@ def run(a, *command):
 
 def test_status_states(env, share):
     a, shared = share
-    launch(a, {"id": "ms-starx", "prompt": "p"})
+    launch(a, {"id": "dn-starx", "prompt": "p"})
     (env / "tasks" / "not-a-task").mkdir()
     assert {t["id"]: (t["state"], t["ready"]) for t in status(a)} == {
-        "ms-abc23": ("running", False),
-        "ms-starx": ("starting", False),
+        "dn-abc23": ("running", False),
+        "dn-starx": ("starting", False),
     }
     (shared / ".done").touch()
-    (env / "tasks" / "ms-abc23" / "exit").write_text("0\n")
+    (env / "tasks" / "dn-abc23" / "exit").write_text("0\n")
     code, out, _ = run(a, "status")
     assert code == 0
     assert json.loads(out) == [
-        {"id": "ms-abc23", "state": "exited", "ready": True, "unsignalled": False, "help": False, "domains": False, "answerable": False, "run_id": None, "error": None, "awaiting_answer": False, "domain_request": None},
-        {"id": "ms-starx", "state": "starting", "ready": False, "unsignalled": False, "help": False, "domains": False, "answerable": False, "run_id": None, "error": None, "awaiting_answer": False, "domain_request": None},
+        {"id": "dn-abc23", "state": "exited", "ready": True, "unsignalled": False, "help": False, "domains": False, "answerable": False, "run_id": None, "error": None, "awaiting_answer": False, "result_pending": False, "quiet": None, "screen": "", "domain_request": None},
+        {"id": "dn-starx", "state": "starting", "ready": False, "unsignalled": False, "help": False, "domains": False, "answerable": False, "run_id": None, "error": None, "awaiting_answer": False, "result_pending": False, "quiet": None, "screen": "", "domain_request": None},
     ]
 
 
@@ -209,15 +255,26 @@ def test_fetch_returns_zip_and_consumes_done(share):
     a, shared = share
     (shared / "RESULT.md").write_text("found it")
     (shared / ".done").touch()
-    code, out, _ = run(a, "fetch", "ms-abc23")
+    code, out, _ = run(a, "fetch", "dn-abc23")
     assert code == 0
     assert zipfile.ZipFile(io.BytesIO(out)).namelist() == ["RESULT.md", "MANIFEST.txt"]
     assert not (shared / ".done").exists()
 
 
+def test_repeated_done_waits_for_the_interval(env, share):
+    a, shared = share
+    (shared / "RESULT.md").write_text("one")
+    (shared / ".done").touch()
+    assert run(a, "fetch", "dn-abc23")[0] == 0
+    (shared / ".done").touch()
+    assert status(a)[0]["ready"] is False
+    os.utime(env / "tasks" / "dn-abc23" / "consumed", (0, 0))
+    assert status(a)[0]["ready"] is True
+
+
 def test_fetch_without_done_fails(share):
     a, _ = share
-    code, out, err = run(a, "fetch", "ms-abc23")
+    code, out, err = run(a, "fetch", "dn-abc23")
     assert code == 1 and out == b"" and "no output ready" in err
 
 
@@ -225,7 +282,7 @@ def test_fetch_over_limit_is_rejected_and_consumed(share):
     a, shared = share
     (shared / "big").write_bytes(b"x" * 2000)
     (shared / ".done").touch()
-    code, out, err = run(a, "--max-output", "1000", "fetch", "ms-abc23")
+    code, out, err = run(a, "--max-output", "1000", "fetch", "dn-abc23")
     assert code == 3 and out == b"" and "more than 1000 bytes" in err
     assert not (shared / ".done").exists()
 
@@ -235,7 +292,7 @@ def test_done_symlink_removes_only_the_link(env, share):
     target = env / "precious"
     target.write_text("keep")
     (shared / ".done").symlink_to(target)
-    code, _, _ = run(a, "fetch", "ms-abc23")
+    code, _, _ = run(a, "fetch", "dn-abc23")
     assert code == 0
     assert not (shared / ".done").is_symlink() and target.read_text() == "keep"
 
@@ -250,8 +307,8 @@ def test_fetch_refuses_shared_path_outside_share_root(env, share, path):
     outside.mkdir(exist_ok=True)
     (outside / ".done").touch()
     resolved = path.format(outside=outside, root=a.share_root)
-    (env / "tasks" / "ms-abc23" / "shared-path").write_text(resolved + "\n")
-    code, out, err = run(a, "fetch", "ms-abc23")
+    (env / "tasks" / "dn-abc23" / "shared-path").write_text(resolved + "\n")
+    code, out, err = run(a, "fetch", "dn-abc23")
     assert code == 1 and out == b""
 
 
@@ -263,13 +320,13 @@ def test_fetch_refuses_symlinked_share(env, share):
     (outside / ".done").touch()
     link = a.share_root / "20261025-120000-Link01"
     link.symlink_to(outside)
-    (env / "tasks" / "ms-abc23" / "shared-path").write_text(f"{link}\n")
-    code, out, _ = run(a, "fetch", "ms-abc23")
+    (env / "tasks" / "dn-abc23" / "shared-path").write_text(f"{link}\n")
+    code, out, _ = run(a, "fetch", "dn-abc23")
     assert code == 1 and out == b""
     assert (outside / ".done").exists()
 
 
-@pytest.mark.parametrize("command", ["fetch ../x", "fetch", "rm -rf /", "status extra", "fetch ms-abc23 more"])
+@pytest.mark.parametrize("command", ["fetch ../x", "fetch", "rm -rf /", "status extra", "fetch dn-abc23 more"])
 def test_unknown_commands_are_refused(share, monkeypatch, command):
     a, _ = share
     monkeypatch.setenv("SSH_ORIGINAL_COMMAND", command)
@@ -281,14 +338,14 @@ def test_ssh_original_command_overrides_positional(share, monkeypatch):
     a, _ = share
     monkeypatch.setenv("SSH_ORIGINAL_COMMAND", "status")
     code, out, _ = run(a)
-    assert code == 0 and json.loads(out)[0]["id"] == "ms-abc23"
+    assert code == 0 and json.loads(out)[0]["id"] == "dn-abc23"
 
 
 def test_done_directory_is_not_a_signal(share):
     a, shared = share
     (shared / ".done").mkdir()
     assert status(a)[0]["ready"] is False
-    code, out, err = run(a, "fetch", "ms-abc23")
+    code, out, err = run(a, "fetch", "dn-abc23")
     assert code == 1 and "no output ready" in err
 
 
@@ -300,27 +357,28 @@ def test_undeletable_done_is_consumed_once(share):
     shared.chmod(0o555)
     try:
         assert status(a)[0]["ready"] is True
-        assert run(a, "fetch", "ms-abc23")[0] == 0
+        assert run(a, "fetch", "dn-abc23")[0] == 0
         assert (shared / ".done").exists()
         assert status(a)[0]["ready"] is False
-        assert run(a, "fetch", "ms-abc23")[0] == 1
+        assert run(a, "fetch", "dn-abc23")[0] == 1
     finally:
         shared.chmod(0o755)
 
     (shared / ".done").unlink()
     (shared / ".done").touch()
+    os.utime(a.tasks_dir / "dn-abc23" / "consumed", (0, 0))
     assert status(a)[0]["ready"] is True
 
 
 def test_slow_fetch_is_rejected_and_consumed(share, monkeypatch):
     import time
 
-    from meeseeks import launch as launch_module
+    from darner import launch as launch_module
 
     a, shared = share
     (shared / ".done").touch()
     monkeypatch.setattr(launch_module.archive, "build", lambda *_: time.sleep(5))
-    code, out, err = run(a, "--fetch-timeout", "1", "fetch", "ms-abc23")
+    code, out, err = run(a, "--fetch-timeout", "1", "fetch", "dn-abc23")
     assert code == 3 and out == b"" and "took longer than 1s" in err
     assert status(a)[0]["ready"] is False
 
@@ -330,11 +388,11 @@ def test_help_request_is_read_safely_and_consumed_once(env, share):
     (shared / "HELP.md").write_text("Which branch?")
     (shared / ".help").touch()
     assert status(a)[0]["help"] is True
-    code, out, _ = run(a, "help", "ms-abc23")
+    code, out, _ = run(a, "help", "dn-abc23")
     assert code == 0 and out == b"Which branch?"
-    assert (env / "tasks" / "ms-abc23" / "help-pending").exists()
+    assert (env / "tasks" / "dn-abc23" / "help-pending").exists()
     assert status(a)[0]["help"] is False
-    assert run(a, "help", "ms-abc23")[0] == 1
+    assert run(a, "help", "dn-abc23")[0] == 1
 
 
 @pytest.mark.parametrize("kind", ["symlink", "fifo", "missing", "dir"])
@@ -349,7 +407,7 @@ def test_unsafe_help_text_is_empty(env, share, kind):
     elif kind == "dir":
         (shared / "HELP.md").mkdir()
     (shared / ".help").touch()
-    code, out, _ = run(a, "help", "ms-abc23")
+    code, out, _ = run(a, "help", "dn-abc23")
     assert code == 0 and out == b""
 
 
@@ -357,7 +415,7 @@ def test_help_text_is_capped(share):
     a, shared = share
     (shared / "HELP.md").write_bytes(b"x" * 100000)
     (shared / ".help").touch()
-    code, out, _ = run(a, "help", "ms-abc23")
+    code, out, _ = run(a, "help", "dn-abc23")
     assert code == 0 and len(out) == 16 * 1024
 
 
@@ -365,14 +423,14 @@ def answer_run(a, data, *extra):
     import unittest.mock
 
     with unittest.mock.patch("sys.stdin", io.StringIO(json.dumps(data))):
-        return run(a, *extra, "answer", "ms-abc23")
+        return run(a, *extra, "answer", "dn-abc23")
 
 
 @pytest.fixture
 def asked(env, share):
     a, shared = share
     (shared / ".help").touch()
-    run(a, "help", "ms-abc23")
+    run(a, "help", "dn-abc23")
     (env / "tmux.log").write_text("")
     return a
 
@@ -382,15 +440,34 @@ def test_answer_is_pasted_into_the_session(env, asked):
     assert code == 0, err
     assert tmux_calls(env) == [
         ["capture-pane", "-p", "-J", "-t", "@7"],
-        ["load-buffer", "-b", f"meeseeks-ms-abc23-{os.getpid()}", "-"],
-        ["paste-buffer", "-p", "-d", "-b", f"meeseeks-ms-abc23-{os.getpid()}", "-t", "@7"],
+        ["load-buffer", "-b", f"darner-dn-abc23-{os.getpid()}", "-"],
+        ["paste-buffer", "-p", "-d", "-b", f"darner-dn-abc23-{os.getpid()}", "-t", "@7"],
         ["capture-pane", "-p", "-J", "-t", "@7"],
         ["send-keys", "-t", "@7", "Enter"],
         ["capture-pane", "-p", "-J", "-t", "@7"],
     ]
-    assert (env / "tmux.log.buffer").read_text() == "Reply from @alice:example.org:\n\nUse main.\nThanks"
-    assert not (env / "tasks" / "ms-abc23" / "help-pending").exists()
+    assert (env / "tmux.log.buffer").read_text() == "Use main.\nThanks"
+    assert not (env / "tasks" / "dn-abc23" / "help-pending").exists()
     assert answer_run(asked, {"requester": "@alice:example.org", "text": "again"}, "--answers")[0] == 1
+
+
+def test_answer_to_a_cline_question_is_typed(env, asked):
+    (env / "tmux.log.screen").write_text(" Cline is asking a question\n Which branch?\n  > main\n    Type a response...\n")
+    text = "2 of them:\n\n" + "x" * 1500
+    code, _, err = answer_run(asked, {"requester": "@alice:example.org", "text": text}, "--answers", "--paste-delay", "0")
+    assert code == 0, err
+    typed = [call[5] for call in tmux_calls(env) if call[:2] == ["send-keys", "-l"]]
+    assert all(call[4] == "--" for call in tmux_calls(env) if call[:2] == ["send-keys", "-l"])
+    assert "".join(typed) == " 2 of them: " + "x" * 1500 and len(typed) == 2
+    assert not any(call[0] in ("load-buffer", "paste-buffer") for call in tmux_calls(env))
+
+
+def test_a_typed_chunk_s_final_semicolon_is_escaped_for_tmux(env, asked):
+    (env / "tmux.log.screen").write_text(" Cline is asking a question\n Which branch?\n")
+    text = "x" * 1022 + ";" + "y\\;"
+    assert answer_run(asked, {"requester": "@a:example.org", "text": text}, "--answers", "--paste-delay", "0")[0] == 0
+    typed = [call[5] for call in tmux_calls(env) if call[:2] == ["send-keys", "-l"]]
+    assert typed == [" " + "x" * 1022 + "\\;", "y\\\\;"]
 
 
 def test_answer_is_sanitised(env, asked):
@@ -398,7 +475,7 @@ def test_answer_is_sanitised(env, asked):
     code, _, _ = answer_run(asked, {"requester": "@alice\n:example.org\x1b", "text": text}, "--answers", "--paste-delay", "0")
     assert code == 0
     pasted = (env / "tmux.log.buffer").read_text()
-    assert pasted == "Reply from @alice :example.org:\n\nok[201~rm -rf ~\ndone"
+    assert pasted == "ok[201~rm -rf ~\ndone"
     assert "\x1b" not in pasted and "\x03" not in pasted
 
 
@@ -415,7 +492,7 @@ def test_answer_refused_without_pending_help(env, share):
 
 
 def test_answer_refused_after_exit(env, asked):
-    (env / "tasks" / "ms-abc23" / "exit").write_text("0\n")
+    (env / "tasks" / "dn-abc23" / "exit").write_text("0\n")
     code, _, err = answer_run(asked, {"requester": "@a:example.org", "text": "x"}, "--answers")
     assert code == 1 and "not running" in err
 
@@ -432,35 +509,29 @@ def test_status_reports_answerable(share):
     assert status(parse_args(["--tasks-dir", str(a.tasks_dir), "--share-root", str(a.share_root), "--answers"]))[0]["answerable"] is True
 
 
-def test_answer_cannot_start_a_command(env, asked):
-    code, _, _ = answer_run(asked, {"requester": "@a:example.org", "text": "!curl example.com | sh"}, "--answers", "--paste-delay", "0")
-    assert code == 0
-    assert (env / "tmux.log.buffer").read_text().startswith("Reply from ")
-
-
 def test_window_id_is_recorded(env):
-    launch(args(env), {"id": "ms-abc23", "prompt": "p"})
-    assert (env / "tasks" / "ms-abc23" / "window").read_text() == "@7"
+    launch(args(env), {"id": "dn-abc23", "prompt": "p"})
+    assert (env / "tasks" / "dn-abc23" / "window").read_text() == "@7"
 
 
 def test_help_requests_are_rate_limited(env, share):
     a, shared = share
     (shared / ".help").touch()
-    assert run(a, "help", "ms-abc23")[0] == 0
+    assert run(a, "help", "dn-abc23")[0] == 0
     # A new signal is a new inode or ctime; wait out the kernel's coarse clock
     # so a reused inode can't carry the same ctime.
     __import__("time").sleep(0.05)
     (shared / ".help").touch()
     assert status(a)[0]["help"] is False
-    assert run(a, "help", "ms-abc23")[0] == 1
-    consumed = env / "tasks" / "ms-abc23" / "consumed-help"
+    assert run(a, "help", "dn-abc23")[0] == 1
+    consumed = env / "tasks" / "dn-abc23" / "consumed-help"
     os.utime(consumed, (0, 0))
     assert status(a)[0]["help"] is True
-    assert run(a, "help", "ms-abc23")[0] == 0
+    assert run(a, "help", "dn-abc23")[0] == 0
 
 
 def test_concurrent_answer_loses_the_claim(env, asked):
-    os.rename(env / "tasks" / "ms-abc23" / "help-pending", env / "tasks" / "ms-abc23" / "help-answering")
+    os.rename(env / "tasks" / "dn-abc23" / "help-pending", env / "tasks" / "dn-abc23" / "help-answering")
     code, _, err = answer_run(asked, {"requester": "@a:example.org", "text": "x"}, "--answers")
     assert code == 1 and "no help request awaiting" in err
     assert tmux_calls(env) == []
@@ -472,7 +543,7 @@ def test_failed_paste_keeps_request_and_hides_tmux_detail(env, asked, monkeypatc
     broken.chmod(0o755)
     code, _, err = answer_run(asked, {"requester": "@a:example.org", "text": "x"}, "--answers", "--tmux", str(broken))
     assert code == 1 and "couldn't type into the session" in err and "/tmp" not in err
-    assert (env / "tasks" / "ms-abc23" / "help-pending").exists()
+    assert (env / "tasks" / "dn-abc23" / "help-pending").exists()
 
 
 def test_long_answer_is_refused_not_truncated(env, asked):
@@ -482,19 +553,19 @@ def test_long_answer_is_refused_not_truncated(env, asked):
 
 def test_missing_dejima_fails_the_launch(env, monkeypatch):
     monkeypatch.setenv("PATH", "/usr/bin:/bin")
-    with pytest.raises(RuntimeError, match="dejima not found on PATH .*pass --dejima"):
-        launch(args(env), {"id": "ms-abc23", "prompt": "p"})
-    assert not (env / "tasks" / "ms-abc23").exists()
+    with pytest.raises(RuntimeError, match="^dejima not found on PATH; pass --dejima"):
+        launch(args(env), {"id": "dn-abc23", "prompt": "p"})
+    assert not (env / "tasks" / "dn-abc23").exists()
     assert not (env / "tmux.log").exists()
 
 
 def test_exec_records_a_dejima_that_cannot_start(env):
-    launch(args(env), {"id": "ms-abc23", "prompt": "p"})
-    task = env / "tasks" / "ms-abc23"
+    launch(args(env), {"id": "dn-abc23", "prompt": "p"})
+    task = env / "tasks" / "dn-abc23"
     argv = json.loads((task / "argv.json").read_text())
     (task / "argv.json").write_text(json.dumps([str(env / "gone"), *argv[1:]]))
     result = subprocess.run(
-        [sys.executable, "-m", "meeseeks.launch", "--exec", str(task)],
+        [sys.executable, "-m", "darner.launch", "--exec", str(task)],
         cwd=Path(__file__).parent.parent, input="\n", capture_output=True, text=True,
     )
     assert result.returncode == 127
@@ -505,19 +576,19 @@ def test_exec_records_a_dejima_that_cannot_start(env):
 def register_session(env, pane="%7", run_id="0123456789abcdef"):
     sessions = env / "run" / "dejima" / "sessions"
     sessions.mkdir(parents=True, exist_ok=True)
-    (sessions / run_id).write_text(f"workspace=isolated\npane={pane}\nlabel=meeseeks:1\n")
+    (sessions / run_id).write_text(f"workspace=isolated\npane={pane}\nlabel=darner:1\n")
 
 
 def test_pane_is_recorded(env):
-    launch(args(env), {"id": "ms-abc23", "prompt": "p"})
-    assert (env / "tasks" / "ms-abc23" / "pane").read_text() == "%7"
+    launch(args(env), {"id": "dn-abc23", "prompt": "p"})
+    assert (env / "tasks" / "dn-abc23" / "pane").read_text() == "%7"
 
 
 def test_launch_waits_for_the_session_run_id(env):
     register_session(env, pane="%9", run_id="ffffffffffffffff")
     register_session(env)
     (env / "run" / "dejima" / "sessions" / "not-a-run-id").write_text("pane=%3\n")
-    result = launch(args(env), {"id": "ms-abc23", "prompt": "p", "session_wait": 5})
+    result = launch(args(env), {"id": "dn-abc23", "prompt": "p", "session_wait": 5})
     assert result["run_id"] == "0123456789abcdef"
 
 
@@ -525,13 +596,13 @@ def test_launch_gives_up_waiting(env):
     import time
 
     start = time.monotonic()
-    result = launch(args(env), {"id": "ms-abc23", "prompt": "p", "session_wait": 1})
+    result = launch(args(env), {"id": "dn-abc23", "prompt": "p", "session_wait": 1})
     assert "run_id" not in result and time.monotonic() - start < 3
 
 
 def test_launch_without_session_wait_does_not_look(env):
     register_session(env)
-    assert "run_id" not in launch(args(env), {"id": "ms-abc23", "prompt": "p"})
+    assert "run_id" not in launch(args(env), {"id": "dn-abc23", "prompt": "p"})
 
 
 def test_status_reports_run_id_of_running_task(env, share):
@@ -571,10 +642,10 @@ def test_unsignalled_result_is_collected_once(share):
     a, shared = share
     (shared / "RESULT.md").write_text("forgot .done")
     quiet(shared)
-    code, out, _ = run(a, "fetch", "ms-abc23")
+    code, out, _ = run(a, "fetch", "dn-abc23")
     assert code == 0 and "RESULT.md" in zipfile.ZipFile(io.BytesIO(out)).namelist()
     assert status(a)[0]["unsignalled"] is False
-    assert run(a, "fetch", "ms-abc23")[0] == 1
+    assert run(a, "fetch", "dn-abc23")[0] == 1
 
     (shared / "RESULT.md").write_text("did more, forgot again")
     quiet(shared)
@@ -584,7 +655,7 @@ def test_unsignalled_result_is_collected_once(share):
 def test_session_end_collects_without_waiting(env, share):
     a, shared = share
     (shared / "RESULT.md").write_text("forgot .done")
-    (env / "tasks" / "ms-abc23" / "exit").write_text("0\n")
+    (env / "tasks" / "dn-abc23" / "exit").write_text("0\n")
     assert status(parse_args(["--tasks-dir", str(a.tasks_dir), "--share-root", str(a.share_root), "--quiet-period", "0"]))[0]["unsignalled"] is True
 
 
@@ -601,7 +672,7 @@ def test_signalled_delivery_records_its_result(share):
     (shared / "RESULT.md").write_text("properly done")
     (shared / ".done").touch()
     quiet(shared)
-    assert run(a, "fetch", "ms-abc23")[0] == 0
+    assert run(a, "fetch", "dn-abc23")[0] == 0
     age(shared, 700)
     entry = status(a)[0]
     assert entry["ready"] is False and entry["unsignalled"] is False
@@ -619,25 +690,25 @@ def test_concurrent_sessions_each_get_their_own_answer(env, share):
     a, first = share
     second = a.share_root / "20261025-120500-XyZ789"
     second.mkdir()
-    launch(a, {"id": "ms-defgh", "prompt": "p"})
-    (env / "tasks" / "ms-defgh" / "shared-path").write_text(f"{second}\n")
-    for shared, task in ((first, "ms-abc23"), (second, "ms-defgh")):
+    launch(a, {"id": "dn-defgh", "prompt": "p"})
+    (env / "tasks" / "dn-defgh" / "shared-path").write_text(f"{second}\n")
+    for shared, task in ((first, "dn-abc23"), (second, "dn-defgh")):
         (shared / ".help").touch()
         assert run(a, "help", task)[0] == 0
-    windows = {t: (env / "tasks" / t / "window").read_text() for t in ("ms-abc23", "ms-defgh")}
-    assert windows["ms-abc23"] != windows["ms-defgh"]
+    windows = {t: (env / "tasks" / t / "window").read_text() for t in ("dn-abc23", "dn-defgh")}
+    assert windows["dn-abc23"] != windows["dn-defgh"]
 
     import unittest.mock
 
-    for task, text in (("ms-defgh", "answer for the second"), ("ms-abc23", "answer for the first")):
+    for task, text in (("dn-defgh", "answer for the second"), ("dn-abc23", "answer for the first")):
         (env / "tmux.log").write_text("")
         with unittest.mock.patch("sys.stdin", io.StringIO(json.dumps({"requester": "@a:example.org", "text": text}))):
             assert run(a, "--answers", "--paste-delay", "0", "answer", task)[0] == 0
         paste = next(c for c in tmux_calls(env) if c[0] == "paste-buffer")
         assert paste[paste.index("-t") + 1] == windows[task]
         assert (env / "tmux.log.buffer").read_text().endswith(text)
-    assert not (env / "tasks" / "ms-abc23" / "help-pending").exists()
-    assert not (env / "tasks" / "ms-defgh" / "help-pending").exists()
+    assert not (env / "tasks" / "dn-abc23" / "help-pending").exists()
+    assert not (env / "tasks" / "dn-defgh" / "help-pending").exists()
 
 
 def test_status_says_why_a_share_cant_be_read(env, share):
@@ -645,7 +716,7 @@ def test_status_says_why_a_share_cant_be_read(env, share):
     elsewhere = env / "shared-elsewhere" / "isolated" / "20261025-120000-AbC123"
     elsewhere.mkdir(parents=True)
     (elsewhere / ".done").touch()
-    (env / "tasks" / "ms-abc23" / "shared-path").write_text(f"{elsewhere}\n")
+    (env / "tasks" / "dn-abc23" / "shared-path").write_text(f"{elsewhere}\n")
     entry = status(a)[0]
     assert entry["ready"] is False
     assert "is not under" in entry["error"] and str(a.share_root) in entry["error"]
@@ -653,7 +724,7 @@ def test_status_says_why_a_share_cant_be_read(env, share):
 
 def test_starting_task_has_no_error(env, share):
     a, _ = share
-    (env / "tasks" / "ms-abc23" / "shared-path").unlink()
+    (env / "tasks" / "dn-abc23" / "shared-path").unlink()
     assert status(a)[0]["error"] is None
 
 
@@ -685,9 +756,9 @@ def test_stop_stops_the_container_then_closes_the_window(env, share, docker, mon
     a, _ = share
     register_session(env)
     monkeypatch.setenv("FAKE_DOCKER_PS", "c0ffee")
-    monkeypatch.setenv("FAKE_DOCKER_EXIT", str(env / "tasks" / "ms-abc23" / "exit"))
+    monkeypatch.setenv("FAKE_DOCKER_EXIT", str(env / "tasks" / "dn-abc23" / "exit"))
     (env / "tmux.log").write_text("")
-    code, _, err = run(a, "--docker", str(docker), "stop", "ms-abc23")
+    code, _, err = run(a, "--docker", str(docker), "stop", "dn-abc23")
     assert code == 0, err
     assert docker_calls(env) == [
         ["ps", "-q", "--filter", "volume=dejima_isolated-work-0123456789abcdef"],
@@ -698,13 +769,54 @@ def test_stop_stops_the_container_then_closes_the_window(env, share, docker, mon
 
 def test_stop_before_the_container_exists_ends_dejima(env, share, docker):
     a, _ = share
+    (env / "tasks" / "dn-abc23" / "shared-path").unlink()
     starting = subprocess.Popen(["sleep", "30"])
-    (env / "tasks" / "ms-abc23" / "pid").write_text(str(starting.pid))
+    (env / "tasks" / "dn-abc23" / "pid").write_text(str(starting.pid))
     (env / "tmux.log").write_text("")
-    code, _, err = run(a, "--docker", str(docker), "--stop-timeout", "1", "stop", "ms-abc23")
+    code, _, err = run(a, "--docker", str(docker), "--stop-timeout", "1", "stop", "dn-abc23")
     assert code == 0, err
     assert starting.wait(timeout=5) == -15
     assert tmux_calls(env) == [["kill-window", "-t", "@7"]]
+
+
+def test_stop_without_the_container_of_a_running_session_leaves_dejima(env, share, docker):
+    a, _ = share
+    running = subprocess.Popen(["sleep", "30"])
+    try:
+        (env / "tasks" / "dn-abc23" / "pid").write_text(str(running.pid))
+        code, _, err = run(a, "--docker", str(docker), "--stop-timeout", "1", "stop", "dn-abc23")
+        assert code == 1 and "couldn't find dn-abc23's container" in err
+        assert running.poll() is None
+    finally:
+        running.kill()
+        running.wait()
+
+
+def test_stop_of_a_session_whose_dejima_is_gone_closes_its_window(env, share, docker):
+    a, _ = share
+    (env / "tasks" / "dn-abc23" / "pid").write_text("999999999 1")
+    (env / "tmux.log").write_text("")
+    code, _, err = run(a, "--docker", str(docker), "--stop-timeout", "0", "stop", "dn-abc23")
+    assert code == 0, err
+    assert tmux_calls(env) == [["kill-window", "-t", "@7"]]
+
+
+def test_a_reused_pid_is_not_dejima_s(env, share):
+    from darner import launch as launch_module
+
+    a, _ = share
+    other = subprocess.Popen(["sleep", "30"])
+    try:
+        (env / "tasks" / "dn-abc23" / "pid").write_text(f"{other.pid} 1")
+        assert launch_module._dejima_pid(env / "tasks" / "dn-abc23") is None
+        (env / "tasks" / "dn-abc23" / "pid").write_text(f"{other.pid} {launch_module._start_time(other.pid)}")
+        assert launch_module._dejima_pid(env / "tasks" / "dn-abc23") == other.pid
+        # Recorded without a start time when it couldn't be read, so any live pid matches.
+        (env / "tasks" / "dn-abc23" / "pid").write_text(str(other.pid))
+        assert launch_module._dejima_pid(env / "tasks" / "dn-abc23") == other.pid
+    finally:
+        other.kill()
+        other.wait()
 
 
 def test_run_id_comes_from_compose_environment_without_remote_access(env, share, docker, monkeypatch):
@@ -714,11 +826,11 @@ def test_run_id_comes_from_compose_environment_without_remote_access(env, share,
         start_new_session=True,
     )
     try:
-        (env / "tasks" / "ms-abc23" / "pid").write_text(str(dejima.pid))
+        (env / "tasks" / "dn-abc23" / "pid").write_text(str(dejima.pid))
         monkeypatch.setenv("FAKE_DOCKER_PS", "c0ffee")
-        monkeypatch.setenv("FAKE_DOCKER_EXIT", str(env / "tasks" / "ms-abc23" / "exit"))
+        monkeypatch.setenv("FAKE_DOCKER_EXIT", str(env / "tasks" / "dn-abc23" / "exit"))
         __import__("time").sleep(0.2)
-        assert run(a, "--docker", str(docker), "stop", "ms-abc23")[0] == 0
+        assert run(a, "--docker", str(docker), "stop", "dn-abc23")[0] == 0
         assert docker_calls(env)[0][-1] == "volume=dejima_isolated-work-fedcba9876543210"
     finally:
         os.killpg(dejima.pid, __import__("signal").SIGKILL)
@@ -727,18 +839,18 @@ def test_run_id_comes_from_compose_environment_without_remote_access(env, share,
 
 def test_stop_refuses_a_task_that_is_not_running(env, share, docker):
     a, _ = share
-    (env / "tasks" / "ms-abc23" / "exit").write_text("0\n")
-    code, _, err = run(a, "--docker", str(docker), "stop", "ms-abc23")
+    (env / "tasks" / "dn-abc23" / "exit").write_text("0\n")
+    code, _, err = run(a, "--docker", str(docker), "stop", "dn-abc23")
     assert code == 1 and "not running" in err
     assert docker_calls(env) == []
 
 
 def test_exec_records_dejima_pid(env):
-    launch(args(env), {"id": "ms-abc23", "prompt": "p"})
-    task = env / "tasks" / "ms-abc23"
-    subprocess.run([sys.executable, "-m", "meeseeks.launch", "--exec", str(task)], cwd=Path(__file__).parent.parent, check=True,
+    launch(args(env), {"id": "dn-abc23", "prompt": "p"})
+    task = env / "tasks" / "dn-abc23"
+    subprocess.run([sys.executable, "-m", "darner.launch", "--exec", str(task)], cwd=Path(__file__).parent.parent, check=True,
                    env={**os.environ, "FAKE_DEJIMA_LOG": str(env / "dejima.log")})
-    assert int((task / "pid").read_text()) > 0
+    assert int((task / "pid").read_text().split()[0]) > 0
 
 
 FAKE_DEJIMA_ALLOW = """#!/bin/sh
@@ -766,7 +878,7 @@ def allow_env(env, share, docker, monkeypatch):
 def request_domains(a, shared, text):
     (shared / "DOMAINS").write_text(text)
     (shared / ".domains").touch()
-    code, out, err = run(a, "domains", "ms-abc23")
+    code, out, err = run(a, "domains", "dn-abc23")
     assert code == 0, err
     return json.loads(out)
 
@@ -775,7 +887,17 @@ def decide(a, verb, number, data, *extra):
     import unittest.mock
 
     with unittest.mock.patch("sys.stdin", io.StringIO(json.dumps(data))):
-        return run(a, "--docker", str(a.tasks_dir.parent / "docker"), *extra, verb, "ms-abc23", str(number))
+        return run(a, "--docker", str(a.tasks_dir.parent / "docker"), *extra, verb, "dn-abc23", str(number))
+
+
+def entries(*lines):
+    """Domain request entries as the API passes them back, from DOMAINS-style lines."""
+    out = []
+    for line in lines:
+        internal = line.startswith("internal ")
+        name, _, port = line.removeprefix("internal ").partition(":")
+        out.append({"domain": name, "internal": internal, "port": int(port) if port else None})
+    return out
 
 
 def allow_calls(env):
@@ -802,7 +924,7 @@ def test_domain_request_is_validated_and_saved(env, allow_env):
         "domains": [{"domain": "pypi.org", "internal": False, "port": None}, {"domain": "mirror.internal.example", "internal": True, "port": None}],
         "rejected": 3,
     }
-    assert json.loads((env / "tasks" / "ms-abc23" / "domains-pending").read_text()) == request
+    assert json.loads((env / "tasks" / "dn-abc23" / "domains-pending").read_text()) == request
     assert status(a)[0]["domains"] is False
 
 
@@ -817,7 +939,7 @@ def test_symlinked_domain_request_is_empty(env, allow_env):
     (env / "secret").write_text("secret.example.com\n")
     (shared / "DOMAINS").symlink_to(env / "secret")
     (shared / ".domains").touch()
-    assert json.loads(run(a, "domains", "ms-abc23")[1])["domains"] == []
+    assert json.loads(run(a, "domains", "dn-abc23")[1])["domains"] == []
 
 
 def test_allow_grants_the_saved_request_within_what_the_api_passes(env, allow_env):
@@ -825,7 +947,7 @@ def test_allow_grants_the_saved_request_within_what_the_api_passes(env, allow_en
     request_domains(a, shared, "pypi.org\ninternal mirror.internal.example\nother.example.com\n")
     # The agent rewriting DOMAINS after the request has no effect on what's granted.
     (shared / "DOMAINS").write_text("evil.example.com\n")
-    data = {"requester": "@alice:example.org", "domains": ["pypi.org", "mirror.internal.example", "evil.example.com"]}
+    data = {"requester": "@alice:example.org", "domains": entries("pypi.org", "internal mirror.internal.example", "evil.example.com")}
     code, out, err = decide(a, "allow", 1, data)
     assert code == 0, err
     assert json.loads(out) == {"granted": ["pypi.org", "mirror.internal.example"], "failed": [], "unverified": [], "told": False}
@@ -834,8 +956,10 @@ def test_allow_grants_the_saved_request_within_what_the_api_passes(env, allow_en
         ["--container", "c0ffee", "pypi.org"],
         ["--container", "c0ffee", "--internal", "mirror.internal.example"],
     ]
-    assert not (env / "tasks" / "ms-abc23" / "domains-pending").exists()
-    assert json.loads((env / "tasks" / "ms-abc23" / "domains-granted").read_text()) == ["pypi.org", "mirror.internal.example"]
+    assert not (env / "tasks" / "dn-abc23" / "domains-pending").exists()
+    assert json.loads((env / "tasks" / "dn-abc23" / "domains-granted").read_text()) == entries(
+        "pypi.org", "internal mirror.internal.example"
+    )
     assert decide(a, "allow", 1, data)[0] == 1
 
 
@@ -844,7 +968,7 @@ def test_allow_reports_failures_and_tells_the_agent(env, allow_env):
     request_domains(a, shared, "pypi.org\nblocked.example\n")
     (env / "tmux.log").write_text("")
     code, out, _ = decide(
-        a, "allow", 1, {"requester": "@alice:example.org", "domains": ["pypi.org", "blocked.example"]},
+        a, "allow", 1, {"requester": "@alice:example.org", "domains": entries("pypi.org", "blocked.example")},
         "--answers", "--paste-delay", "0",
     )
     result = json.loads(out)
@@ -864,11 +988,11 @@ def test_superseded_request_is_refused(allow_env):
     time.sleep(0.05)
     (shared / ".domains").touch()
     for name in ("consumed-domains",):
-        os.utime(a.tasks_dir / "ms-abc23" / name, (0, 0))
+        os.utime(a.tasks_dir / "dn-abc23" / name, (0, 0))
     assert request_domains(a, shared, "files.pythonhosted.org\n")["request"] == 2
-    code, _, err = decide(a, "allow", 1, {"requester": "@a:example.org", "domains": ["pypi.org"]})
+    code, _, err = decide(a, "allow", 1, {"requester": "@a:example.org", "domains": entries("pypi.org")})
     assert code == 1 and "replaced by a newer one" in err
-    assert decide(a, "allow", 2, {"requester": "@a:example.org", "domains": ["files.pythonhosted.org"]})[0] == 0
+    assert decide(a, "allow", 2, {"requester": "@a:example.org", "domains": entries("files.pythonhosted.org")})[0] == 0
 
 
 def test_deny_discards_the_request(env, allow_env):
@@ -876,7 +1000,7 @@ def test_deny_discards_the_request(env, allow_env):
     request_domains(a, shared, "pypi.org\n")
     code, out, _ = decide(a, "deny", 1, {"requester": "@alice:example.org"})
     assert code == 0 and json.loads(out) == {"told": False}
-    assert decide(a, "allow", 1, {"requester": "@a:example.org", "domains": ["pypi.org"]})[0] == 1
+    assert decide(a, "allow", 1, {"requester": "@a:example.org", "domains": entries("pypi.org")})[0] == 1
     assert allow_calls(env) == []
 
 
@@ -884,12 +1008,12 @@ def test_allow_needs_the_container(env, allow_env, monkeypatch):
     a, shared = allow_env
     request_domains(a, shared, "pypi.org\n")
     monkeypatch.delenv("FAKE_DOCKER_PS")
-    code, _, err = decide(a, "allow", 1, {"requester": "@a:example.org", "domains": ["pypi.org"]})
-    assert code == 1 and "couldn't find ms-abc23's container" in err
-    assert (a.tasks_dir / "ms-abc23" / "domains-pending").exists()
+    code, _, err = decide(a, "allow", 1, {"requester": "@a:example.org", "domains": entries("pypi.org")})
+    assert code == 1 and "couldn't find dn-abc23's container" in err
+    assert (a.tasks_dir / "dn-abc23" / "domains-pending").exists()
 
 
-@pytest.mark.parametrize("command", ["allow ms-abc23", "allow ms-abc23 x", "deny ms-abc23 1 2", "allow ms-abc23 ١"])
+@pytest.mark.parametrize("command", ["allow dn-abc23", "allow dn-abc23 x", "deny dn-abc23 1 2", "allow dn-abc23 ١"])
 def test_bad_decision_commands_are_refused(share, monkeypatch, command):
     a, _ = share
     monkeypatch.setenv("SSH_ORIGINAL_COMMAND", command)
@@ -898,27 +1022,72 @@ def test_bad_decision_commands_are_refused(share, monkeypatch, command):
 
 def test_domain_limit_counts_launch_domains_and_earlier_grants(env, allow_env):
     a, shared = allow_env
-    (env / "tasks" / "ms-abc23" / "domains").write_text("one.example.com\n")
+    (env / "tasks" / "dn-abc23" / "domains").write_text("one.example.com\n")
     request_domains(a, shared, "two.example.com\n")
-    data = {"requester": "@a:example.org", "domains": ["two.example.com"], "max_domains": 3}
+    data = {"requester": "@a:example.org", "domains": entries("two.example.com"), "max_domains": 3}
     assert json.loads(decide(a, "allow", 1, data)[1])["granted"] == ["two.example.com"]
 
     import time
 
     time.sleep(0.05)
-    os.utime(a.tasks_dir / "ms-abc23" / "consumed-domains", (0, 0))
+    os.utime(a.tasks_dir / "dn-abc23" / "consumed-domains", (0, 0))
     request_domains(a, shared, "three.example.com\nfour.example.com\n")
-    data = {"requester": "@a:example.org", "domains": ["three.example.com", "four.example.com"], "max_domains": 3}
+    data = {"requester": "@a:example.org", "domains": entries("three.example.com", "four.example.com"), "max_domains": 3}
     result = json.loads(decide(a, "allow", 2, data)[1])
     assert result["granted"] == ["three.example.com"]
     assert result["failed"] == [{"domain": "four.example.com", "error": "over this session's limit of 3 domains"}]
+
+
+def test_allow_matches_whole_entries(env, allow_env):
+    a, shared = allow_env
+    request_domains(a, shared, "corp.example.com\ninternal corp.example.com\nrecipes.example.com:8443\n")
+    data = {"requester": "@a:example.org", "domains": entries("corp.example.com", "recipes.example.com")}
+    assert json.loads(decide(a, "allow", 1, data)[1])["granted"] == ["corp.example.com"]
+    assert allow_calls(env) == [["--container", "c0ffee", "corp.example.com"]]
+
+
+@pytest.mark.parametrize("entry", [
+    {"domain": ["pypi.org"], "internal": False, "port": None}, {"domain": "pypi.org", "internal": 0, "port": None},
+    {"domain": "pypi.org", "internal": False, "port": "443"}, "pypi.org",
+])
+def test_allow_refuses_malformed_entries(env, allow_env, entry):
+    a, shared = allow_env
+    request_domains(a, shared, "pypi.org\n")
+    code, _, err = decide(a, "allow", 1, {"requester": "@a:example.org", "domains": [entry]})
+    assert code == 1 and "entries with domain, internal and port" in err and "Traceback" not in err
+    assert allow_calls(env) == []
+    assert (a.tasks_dir / "dn-abc23" / "domains-pending").exists()
+
+
+def test_grants_are_made_under_a_lock(env, allow_env):
+    # So a second approval, of a request filed once the first was claimed, counts the first's grants.
+    a, shared = allow_env
+    lock, log = a.tasks_dir / "dn-abc23" / "grants.lock", env / "lock.log"
+    (env / "bin" / "dejima-allow").write_text(f"#!/bin/sh\nflock -n {lock} true && echo free >> {log} || echo held >> {log}\n")
+    request_domains(a, shared, "pypi.org\n")
+    assert decide(a, "allow", 1, {"requester": "@a:example.org", "domains": entries("pypi.org")})[0] == 0
+    assert log.read_text() == "held\n"
+
+
+def test_internal_limit_counts_launch_domains_and_earlier_grants(env, allow_env):
+    a, shared = allow_env
+    task_dir = env / "tasks" / "dn-abc23"
+    (task_dir / "argv.json").write_text(json.dumps(["dejima", "--internal-domain", "one.example.com"]))
+    request_domains(a, shared, "internal two.example.com\nthree.example.com\n")
+    data = {
+        "requester": "@a:example.org", "domains": entries("internal two.example.com", "three.example.com"),
+        "max_internal_domains": 1,
+    }
+    result = json.loads(decide(a, "allow", 1, data)[1])
+    assert result["granted"] == ["three.example.com"]
+    assert result["failed"] == [{"domain": "two.example.com", "error": "over this session's limit of 1 internal domains"}]
 
 
 def message_run(a, data, *extra):
     import unittest.mock
 
     with unittest.mock.patch("sys.stdin", io.StringIO(json.dumps(data))):
-        return run(a, *extra, "message", "ms-abc23")
+        return run(a, *extra, "message", "dn-abc23")
 
 
 def test_message_needs_no_help_request(env, share):
@@ -926,13 +1095,13 @@ def test_message_needs_no_help_request(env, share):
     (env / "tmux.log").write_text("")
     code, _, err = message_run(a, {"requester": "@alice:example.org", "text": "Also check the logs."}, "--answers", "--paste-delay", "0")
     assert code == 0, err
-    assert (env / "tmux.log.buffer").read_text() == "Message from @alice:example.org:\n\nAlso check the logs."
+    assert (env / "tmux.log.buffer").read_text() == "Also check the logs."
 
 
 def test_message_answers_an_outstanding_help_request(env, asked):
     code, _, _ = message_run(asked, {"requester": "@a:example.org", "text": "use main"}, "--answers", "--paste-delay", "0")
     assert code == 0
-    assert not (env / "tasks" / "ms-abc23" / "help-pending").exists()
+    assert not (env / "tasks" / "dn-abc23" / "help-pending").exists()
     assert status(asked)[0]["awaiting_answer"] is False
 
 
@@ -955,7 +1124,7 @@ def test_changed_domains_file_is_a_request_once_settled(env, allow_env):
     assert status(a)[0]["domains"] is False
     age(shared / "DOMAINS", 60)
     assert status(a)[0]["domains"] is True
-    code, out, _ = run(a, "domains", "ms-abc23")
+    code, out, _ = run(a, "domains", "dn-abc23")
     assert code == 0 and json.loads(out)["domains"] == [{"domain": "pypi.org", "internal": False, "port": None}]
     assert status(a)[0]["domains"] is False
 
@@ -963,12 +1132,12 @@ def test_changed_domains_file_is_a_request_once_settled(env, allow_env):
 def test_rerequest_after_a_decision_goes_straight_through(env, allow_env):
     a, shared = allow_env
     request_domains(a, shared, "recipes.example.com\n")
-    decide(a, "allow", 1, {"requester": "@a:example.org", "domains": ["recipes.example.com"]})
+    decide(a, "allow", 1, {"requester": "@a:example.org", "domains": entries("recipes.example.com")})
     # The agent edits its request without signalling again.
     (shared / "DOMAINS").write_text("internal recipes.example.com\n")
     age(shared / "DOMAINS", 60)
     assert status(a)[0]["domains"] is True
-    request = json.loads(run(a, "domains", "ms-abc23")[1])
+    request = json.loads(run(a, "domains", "dn-abc23")[1])
     assert request["request"] == 2 and request["domains"] == [{"domain": "recipes.example.com", "internal": True, "port": None}]
 
 
@@ -980,7 +1149,7 @@ def test_new_request_waits_while_one_is_undecided(env, allow_env):
     time.sleep(0.05)
     (shared / ".domains").touch()
     assert status(a)[0]["domains"] is False
-    assert run(a, "domains", "ms-abc23")[0] == 1
+    assert run(a, "domains", "dn-abc23")[0] == 1
 
 
 def test_permitted_but_unverified_domain_counts_as_allowed(env, allow_env):
@@ -988,31 +1157,31 @@ def test_permitted_but_unverified_domain_counts_as_allowed(env, allow_env):
     request_domains(a, shared, "internal quiet.example\n")
     (env / "tmux.log").write_text("")
     code, out, _ = decide(
-        a, "allow", 1, {"requester": "@a:example.org", "domains": ["quiet.example"]}, "--answers", "--paste-delay", "0"
+        a, "allow", 1, {"requester": "@a:example.org", "domains": entries("internal quiet.example")}, "--answers", "--paste-delay", "0"
     )
     result = json.loads(out)
     assert code == 0 and result["granted"] == ["quiet.example"] and result["failed"] == []
     assert result["unverified"] == [{"domain": "quiet.example", "warning": "WARNING: quiet.example is still NOT reachable (curl exit 28)."}]
     assert "allowed but not reachable on port 443 when checked: quiet.example" in (env / "tmux.log.buffer").read_text()
-    assert json.loads((a.tasks_dir / "ms-abc23" / "domains-granted").read_text()) == ["quiet.example"]
+    assert json.loads((a.tasks_dir / "dn-abc23" / "domains-granted").read_text()) == entries("internal quiet.example")
 
 
 def test_dejima_allow_message_reaches_the_requester_whole(env, allow_env):
     a, shared = allow_env
     request_domains(a, shared, "wordy.example\n")
-    result = json.loads(decide(a, "allow", 1, {"requester": "@a:example.org", "domains": ["wordy.example"]})[1])
+    result = json.loads(decide(a, "allow", 1, {"requester": "@a:example.org", "domains": entries("wordy.example")})[1])
     assert result["unverified"][0]["warning"].endswith("the end")
 
 
 def test_keep_records_is_passed_to_every_session(env):
-    launch(args(env, "--keep-records"), {"id": "ms-abc23", "prompt": "p"})
-    assert written_argv(env, "ms-abc23")[1:5] == ["--isolated", "--no-pause", "--shared-path-file", str(env / "tasks" / "ms-abc23" / "shared-path")]
-    assert "--keep-records" in written_argv(env, "ms-abc23")[:-2]
+    launch(args(env, "--keep-records"), {"id": "dn-abc23", "prompt": "p"})
+    assert written_argv(env, "dn-abc23")[1:5] == ["--isolated", "--no-pause", "--shared-path-file", str(env / "tasks" / "dn-abc23" / "shared-path")]
+    assert "--keep-records" in written_argv(env, "dn-abc23")[:-2]
 
 
 def test_records_are_not_kept_by_default(env):
-    launch(args(env), {"id": "ms-abc23", "prompt": "p"})
-    assert "--keep-records" not in written_argv(env, "ms-abc23")
+    launch(args(env), {"id": "dn-abc23", "prompt": "p"})
+    assert "--keep-records" not in written_argv(env, "dn-abc23")
 
 
 def upload_run(a, name, data, *extra, requester="@alice:example.org"):
@@ -1020,7 +1189,7 @@ def upload_run(a, name, data, *extra, requester="@alice:example.org"):
 
     stdin = type("Stdin", (), {"buffer": io.BytesIO(json.dumps({"name": name, "requester": requester}).encode() + b"\n" + data)})()
     with unittest.mock.patch("sys.stdin", stdin):
-        return run(a, *extra, "upload", "ms-abc23")
+        return run(a, *extra, "upload", "dn-abc23")
 
 
 def test_upload_lands_in_shared_uploads(env, share):
@@ -1083,14 +1252,14 @@ def test_upload_tells_the_agent(env, share):
 
 def test_upload_needs_a_running_session(env, share):
     a, _ = share
-    (env / "tasks" / "ms-abc23" / "exit").write_text("0\n")
+    (env / "tasks" / "dn-abc23" / "exit").write_text("0\n")
     code, _, err = upload_run(a, "x.txt", b"x")
     assert code == 1 and "not running" in err
 
 
 def test_upload_error_names_no_host_path(env, share):
     a, _ = share
-    (env / "tasks" / "ms-abc23" / "shared-path").write_text("/somewhere/else\n")
+    (env / "tasks" / "dn-abc23" / "shared-path").write_text("/somewhere/else\n")
     code, _, err = upload_run(a, "x.txt", b"x")
     assert code == 1 and "couldn't open the session's ~/shared" in err and "/somewhere" not in err
 
@@ -1100,48 +1269,53 @@ def test_upload_error_names_no_host_path(env, share):
     [
         ({}, ["--model", "sonnet", "--effort", "medium"]),
         ({"model": "opus", "effort": "high"}, ["--model", "opus", "--effort", "high"]),
-        ({"harness": "cline"}, ["--model", "z-ai/glm-5.3"]),
+        ({"harness": "cline"}, ["--model", "z-ai/glm-5.3", "--context-window", "30000"]),
+        ({"harness": "cline", "context_window": 60000}, ["--model", "z-ai/glm-5.3", "--context-window", "60000"]),
         ({"harness": "other"}, []),
     ],
 )
 def test_model_and_effort_resolution(env, job, expected):
     a = args(
         env, "--harness", "claude-code", "--model", "claude-code=sonnet", "--effort", "claude-code=medium",
-        "--model", "cline=z-ai/glm-5.3",
+        "--model", "cline=z-ai/glm-5.3", "--context-window", "cline=30000",
     )
-    launch(a, {"id": "ms-abc23", "prompt": "p", **job})
-    argv = written_argv(env, "ms-abc23")
+    launch(a, {"id": "dn-abc23", "prompt": "p", **job})
+    argv = written_argv(env, "dn-abc23")
     flags = argv[argv.index("--harness") + 2 : argv.index("--")]
     assert flags == expected
 
 
-@pytest.mark.parametrize("option", ["--model", "--effort"])
-def test_bad_model_and_effort_defaults_are_refused(env, option):
+@pytest.mark.parametrize("option, value", [
+    ("--model", "claude-code=bad value"), ("--effort", "claude-code=Max"),
+    ("--context-window", "cline=511"), ("--context-window", "cline=３２７６８"), ("--context-window", "cline=lots"),
+])
+def test_bad_per_harness_defaults_are_refused(env, option, value):
     with pytest.raises(SystemExit):
-        args(env, option, "claude-code=bad value" if option == "--model" else "claude-code=max")
+        args(env, option, value)
 
 
 def test_domain_ports_are_checked_on_that_port(env, allow_env):
     a, shared = allow_env
-    request = request_domains(a, shared, "internal recipes.example.com:8443\npypi.org:99999\nfiles.example.com:\n")
+    lines = "internal recipes.example.com:8443\npypi.org:99999\nfiles.example.com:\nlong.example.com:" + "9" * 5000
+    request = request_domains(a, shared, lines + "\n")
     assert request["domains"] == [{"domain": "recipes.example.com", "internal": True, "port": 8443}]
-    assert request["rejected"] == 2
-    decide(a, "allow", 1, {"requester": "@a:example.org", "domains": ["recipes.example.com"]})
+    assert request["rejected"] == 3
+    decide(a, "allow", 1, {"requester": "@a:example.org", "domains": entries("internal recipes.example.com:8443")})
     assert allow_calls(env) == [["--container", "c0ffee", "--internal", "--port", "8443", "recipes.example.com"]]
 
 
 def test_successful_typing_leaves_no_log(env, asked):
     answer_run(asked, {"requester": "@a:example.org", "text": "use main"}, "--answers", "--paste-delay", "0")
-    assert not (env / "tasks" / "ms-abc23" / "typing.log").exists()
+    assert not (env / "tasks" / "dn-abc23" / "typing.log").exists()
 
 
 def test_failed_typing_is_logged_for_the_operator_only(env, asked, monkeypatch):
     monkeypatch.setenv("FAKE_TMUX_DROP", "3")
     answer_run(asked, {"requester": "@a:example.org", "text": "use main"}, "--answers", "--paste-delay", "0")
-    log = env / "tasks" / "ms-abc23" / "typing.log"
+    log = env / "tasks" / "dn-abc23" / "typing.log"
     assert log.stat().st_mode & 0o777 == 0o600
     text = log.read_text()
-    assert "===== before\n" in text and "===== after paste\nly from @a:example.org:" in text
+    assert "===== before\n" in text and "===== after paste\n main\n" in text
 
 
 @pytest.mark.parametrize("keep", [False, True])
@@ -1149,10 +1323,10 @@ def test_typing_log_goes_when_the_session_ends_unless_records_are_kept(env, keep
     dejima = env / "dejima"
     dejima.write_text("#!/bin/sh\n")
     dejima.chmod(0o755)
-    launch(args(env, "--dejima", str(dejima), *(["--keep-records"] if keep else [])), {"id": "ms-abc23", "prompt": "p"})
-    task = env / "tasks" / "ms-abc23"
+    launch(args(env, "--dejima", str(dejima), *(["--keep-records"] if keep else [])), {"id": "dn-abc23", "prompt": "p"})
+    task = env / "tasks" / "dn-abc23"
     (task / "typing.log").write_text("screens")
-    subprocess.run([sys.executable, "-m", "meeseeks.launch", "--exec", str(task)], cwd=Path(__file__).parent.parent, check=True)
+    subprocess.run([sys.executable, "-m", "darner.launch", "--exec", str(task)], cwd=Path(__file__).parent.parent, check=True)
     assert (task / "typing.log").exists() is keep
 
 
@@ -1160,7 +1334,7 @@ def test_lost_first_keystrokes_are_reported(env, asked, monkeypatch):
     monkeypatch.setenv("FAKE_TMUX_DROP", "3")
     code, _, err = answer_run(asked, {"requester": "@a:example.org", "text": "use main"}, "--answers", "--paste-delay", "0")
     assert code == 1 and "couldn't confirm it arrived and was sent" in err
-    assert (env / "tasks" / "ms-abc23" / "help-pending").exists()
+    assert (env / "tasks" / "dn-abc23" / "help-pending").exists()
 
 
 def test_an_eaten_enter_is_retried_then_reported(env, asked, monkeypatch):
@@ -1168,7 +1342,7 @@ def test_an_eaten_enter_is_retried_then_reported(env, asked, monkeypatch):
     code, _, err = answer_run(asked, {"requester": "@a:example.org", "text": "use main"}, "--answers", "--paste-delay", "0")
     assert code == 1 and "check the session" in err
     assert [c[-1] for c in tmux_calls(env) if c[0] == "send-keys"] == ["Enter", "Enter"]
-    assert "===== after second enter" in (env / "tasks" / "ms-abc23" / "typing.log").read_text()
+    assert "===== after second enter" in (env / "tasks" / "dn-abc23" / "typing.log").read_text()
 
 
 def test_a_collapsed_paste_counts_as_arrived(env, asked, monkeypatch):
@@ -1176,3 +1350,576 @@ def test_a_collapsed_paste_counts_as_arrived(env, asked, monkeypatch):
     (env / "tmux.log.screen").write_text("  > [Pasted text #1 +3 lines]\n")
     code, _, err = answer_run(asked, {"requester": "@a:example.org", "text": "use main"}, "--answers", "--paste-delay", "0")
     assert code == 0, err
+
+
+def test_internal_domains_are_exempted_for_the_launch(env):
+    launch(args(env), {
+        "id": "dn-abc23", "prompt": "p",
+        "domains": ["pypi.org", "recipes.example.com"], "internal_domains": ["recipes.example.com"],
+    })
+    argv = written_argv(env, "dn-abc23")
+    assert argv[argv.index("--internal-domain") + 1] == "recipes.example.com"
+    assert argv.count("--internal-domain") == 1
+    assert (env / "tasks" / "dn-abc23" / "domains").read_text() == "pypi.org\nrecipes.example.com\n"
+
+
+def test_catalog_lists_what_dejima_has(env):
+    root = env / "dejima-install"
+    (root / "bin").mkdir(parents=True)
+    (root / "bin" / "dejima").write_text("#!/bin/sh\n")
+    (root / "bin" / "dejima").chmod(0o755)
+    install_manifests(root, {
+        **{k: v for k, v in MANIFESTS.items() if k[1] not in ("anthropic-api-key", "openrouter")},
+        ("harness", "any"): "keys = model:?modelid effort:?word\n",
+    })
+    (root / "backends" / "notes").mkdir()
+    code, out, _ = run(
+        args(env), "--dejima", str(root / "bin" / "dejima"), "--harness", "claude-code", "--backend", "cline=self-hosted",
+        "--model", "cline=qwen3.5-4b", "--context-window", "cline=120000", "--effort", "claude-code=high", "catalog",
+    )
+    assert code == 0
+    assert json.loads(out) == {
+        "harnesses": ["any", "claude-code", "cline"], "backends": ["anthropic", "self-hosted"], "default_harness": "claude-code",
+        "defaults": {"cline": {"backend": "self-hosted", "model": "qwen3.5-4b", "context_window": 120000}, "claude-code": {"effort": "high"}},
+        "options": {
+            # No api_styles takes any backend, and an effort that isn't an enum is dejima's to check.
+            "any": {"backends": ["anthropic", "self-hosted"], "efforts": None, "context_window": False},
+            "claude-code": {"backends": ["anthropic"], "efforts": ["low", "medium", "high", "xhigh"], "context_window": False},
+            "cline": {
+                "backends": ["anthropic", "self-hosted"], "efforts": ["none", "low", "medium", "high", "xhigh"], "context_window": True,
+            },
+        },
+    }
+
+
+def test_a_harness_dejima_has_no_manifest_for_is_left_to_dejima(env):
+    launch(args(env), {"id": "dn-abc23", "prompt": "p", "harness": "other", "backend": "anything", "effort": "max"})
+    assert "--effort" in written_argv(env, "dn-abc23")
+
+
+def test_catalog_defaults_are_dejima_s_own_with_the_launcher_s_flags_in_their_place(env):
+    root = env / "dejima-install"
+    (root / "bin").mkdir(parents=True)
+    (root / "harnesses" / "cline").mkdir(parents=True)
+    (root / "harnesses" / "cline" / "harness.conf").write_text("")
+    # Prints what dejima --print-config does, recording how it was asked.
+    (root / "bin" / "dejima").write_text(f"""#!/bin/sh
+echo "$@" > {env}/print-config-args
+cat <<'END'
+core.harness=cline
+core.identity=
+harness.cline.backend=self-hosted
+harness.cline.model=qwen3.5-4b
+harness.cline.context_window=120000
+harness.cline.state_dir=/home/operator/.local/share/dejima/cline
+harness.claude-code.effort=
+backend.self-hosted.base_url=http://192.0.2.10:8000/v1
+END
+""")
+    (root / "bin" / "dejima").chmod(0o755)
+    code, out, _ = run(args(env), "--dejima", str(root / "bin" / "dejima"), "--identity", "darner", "--model", "cline=llama3:8b", "catalog")
+    assert code == 0
+    catalog = json.loads(out)
+    assert catalog["default_harness"] == "cline"
+    # Only the settings a task can override, never the rest of the config, which holds host paths.
+    assert catalog["defaults"] == {"cline": {"backend": "self-hosted", "model": "llama3:8b", "context_window": 120000}}
+    assert (env / "print-config-args").read_text().split() == ["--identity", "darner", "--print-config"]
+
+
+def test_catalog_still_answers_when_dejima_can_t_print_its_config(env):
+    root = env / "dejima-install"
+    (root / "bin").mkdir(parents=True)
+    (root / "bin" / "dejima").write_text("#!/bin/sh\nexit 1\n")
+    (root / "bin" / "dejima").chmod(0o755)
+    code, out, _ = run(args(env), "--dejima", str(root / "bin" / "dejima"), "--harness", "cline", "catalog")
+    assert code == 0 and json.loads(out)["default_harness"] == "cline" and json.loads(out)["defaults"] == {}
+
+@pytest.mark.parametrize("job", [{"backend": "openrouter"}, {"effort": "none"}, {"context_window": 120000}])
+def test_a_job_dejima_s_default_harness_can_t_take_is_refused(env, monkeypatch, job):
+    monkeypatch.setenv("FAKE_DEJIMA_CONFIG", "core.harness=claude-code\n")
+    with pytest.raises(JobError, match="claude-code"):
+        launch(args(env), {"id": "dn-abc23", "prompt": "p", **job})
+    assert not (env / "tasks" / "dn-abc23").exists()
+
+
+def test_dejima_s_own_defaults_are_checked_and_left_to_it(env, monkeypatch):
+    monkeypatch.setenv("FAKE_DEJIMA_CONFIG", "core.harness=claude-code\nharness.claude-code.backend=openrouter\n")
+    with pytest.raises(JobError, match="claude-code can't use the openrouter backend"):
+        launch(args(env), {"id": "dn-abc23", "prompt": "p"})
+    launch(args(env, "--backend", "cline=self-hosted"), {"id": "dn-abc23", "prompt": "p", "harness": "cline"})
+    argv = written_argv(env, "dn-abc23")
+    assert argv[argv.index("--harness"):argv.index("--")] == ["--harness", "cline", "--backend", "self-hosted"]
+
+
+def b64(data: bytes) -> str:
+    import base64
+
+    return base64.b64encode(data).decode()
+
+
+def test_files_are_held_owner_only_until_delivery(env):
+    launch(args(env), {"id": "dn-abc23", "prompt": "p", "files": [{"name": "token", "data": b64(b"secret")}]})
+    held = env / "tasks" / "dn-abc23" / "files"
+    assert held.stat().st_mode & 0o777 == 0o700
+    assert (held / "token").stat().st_mode & 0o777 == 0o600 and (held / "token").read_bytes() == b"secret"
+
+
+SESSION_DEJIMA = """#!/bin/sh
+sleep 1
+ls -l "$SHARE/uploads" > "$SEEN"
+cat "$SHARE/uploads/token" >> "$SEEN"
+"""
+
+
+def test_files_are_given_to_the_session_and_taken_back(env, monkeypatch):
+    root = env / "share-root"
+    shared = root / "20261027-120000-AbC123"
+    shared.mkdir(parents=True)
+    dejima = env / "session-dejima"
+    dejima.write_text(SESSION_DEJIMA)
+    dejima.chmod(0o755)
+    a = args(env, "--dejima", str(dejima), "--share-root", str(root))
+    launch(a, {"id": "dn-abc23", "prompt": "p", "files": [{"name": "token", "data": b64(b"secret")}]})
+    task = env / "tasks" / "dn-abc23"
+    (task / "shared-path").write_text(f"{shared}\n")
+    subprocess.run(
+        [sys.executable, "-m", "darner.launch", "--share-root", str(root), "--exec", str(task)],
+        cwd=Path(__file__).parent.parent, check=True,
+        env={**os.environ, "SHARE": str(shared), "SEEN": str(env / "seen")},
+    )
+    seen = (env / "seen").read_text()
+    assert "-rw-------" in seen and seen.endswith("secret")
+    assert not (shared / "uploads" / "token").exists()
+    assert not (task / "files").exists() and not (task / "files-delivered").exists()
+
+
+def test_delivery_wont_follow_a_planted_uploads_link(env):
+    from darner.launch import _deliver_files
+    import threading
+
+    root = env / "share-root"
+    shared = root / "20261027-120000-AbC123"
+    shared.mkdir(parents=True)
+    outside = env / "outside"
+    outside.mkdir()
+    (shared / "uploads").symlink_to(outside)
+    a = args(env, "--share-root", str(root))
+    launch(a, {"id": "dn-abc23", "prompt": "p", "files": [{"name": "token", "data": b64(b"secret")}]})
+    task = env / "tasks" / "dn-abc23"
+    (task / "shared-path").write_text(f"{shared}\n")
+    _deliver_files(a, task, threading.Event())
+    assert list(outside.iterdir()) == []
+
+
+def test_failed_launch_removes_held_files(env, monkeypatch):
+    broken = env / "broken-tmux"
+    broken.write_text("#!/bin/sh\necho nope >&2\nexit 1\n")
+    broken.chmod(0o755)
+    with pytest.raises(RuntimeError):
+        launch(args(env, "--tmux", str(broken)), {"id": "dn-abc23", "prompt": "p", "files": [{"name": "token", "data": b64(b"secret")}]})
+    assert not (env / "tasks" / "dn-abc23" / "files").exists()
+
+
+def test_cleanup_continues_past_a_name_the_session_replaced(env):
+    from darner.launch import _remove_files
+
+    root = env / "share-root"
+    shared = root / "20261027-120000-AbC123"
+    (shared / "uploads" / "first").mkdir(parents=True)
+    (shared / "uploads" / "first" / "kept").write_text("x")
+    (shared / "uploads" / "second").write_text("secret")
+    a = args(env, "--share-root", str(root))
+    launch(a, {"id": "dn-abc23", "prompt": "p"})
+    task = env / "tasks" / "dn-abc23"
+    (task / "shared-path").write_text(f"{shared}\n")
+    (task / "files-delivered").write_text(json.dumps(["first", "second"]))
+    _remove_files(a, task)
+    assert not (shared / "uploads" / "second").exists()
+    assert not (task / "files-delivered").exists()
+
+
+def test_status_sweeps_held_files_of_an_ended_session(env, share):
+    a, _ = share
+    task = env / "tasks" / "dn-abc23"
+    (task / "files").mkdir()
+    (task / "files" / "token").write_text("secret")
+    (task / "exit").write_text("0\n")
+    status(a)
+    assert not (task / "files").exists()
+
+
+def test_screen_quiet_time_and_tail(env, share):
+    a, _ = share
+    screen = env / "tmux.log.screen"
+    screen.write_text("\n".join(f"line {i}" for i in range(30)) + "\n\x1b[31m> \n")
+    entry = status(a)[0]
+    assert entry["quiet"] < 5
+    assert entry["screen"].splitlines()[-1] == "[31m>" and entry["screen"].splitlines()[0] == "line 11"
+    record = env / "tasks" / "dn-abc23" / "screen"
+    state = json.loads(record.read_text())
+    record.write_text(json.dumps({**state, "since": state["since"] - 600}))
+    assert status(a)[0]["quiet"] >= 600
+    screen.write_text("something new\n")
+    assert status(a)[0]["quiet"] < 5
+
+
+def test_result_pending_until_delivered(env, share):
+    a, shared = share
+    (shared / "RESULT.md").write_text("done")
+    assert status(a)[0]["result_pending"] is True
+    quiet(shared)
+    run(a, "fetch", "dn-abc23")
+    assert status(a)[0]["result_pending"] is False
+
+
+FAKE_DEJIMA_SHARE = """#!/bin/sh
+printf '%s\\n' "$*" >> "$FAKE_SHARE_LOG"
+if [ "$1" = --help ]; then
+    if [ -n "$FAKE_SHARE_OLD" ]; then echo "Usage: dejima-share <path|list|adopt|prune> [path]"; echo "  prune --isolated  delete every ended share"
+    else echo "Usage: dejima-share <path|list|adopt|prune> [path] [--yes]"; echo "  prune --isolated [share]  delete one"; echo "  --yes  answer y"; fi
+    exit 0
+fi
+[ -n "$FAKE_SHARE_REFUSE" ] && { echo "dejima-share: $FAKE_SHARE_REFUSE" >&2; exit 1; }
+[ -n "$FAKE_SHARE_NOOP" ] && { echo "Kept."; exit 0; }
+rm -r "$4"
+"""
+
+
+@pytest.fixture
+def dejima_share(env, monkeypatch):
+    tool = env / "bin" / "dejima-share"
+    tool.parent.mkdir(exist_ok=True)
+    tool.write_text(FAKE_DEJIMA_SHARE)
+    tool.chmod(0o755)
+    monkeypatch.setenv("FAKE_SHARE_LOG", str(env / "share.log"))
+    return tool
+
+
+def prunes(env):
+    log = env / "share.log"
+    return [line for line in log.read_text().splitlines() if line.startswith("prune")] if log.exists() else []
+
+
+@pytest.fixture
+def delivered(env, share, dejima_share):
+    """A session whose output was fetched, and which has since exited."""
+    a, shared = share
+    (shared / "RESULT.md").write_text("done")
+    (shared / ".done").touch()
+    code, out, err = run(a, "fetch", "dn-abc23")
+    assert code == 0, err
+    (env / "tasks" / "dn-abc23" / "exit").write_text("0\n")
+    return a, shared, sha(out)
+
+
+def sha(data: bytes) -> str:
+    import hashlib
+
+    return hashlib.sha256(data).hexdigest()
+
+
+ANY_ZIP = "0" * 64
+
+
+def forget_delivered(a, dejima_share, stored, *extra):
+    return run(a, "--dejima-share", str(dejima_share), *extra, "forget-delivered", "dn-abc23", stored)
+
+
+def test_forget_delivered_prunes_a_share_that_still_holds_its_delivery(env, delivered, dejima_share):
+    a, shared, stored = delivered
+    code, out, err = forget_delivered(a, dejima_share, stored)
+    assert code == 0 and json.loads(out) == {"pruned": True}, err
+    assert prunes(env) == [f"prune --isolated --yes {shared}"]
+    assert not shared.exists() and not (env / "tasks" / "dn-abc23").exists()
+
+
+def test_plain_forget_never_prunes(env, delivered, dejima_share):
+    a, shared, stored = delivered
+    code, out, _ = run(a, "--dejima-share", str(dejima_share), "forget", "dn-abc23")
+    assert code == 0 and json.loads(out) == {"kept": "its output wasn't delivered whole"}
+    assert prunes(env) == [] and shared.is_dir() and not (env / "tasks" / "dn-abc23").exists()
+    assert (env / "tasks" / ".kept" / "dn-abc23").read_text() == str(shared)
+
+
+def test_forget_still_refuses_a_running_session(env, share, dejima_share):
+    a, shared = share
+    code, _, err = forget_delivered(a, dejima_share, ANY_ZIP)
+    assert code == 1 and "hasn't ended" in err and (env / "tasks" / "dn-abc23").is_dir()
+
+
+def kept(env, a, shared, dejima_share, why, stored=ANY_ZIP):
+    """The share is kept, and recorded for discard, and the task directory still goes."""
+    code, out, err = forget_delivered(a, dejima_share, stored)
+    assert code == 0 and why in json.loads(out)["kept"], err
+    assert shared.is_dir() and not (env / "tasks" / "dn-abc23").exists()
+    assert (env / "tasks" / ".kept" / "dn-abc23").read_text() == str(shared)
+
+
+def test_no_recorded_delivery_keeps_the_share(env, share, dejima_share):
+    a, shared = share
+    (shared / "notes.md").write_text("work")
+    (env / "tasks" / "dn-abc23" / "exit").write_text("0\n")
+    kept(env, a, shared, dejima_share, "no complete delivery")
+
+
+def test_a_rejected_fetch_keeps_the_share(env, share, dejima_share):
+    a, shared = share
+    (shared / "RESULT.md").write_text("x" * 100)
+    (shared / ".done").touch()
+    assert run(a, "--max-output", "10", "fetch", "dn-abc23")[0] == FETCH_REJECTED
+    (env / "tasks" / "dn-abc23" / "exit").write_text("0\n")
+    kept(env, a, shared, dejima_share, "no complete delivery")
+
+
+def test_a_share_changed_after_delivery_is_kept(env, delivered, dejima_share):
+    a, shared, stored = delivered
+    (shared / "later.md").write_text("written after the delivery")
+    kept(env, a, shared, dejima_share, "changed after its output was delivered", stored)
+
+
+def test_a_delivery_that_left_files_out_keeps_the_share(env, share, dejima_share):
+    a, shared = share
+    (shared / "RESULT.md").write_text("done")
+    (shared / "link").symlink_to("/etc/passwd")
+    (shared / "uploads").mkdir()
+    (shared / ".done").touch()
+    code, out, _ = run(a, "fetch", "dn-abc23")
+    assert code == 0
+    (env / "tasks" / "dn-abc23" / "exit").write_text("0\n")
+    kept(env, a, shared, dejima_share, "left out 1 entries", sha(out))
+
+
+def test_uploads_alone_left_out_still_prunes(env, share, dejima_share):
+    a, shared = share
+    (shared / "RESULT.md").write_text("done")
+    (shared / "uploads").mkdir()
+    (shared / "uploads" / "token").write_text("s3cret")
+    (shared / ".done").touch()
+    code, out, _ = run(a, "fetch", "dn-abc23")
+    assert code == 0
+    (env / "tasks" / "dn-abc23" / "exit").write_text("0\n")
+    assert forget_delivered(a, dejima_share, sha(out))[0] == 0 and not shared.exists()
+
+
+def test_a_dejima_share_without_the_named_form_isn_t_run(env, delivered, dejima_share, monkeypatch):
+    a, shared, stored = delivered
+    monkeypatch.setenv("FAKE_SHARE_OLD", "1")
+    kept(env, a, shared, dejima_share, "can't prune one share by name", stored)
+    assert prunes(env) == []
+
+
+def test_a_prune_that_exits_0_but_leaves_the_share_is_reported(env, delivered, dejima_share, monkeypatch):
+    a, shared, stored = delivered
+    monkeypatch.setenv("FAKE_SHARE_NOOP", "1")
+    kept(env, a, shared, dejima_share, "exited 0 but the share is still there: Kept.", stored)
+
+
+def test_a_share_dejima_refuses_is_kept(env, delivered, dejima_share, monkeypatch):
+    a, shared, stored = delivered
+    monkeypatch.setenv("FAKE_SHARE_REFUSE", "a container still mounts it")
+    kept(env, a, shared, dejima_share, "dejima-share: a container still mounts it", stored)
+
+
+def test_a_missing_dejima_share_keeps_the_share_and_the_task_still_goes(env, delivered):
+    a, shared, stored = delivered
+    kept(env, a, shared, "no-such-dejima-share", "pass --dejima-share with its full path", stored)
+
+
+def test_an_unrunnable_dejima_share_is_reported(env, delivered):
+    a, shared, stored = delivered
+    broken = env / "bin" / "broken-share"
+    broken.parent.mkdir(exist_ok=True)
+    broken.write_text("not a program")
+    broken.chmod(0o755)
+    kept(env, a, shared, broken, "couldn't run", stored)
+
+
+def test_keep_shared_keeps_the_share(env, delivered, dejima_share):
+    a, shared, stored = delivered
+    code, out, _ = forget_delivered(a, dejima_share, stored, "--keep-shared")
+    assert code == 0 and json.loads(out) == {}
+    assert prunes(env) == [] and shared.is_dir() and not (env / "tasks" / "dn-abc23").exists()
+    assert not (env / "tasks" / ".kept").exists()
+
+
+@pytest.mark.parametrize("recorded", [None, "gone", "/etc"])
+def test_a_share_that_isn_t_there_or_isn_t_under_the_root_isn_t_pruned(env, delivered, dejima_share, recorded):
+    a, shared, stored = delivered
+    task_dir = env / "tasks" / "dn-abc23"
+    if recorded is None:
+        (task_dir / "shared-path").unlink()
+    elif recorded == "gone":
+        shutil.rmtree(shared)
+    else:
+        (task_dir / "shared-path").write_text(f"{recorded}\n")
+    code, _, err = forget_delivered(a, dejima_share, stored)
+    assert prunes(env) == [] and not task_dir.exists()
+    if recorded == "/etc":
+        assert code == 1 and "is not under" in err
+    else:
+        assert code == 0, err
+
+
+
+def test_a_later_delivery_the_api_didn_t_store_keeps_the_share(env, share, dejima_share):
+    a, shared = share
+    (shared / "RESULT.md").write_text("first")
+    (shared / ".done").touch()
+    code, first, _ = run(a, "fetch", "dn-abc23")
+    assert code == 0
+    # A second delivery the API never stored, as when its fetch timed out.
+    (shared / "RESULT.md").write_text("second")
+    (shared / "more.py").write_text("print('the only copy')")
+    (shared / ".done").touch()
+    assert run(a, "fetch", "dn-abc23")[0] == 0
+    (env / "tasks" / "dn-abc23" / "exit").write_text("0\n")
+    kept(env, a, shared, dejima_share, "isn't the output the API stored", sha(first))
+    assert (shared / "more.py").exists()
+
+
+def test_an_unreadable_share_is_kept_and_the_task_still_goes(env, delivered, dejima_share):
+    if os.geteuid() == 0:
+        pytest.skip("root ignores permissions")
+    a, shared, stored = delivered
+    shared.chmod(0)
+    try:
+        kept(env, a, shared, dejima_share, "couldn't open it to compare with its delivery: Permission denied", stored)
+    finally:
+        shared.chmod(0o755)
+
+
+def test_an_unexpected_error_names_no_host_path(env, share, monkeypatch):
+    from darner import launch as launch_module
+
+    a, _ = share
+
+    def broken(*args, **kwargs):
+        raise KeyError("/home/operator/darner/tasks")
+
+    monkeypatch.setattr(launch_module, "status", broken)
+    code, _, err = run(a, "status")
+    assert code == 1 and err == "darner-launch: failed (KeyError)\n"
+
+
+def test_deny_refuses_a_body_that_isn_t_an_object(env, allow_env):
+    a, shared = allow_env
+    request_domains(a, shared, "pypi.org\n")
+    code, _, err = decide(a, "deny", 1, ["not", "an", "object"])
+    assert code == 1 and "deny needs an object" in err and "Traceback" not in err
+    assert (a.tasks_dir / "dn-abc23" / "domains-pending").exists()
+
+
+def discard(a, dejima_share, *extra):
+    return run(a, "--dejima-share", str(dejima_share), *extra, "discard", "dn-abc23")
+
+
+def test_discard_prunes_a_kept_share(env, delivered, dejima_share):
+    a, shared, _ = delivered
+    run(a, "--dejima-share", str(dejima_share), "forget", "dn-abc23")
+    code, _, err = discard(a, dejima_share)
+    assert code == 0, err
+    assert prunes(env) == [f"prune --isolated --yes {shared}"] and not shared.exists()
+    assert not (env / "tasks" / ".kept" / "dn-abc23").exists()
+
+
+def test_discard_forgets_an_exited_session_first(env, delivered, dejima_share):
+    # As when the API's forget failed, and the session is cleared.
+    a, shared, _ = delivered
+    assert discard(a, dejima_share)[0] == 0
+    assert not shared.exists() and not (env / "tasks" / "dn-abc23").exists()
+
+
+def test_a_share_darner_didn_t_start_is_never_pruned(env, delivered, dejima_share):
+    # A session started on the host by hand has a share beside darner's, and no task directory or record.
+    a, shared, _ = delivered
+    theirs = shared.parent / "20261025-090000-Mine99"
+    theirs.mkdir()
+    (theirs / "notes.md").write_text("mine")
+    run(a, "--dejima-share", str(dejima_share), "forget", "dn-abc23")
+    assert discard(a, dejima_share)[0] == 0
+    assert run(a, "--dejima-share", str(dejima_share), "discard", "dn-mine2")[0] == 0
+    assert prunes(env) == [f"prune --isolated --yes {shared}"] and (theirs / "notes.md").exists()
+
+
+def test_a_second_discard_at_once_still_succeeds(env, delivered, dejima_share, monkeypatch):
+    # A clear and the poller's purge racing: the record is gone by the time the second unlinks it.
+    from darner import launch as launch_module
+
+    a, shared, _ = delivered
+    run(a, "--dejima-share", str(dejima_share), "forget", "dn-abc23")
+    record = env / "tasks" / ".kept" / "dn-abc23"
+    real = launch_module._prune
+
+    def racing(args, share):
+        problem = real(args, share)
+        record.unlink()
+        return problem
+
+    monkeypatch.setattr(launch_module, "_prune", racing)
+    assert discard(a, dejima_share)[0] == 0 and not shared.exists()
+
+
+def test_discard_refuses_a_running_session(env, share, dejima_share):
+    a, shared = share
+    code, _, err = discard(a, dejima_share)
+    assert code == 1 and "hasn't ended" in err and shared.is_dir() and prunes(env) == []
+
+
+def test_discard_with_nothing_kept_does_nothing(env, dejima_share):
+    assert discard(args(env), dejima_share)[0] == 0 and prunes(env) == []
+
+
+def test_a_failed_discard_keeps_the_record_for_another_try(env, delivered, dejima_share, monkeypatch):
+    a, shared, _ = delivered
+    run(a, "--dejima-share", str(dejima_share), "forget", "dn-abc23")
+    monkeypatch.setenv("FAKE_SHARE_REFUSE", "a container still mounts it")
+    code, _, err = discard(a, dejima_share)
+    assert code == 1 and "a container still mounts it" in err and shared.is_dir()
+    assert (env / "tasks" / ".kept" / "dn-abc23").exists()
+
+
+def test_discard_prunes_only_under_the_share_root(env, delivered, dejima_share):
+    a, shared, _ = delivered
+    run(a, "--dejima-share", str(dejima_share), "forget", "dn-abc23")
+    (env / "tasks" / ".kept" / "dn-abc23").write_text("/etc")
+    code, _, err = discard(a, dejima_share)
+    assert code == 1 and "is not under" in err and prunes(env) == []
+
+
+def test_discard_with_keep_shared_keeps_the_share(env, delivered, dejima_share):
+    a, shared, _ = delivered
+    run(a, "--dejima-share", str(dejima_share), "forget", "dn-abc23")
+    assert discard(a, dejima_share, "--keep-shared")[0] == 0
+    assert shared.is_dir() and prunes(env) == [] and not (env / "tasks" / ".kept" / "dn-abc23").exists()
+
+
+def test_discard_is_a_command(env, share, dejima_share, monkeypatch):
+    a, shared = share
+    (env / "tasks" / "dn-abc23" / "exit").write_text("0\n")
+    monkeypatch.setenv("SSH_ORIGINAL_COMMAND", "discard ../etc")
+    assert run(a, "--dejima-share", str(dejima_share))[0] == 2
+    monkeypatch.setenv("SSH_ORIGINAL_COMMAND", "discard dn-abc23")
+    assert run(a, "--dejima-share", str(dejima_share))[0] == 0 and not shared.exists()
+
+
+def test_catalog_says_what_it_can_t_do_without_a_tool(env):
+    root = env / "dejima-install"
+    (root / "bin").mkdir(parents=True)
+    (root / "bin" / "dejima").write_text("#!/bin/sh\n")
+    (root / "bin" / "dejima").chmod(0o755)
+    install_manifests(root, MANIFESTS)
+    code, _, err = run(
+        args(env), "--dejima", str(root / "bin" / "dejima"), "--dejima-share", "no-such-share",
+        "--dejima-allow", "no-such-allow", "--docker", "no-such-docker", "catalog",
+    )
+    assert code == 0
+    assert "~/shared will be kept, not pruned: no-such-share not found on PATH" in err
+    assert "no-such-allow not found on PATH, so domain requests can't be granted" in err
+    assert "no-such-docker not found on PATH, so sessions can't be stopped" in err
+
+
+@pytest.mark.parametrize("third", ["", "ABC" + "0" * 61, "0" * 63, "0" * 65, "g" * 64])
+def test_forget_delivered_needs_a_sha256(share, monkeypatch, third):
+    a, _ = share
+    monkeypatch.setenv("SSH_ORIGINAL_COMMAND", f"forget-delivered dn-abc23 {third}".strip())
+    assert run(a)[0] == 2
