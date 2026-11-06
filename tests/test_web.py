@@ -2,6 +2,7 @@
 # Copyright (C) 2026 Brad Anderson
 import asyncio
 import hashlib
+import re
 from html.parser import HTMLParser
 from pathlib import Path
 
@@ -330,6 +331,14 @@ async def test_blurbs_and_config_sets_are_read_only_and_escaped(client):
     assert "harness: &lt;i&gt;cline&lt;/i&gt;" in html and "blurb: mealie" in html and "contents aren" in html
     # The description is shown as such, not as a keyword.
     assert "<p>Adds &lt;b&gt;recipes&lt;/b&gt;.</p>" in html and "description:" not in html
+
+
+async def test_config_sets_are_listed_with_their_descriptions(client):
+    for path in ("/configs", "/new"):
+        _, html = await get(client, path)
+        assert '<span class="description">Adds &lt;b&gt;recipes&lt;/b&gt;.</span>' in html, path
+        # local has none, so nothing follows its name.
+        assert re.search(r'>local</a>(</li>|</label>)', html), path
 
 
 async def test_every_response_carries_the_security_headers(client):
