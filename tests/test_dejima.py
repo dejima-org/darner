@@ -6,21 +6,18 @@ that's N/A or not tagged yet. Without it, these skip.
 """
 
 import os
+import re
 import subprocess
 from pathlib import Path
 
 import pytest
 
-from darner.launch import _dejima_share, dejima_defaults, dejima_root, harness_options, parse_args
+from darner.job import Job
+from darner.launch import _dejima_share, dejima_argv, dejima_defaults, dejima_root, harness_options, parse_args
 
 SRC = Path(os.environ["DEJIMA_SRC"]) if os.environ.get("DEJIMA_SRC") else None
 pytestmark = pytest.mark.skipif(SRC is None, reason="DEJIMA_SRC is not set")
 
-FLAGS = [
-    "--isolated", "--no-pause", "--shared-path-file", "--keep-records", "--identity", "--harness",
-    "--backend", "--model", "--effort", "--context-window", "--domains", "--internal-domain",
-    "--dependencies", "--drop-domains", "--require-sealed", "--print-config",
-]
 
 
 @pytest.fixture
@@ -42,14 +39,37 @@ def usage(tool):
     return subprocess.run([str(SRC / "bin" / tool), "--help-full"], capture_output=True, text=True, timeout=30, check=True).stdout
 
 
-def test_dejima_takes_every_flag_the_launcher_passes():
+def documented(flag, text):
+    # Whole flags only, so --internal isn't found in --internal-domain.
+    return re.search(rf"(?<![\w-]){re.escape(flag)}(?![\w-])", text) is not None
+
+
+def launcher_flags(tmp_path):
+    """Every flag the launcher passes dejima, from a job setting every option."""
+    dejima = str(SRC / "bin" / "dejima")
+    a = parse_args(["--dejima", dejima, "--identity", "darner", "--keep-records"])
+    flags = {"--print-config"}
+    for network in ("named", "sealed"):
+        job = Job(
+            id="dn-abc23", prompt="p", domains=["example.org"], internal_domains=["internal.example.org"],
+            dependencies=["apt:jq"], harness="cline", backend="anthropic", model="claude-opus-5-5", effort="high",
+            context_window=200000, network=network,
+        )
+        argv = dejima_argv(a, job, tmp_path, dejima)
+        flags |= {arg for arg in argv[: argv.index("--")] if arg.startswith("--")}
+    return flags
+
+
+def test_dejima_takes_every_flag_the_launcher_passes(home, tmp_path):
     text = usage("dejima")
-    assert [flag for flag in FLAGS if flag not in text] == []
+    flags = launcher_flags(tmp_path)
+    assert {"--isolated", "--context-window", "--require-sealed", "--drop-domains"} <= flags
+    assert sorted(flag for flag in flags if not documented(flag, text)) == []
 
 
 def test_dejima_allow_takes_what_grants_use():
     text = usage("dejima-allow")
-    assert [flag for flag in ("--container", "--internal", "--port") if flag not in text] == []
+    assert [flag for flag in ("--container", "--internal", "--port") if not documented(flag, text)] == []
 
 
 def test_dejima_share_prunes_one_share_by_name(home):
