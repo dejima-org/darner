@@ -31,6 +31,8 @@
 
 For each task, darner starts a coding agent in a `dejima --isolated` session, with the context, domains and dependencies the task asks for. While it runs, you answer its questions, approve the domains it asks for, and send it files, all from where you started it. When it's done, its summary and a zip of what it left in `~/shared` come back to you.
 
+**→ [Try darner-web](https://darner-demo.dejima.page/)**, in a demo with no model or sandbox behind it: start a task, watch it run, and get its output, without anything you type leaving your browser.
+
 [![Developed in dejima](assets/dejima-badge.svg)](https://gitbox.branderson.io/dejima/dejima)
 
 ## How it fits together
