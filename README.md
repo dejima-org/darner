@@ -41,7 +41,7 @@ For each task, darner starts a coding agent in a `dejima --isolated` session, wi
 frontend ──► darner-api ──ssh──► darner-launch ──► dejima --isolated, in tmux
 ```
 
-- **Frontends** are where you work. Two ship with darner, as equals: the [Matrix bot](docs/matrix.md), which takes tasks from a room or a direct chat, and [darner-web](docs/web.md), in a browser. Run either or both. Each has its own token and sees only the sessions it started.
+- **Frontends** are where you work. Two ship with darner, as equals: the [Matrix bot](docs/matrix.md), which takes tasks from a room or a direct chat, and [darner-web](docs/web.md), in a browser. Run either or both. Each has its own token and sees only the sessions it started. For anywhere else, such as Slack, [docs/frontends.md](docs/frontends.md) is what a frontend has to do.
 - **darner-api** holds tasks and their events, applies your policy, and collects output. Frontends talk only to it.
 - **The dejima host** runs [dejima](https://gitbox.branderson.io/dejima/dejima) and `darner-launch`. The API reaches it over ssh with a key that can run nothing but the launcher.
 
@@ -101,6 +101,7 @@ darner-web takes the same settings as a form, and shows what will launch before 
 | [setup.md](docs/setup.md) | Installing the launcher and the API, and updating |
 | [matrix.md](docs/matrix.md) | The Matrix bot: setting it up, starting tasks, its commands |
 | [web.md](docs/web.md) | darner-web: what reaching it means, its proxy, setting it up |
+| [frontends.md](docs/frontends.md) | Writing a frontend for another platform: what it must do |
 | [tasks.md](docs/tasks.md) | What a task can ask for, and the prompt the agent gets |
 | [sessions.md](docs/sessions.md) | Help and domain requests, typing into a session, output, what's kept |
 | [reference.md](docs/reference.md) | Launcher options, API config and endpoints |
