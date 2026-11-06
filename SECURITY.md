@@ -15,7 +15,7 @@ What it does claim is that it doesn't widen that boundary. The agent is presumed
 
 The API takes requests from frontends: the Matrix bot, darner-web ([docs/web.md](docs/web.md)), and possibly Slack or others later. Each frontend authenticates with an API token, and the API trusts it completely. It acts on whatever requester the frontend names, so deciding who may use darner is the frontend's job: the Matrix bot does it with its allowlist, and darner-web with the proxy in front of it. The API can't check that itself, because a token holder can name any requester.
 
-So adding a frontend adds a way in. Each one, and anyone who can administer it or read its configuration, can do everything the API does within its policy, for every task started through that token. Before adding one, treat it as you would the ssh key below:
+So adding a frontend adds a way in, and [docs/frontends.md](docs/frontends.md) is what a new one must do. Each one, and anyone who can administer it or read its configuration, can do everything the API does within its policy, for every task started through that token. Before adding one, treat it as you would the ssh key below:
 
 - **Give each frontend its own token**, so one can be revoked by removing its line from `[tokens]`, and its tasks stay separate from the others'.
 - **Keep the token where only the frontend can read it.** For the Matrix bot, that's the plugin's config in maubot, so a maubot admin can read it, or just edit the allowlist: maubot admin access is as good as the token. For darner-web, it's `web.toml`, so whoever can read that file, or get into darner-web's container, has the token.
