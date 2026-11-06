@@ -13,6 +13,18 @@ It can be thin. The API checks every task against its policy, launches it, polls
 
 This page is what has to be true of it. Give it a name of its own, as darner-web has, and build it in its own repository: darner doesn't need to know it exists, only its token.
 
+## Security comes first, because every frontend is a way in
+
+**A frontend is a key to your dejima host.** The API acts on whatever a frontend tells it, so a flaw in any frontend is a flaw in the whole deployment, however carefully the rest of it is set up. Whoever gets past a frontend can:
+
+- start sessions on your accounts, with any domains, dependencies and config sets the API's policy allows
+- read the files config sets give sessions, such as tokens
+- answer for you, approve what agents ask for, and read what they send back
+
+**If you're writing one,** security is its first requirement, ahead of every feature. Every rule below is a boundary, not a nicety. Meet all of them, test each one, and treat what the agent writes, and every request your frontend receives, as hostile until you've checked it.
+
+**If you're running one that someone else wrote,** read its code thoroughly before giving it a token, as you would anything you let start sessions on your dejima host, and again before each update. Check it against this page. darner can't check a frontend for you. Neither the Matrix bot's allowlist nor darner-web's proxy protects you from a different frontend's mistakes.
+
 ## The contract
 
 ### 1. It holds its own token, and guards it
