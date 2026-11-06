@@ -710,21 +710,6 @@ async def test_malformed_tag_is_not_an_answer(maubot_plugin, maubot_test_bot, ap
     assert maubot_test_bot.responded == [] and api.answers == []
 
 
-OLD_HELP_TAG = {"io.branderson.dejima.darner.help": {"task": "dn-7f3k2"}}
-
-
-async def test_answer_to_a_help_request_tagged_before_the_rename(maubot_plugin, maubot_test_bot, api):
-    maubot_test_bot.events[HELP_ID] = help_message(**OLD_HELP_TAG)
-    await send(maubot_test_bot, message("use postgres", reply_to=HELP_ID, mention=False))
-    assert api.answers == [("dn-7f3k2", {"text": "use postgres", "requester": ALICE})]
-
-
-async def test_an_old_tag_from_another_sender_is_not_an_answer(maubot_plugin, maubot_test_bot, api):
-    maubot_test_bot.events[HELP_ID] = help_message(sender="@mallory:example.org", **OLD_HELP_TAG)
-    await send(maubot_test_bot, message("use postgres", reply_to=HELP_ID, mention=False))
-    assert maubot_test_bot.responded == [] and api.answers == []
-
-
 async def test_tag_from_another_sender_is_not_an_answer(maubot_plugin, maubot_test_bot, api):
     maubot_test_bot.events[HELP_ID] = help_message(sender="@mallory:example.org", **HELP_TAG)
     await send(maubot_test_bot, message("use postgres", reply_to=HELP_ID, mention=False))
@@ -892,10 +877,7 @@ async def test_started_reply_is_tagged_with_its_task(maubot_plugin, maubot_test_
     assert started["page.dejima.darner.task"] == "dn-7f3k2"
 
 
-@pytest.mark.parametrize("tag", [
-    {"page.dejima.darner.task": "dn-7f3k2"}, {"page.dejima.darner.help": {"task": "dn-7f3k2"}},
-    {"io.branderson.dejima.darner.task": "dn-7f3k2"},
-])
+@pytest.mark.parametrize("tag", [{"page.dejima.darner.task": "dn-7f3k2"}, {"page.dejima.darner.help": {"task": "dn-7f3k2"}}])
 async def test_stop_by_replying_to_a_task_message(maubot_plugin, maubot_test_bot, api, tag):
     maubot_test_bot.events["$started"] = bot_message(**tag)
     await send(maubot_test_bot, message("@darner:example.org stop", reply_to="$started"))
@@ -1038,14 +1020,6 @@ async def test_allow_reply_grants_the_request(maubot_plugin, maubot_test_bot, de
         "Allowed for dn-7f3k2: pypi.org.\nCouldn't allow x.example.com: unreachable\n"
         "Tell the agent in its session that it can carry on."
     ]
-
-
-async def test_allow_reply_to_a_request_tagged_before_the_rename(maubot_plugin, maubot_test_bot, decisions):
-    maubot_test_bot.events["$domains"] = domains_message(
-        **{"io.branderson.dejima.darner.domains": {"task": "dn-7f3k2", "request": 3}}
-    )
-    await send(maubot_test_bot, message("@darner:example.org allow", reply_to="$domains"))
-    assert decisions.decisions == [("allow", "3", {"requester": ALICE})]
 
 
 async def test_deny_reply(maubot_plugin, maubot_test_bot, decisions):

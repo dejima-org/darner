@@ -34,14 +34,6 @@ SESSION = re.compile(_ID, re.IGNORECASE)
 # Content keys on the bot's messages. TASK_TAG marks each message about a task, so a reply to any of them can name it.
 TAG = "page.dejima.darner"
 TASK_TAG, HELP_TAG, DOMAINS_TAG = f"{TAG}.task", f"{TAG}.help", f"{TAG}.domains"
-# The tag before 0.1.19, still read on the bot's own messages so a help or domain
-# request left open across the rename can be answered. Drop it after 0.1.19.
-OLD_TAG = "io.branderson.dejima.darner"
-
-
-def _tag(content, key: str):
-    """One of the bot's tags on a message's content, under its current name or its old one."""
-    return content[key] if key in content else content.get(OLD_TAG + key.removeprefix(TAG))
 # Every message the bot sends mentions no one, whatever text it carries.
 NO_MENTIONS = {"m.mentions": {}}
 PILL = re.compile(r'<a\s[^>]*href="https://matrix\.to/#/([^"?]+)[^"]*"[^>]*>(.*?)</a>', re.IGNORECASE | re.DOTALL)
@@ -368,7 +360,7 @@ class Dragonlet(Plugin):
         # Only the bot's own tag counts, so a user can't steer an answer into another task
         if not isinstance(replied, RawMessageEvent) or replied.sender != self.client.mxid:
             return None
-        tag = _tag(replied.content, HELP_TAG)
+        tag = replied.content.get(HELP_TAG)
         task = tag.get("task") if isinstance(tag, dict) else None
         return task if isinstance(task, str) and TASK_ID.fullmatch(task) else None
 
@@ -376,14 +368,14 @@ class Dragonlet(Plugin):
         """The task one of the bot's own messages is about."""
         if not isinstance(replied, RawMessageEvent) or replied.sender != self.client.mxid:
             return None
-        task = _tag(replied.content, TASK_TAG)
+        task = replied.content.get(TASK_TAG)
         return task if isinstance(task, str) and TASK_ID.fullmatch(task) else self._help_task(replied)
 
     def _domain_request(self, replied: Event | None) -> tuple[str, int] | None:
         """The task and request number of one of the bot's own domain request messages."""
         if not isinstance(replied, RawMessageEvent) or replied.sender != self.client.mxid:
             return None
-        tag = _tag(replied.content, DOMAINS_TAG)
+        tag = replied.content.get(DOMAINS_TAG)
         if not isinstance(tag, dict):
             return None
         task, number = tag.get("task"), tag.get("request")
