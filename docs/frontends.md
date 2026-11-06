@@ -56,7 +56,7 @@ When someone replies to say "allow" or "stop", the frontend must know which sess
 
 ### 4. What the agent wrote arrives inert
 
-The API removes control and invisible characters from agent text and nothing more. Making it safe to show is the frontend's job.
+The API removes control and format characters (Unicode Cc and Cf) from agent text and nothing more: line and paragraph separators pass through. Making it safe to show is the frontend's job.
 
 The agent writes the `summary` of every `output`, `help` and `waiting` event, the domains in a `domains` event's `data`, a session's `waiting.answer` and `waiting.domains` in `GET /v1/tasks`, and everything inside an output zip. Each is presumed hostile:
 
@@ -72,7 +72,7 @@ The agent writes the `summary` of every `output`, `help` and `waiting` event, th
 
 `POST /v1/selftest` with `{requester, source}` creates a finished session whose output, help request and waiting screen are text written like a hostile agent's. It arrives through `/v1/events` like any session's, so it travels the same paths agent text does. Each check in it says what a safe frontend shows and what an unsafe one shows.
 
-Every check must pass. Then turn it into a test that fails on unescaped markup, a hidden link destination or a mention, as `assert_shown_safely` in `tests/test_bot.py` does for the bot. [Checking a frontend](development.md#checking-a-frontend) has more. Give people a way to run the self-test too, so an operator can check their own deployment, with a fresh `ref` each time: a repeated `source` returns the earlier self-test and delivers nothing new. It has no domain request, its help request isn't answerable, and its output has a zip, so check those paths yourself.
+Every check must pass. Then turn it into a test that fails on unescaped markup, a hidden link destination or a mention, as `assert_shown_safely` in `tests/test_bot.py` does for the bot. [Checking a frontend](development.md#checking-a-frontend) has more. Give people a way to run the self-test too, so an operator can check their own deployment, with a fresh `ref` each time: a repeated `source` returns the earlier self-test and delivers nothing new. It has no domain request, its help request isn't answerable, and its output has no zip, so check those paths yourself: downloading a zip before acknowledging, naming it, never unpacking it, and a platform refusing a large one.
 
 ### 6. Each request starts one task
 
@@ -114,10 +114,10 @@ A frontend doesn't hold the dejima host to itself.
 |---|---|
 | `output` | the agent's summary, labelled, and the zip if `size` isn't 0. `signalled: false` means it was collected without the agent's done signal |
 | `help` | the agent's question, labelled. If `answerable`, let an allowed person answer it, with `POST /v1/tasks/<id>/answer` |
-| `domains` | each requested domain in `data.domains`, with its port, and whether it's internal or refused by policy; `data.rejected` weren't valid domains. Allow or deny request `data.request`, as it was shown |
+| `domains` | each requested domain in `data.domains`, with its port, and whether it's internal or refused by policy; `data.rejected` counts the entries that weren't valid domains. Allow or deny request `data.request`, as it was shown |
 | `waiting` | the session's screen hasn't changed for `data.quiet` seconds; `summary` is the end of its screen, the agent's |
 | `expired` | it was stopped for running longer than sessions may, after `data.age` seconds |
-| `ended` | the session has ended. `data.share_kept` means its `~/shared` is kept on the dejima host until it's cleared, so offer that |
+| `ended` | the session has ended. Its `summary`, if any, is the API's own note, such as that its output couldn't be collected, so it needn't be labelled. `data.share_kept` means its `~/shared` is kept on the dejima host until it's cleared, so offer that |
 
 ## What each action calls
 
@@ -140,6 +140,8 @@ The API checks every task and grant against its policy and refuses what it doesn
 - Someone outside the allowlist can't start, answer, allow, message, upload, stop or clear, can't read a session's output, and can't write a task by being quoted or by editing a message.
 - A request that didn't come from the platform, or from your origin, is refused.
 - A reply to a message the frontend didn't send names no session.
+- Each `source.ref` is unique across everything the frontend serves.
+- A zip is downloaded before its event is acknowledged.
 - The token appears in no log, error or repository.
 
 [SECURITY.md](../SECURITY.md) has what a frontend holds, and why adding one adds a way in. darner's [changelog](../CHANGELOG.md) names any change to these endpoints, so check it at each release.
