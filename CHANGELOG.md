@@ -2,7 +2,7 @@
 
 What each release changed, newest first, for one question: should I update, and what will I be getting. The pull requests carry the detail.
 
-Each release names the dejima release it was released against: the one it was tested with, which has everything it needs from dejima. It's N/A until that dejima release exists, and a release can't be published while it is. See [docs/release.md](docs/release.md).
+Each release ships with a dejima release, and names it: the one it was tested with. It's N/A until the release is prepared, and a release can't be published while it is. See [docs/release.md](docs/release.md).
 
 ## 0.1.18
 

@@ -2,7 +2,7 @@
 
 Work lands on `development`, and every merge there publishes a pre-release. A release moves `development` to `main`, which publishes the stable plugin that users install. This is what that move consists of.
 
-## 1. It trails a dejima release
+## 1. It ships with a dejima release
 
 darner runs dejima on the dejima host and relies on these of its flags, tools and files:
 
@@ -13,7 +13,7 @@ darner runs dejima on the dejima host and relies on these of its flags, tools an
 - the manifests, `harnesses/*/harness.conf` (`api_styles`, and `keys` with `effort:?enum:...` and `context_window`) and `backends/*/backend.conf` (`api_style`), found beside the directory `dejima` resolves to from `bin/`
 - `$XDG_RUNTIME_DIR/dejima/sessions/<run id>` with its `pane=` line, and the `SANDBOX_ISOLATED_WORK=dejima_isolated-work-<run id>` volume name
 
-A darner release is released against one dejima release, the tag on dejima's `main` that it was tested with and that has everything it needs. `CHANGELOG.md` names it under the version's heading:
+darner releases in lockstep with dejima: its release pull request is prepared alongside a dejima release's, and both merge the same day, as [dejima's release process](https://gitbox.branderson.io/dejima/dejima/src/branch/main/docs/release.md) describes. `CHANGELOG.md` names that dejima release, the one it was tested with, under the version's heading:
 
 ```
 ## 0.1.18
@@ -21,9 +21,9 @@ A darner release is released against one dejima release, the tag on dejima's `ma
 Released against dejima: 2026.10.14
 ```
 
-So a darner release trails its dejima release. If it needs a dejima change that isn't in a dejima release yet, it waits for one. Until then the line says `N/A`. Pre-releases from `development` may need dejima's `development`, and say so in their pull requests.
+dejima's releases are named for the day they merge, so the line can be written before dejima's tag exists. A darner release that needs something not in that dejima release waits for the next one. Between releases the line says `N/A`. Pre-releases from `development` may need dejima's `development`, and say so in their pull requests.
 
-The release workflow refuses a stable release whose `CHANGELOG.md` entry is missing, has no `Released against dejima:` line, or says `N/A`. It doesn't check that the tag exists on dejima's `main`, so check that yourself.
+The release workflow refuses a stable release whose `CHANGELOG.md` entry is missing, has no `Released against dejima:` line, or says `N/A`. It doesn't check that the tag exists on dejima's `main`, so check it once dejima's release has merged.
 
 ## 2. What the forge must protect
 

@@ -17,7 +17,7 @@ What the API image and CI install is pinned, with hashes, in `requirements/api.t
 
 ## Releasing
 
-Pull requests target `development`, which merges to `main` when it's ready to release. `development` carries the next version: the first change after a release bumps both `plugin/maubot.yaml` and `pyproject.toml`, and opens its entry in [`CHANGELOG.md`](../CHANGELOG.md). Each release names the dejima release it was released against, so it trails that dejima release. [release.md](release.md) is the release process.
+Pull requests target `development`, which merges to `main` when it's ready to release. `development` carries the next version: the first change after a release bumps both `plugin/maubot.yaml` and `pyproject.toml`, and opens its entry in [`CHANGELOG.md`](../CHANGELOG.md). Each release ships with a dejima release, and names it. [release.md](release.md) is the release process.
 
 [`.gitea/workflows/release.yml`](../.gitea/workflows/release.yml) publishes the plugin on a `dejima-confined` runner:
 
