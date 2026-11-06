@@ -4,6 +4,12 @@ What each release changed, newest first, for one question: should I update, and 
 
 Each release names the dejima release it was released against: the one it was tested with, which has everything it needs from dejima. It's N/A until that dejima release exists, and a release can't be published while it is. See [docs/release.md](docs/release.md).
 
+## 0.1.19
+
+Released against dejima: N/A
+
+- **Stop reaches only its own session:** the launcher finds a task's session in dejima's registry by its tmux pane and its dejima's pid together, not the pane alone. After a tmux server restart, a new task's pane could take the id of a dead pane whose session was still running, and the task's Stop, Allow and remote-access link would have acted on that session instead. ([#83](https://gitbox.branderson.io/dejima/darner/pulls/83))
+
 ## 0.1.18
 
 Released against dejima: 2026.11.04

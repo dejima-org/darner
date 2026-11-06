@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "darner"
-version = "0.1.18"
+version = "0.1.19"
 description = "Start dejima sessions from task requests"
 requires-python = ">=3.11"
 license = "GPL-3.0-or-later"
