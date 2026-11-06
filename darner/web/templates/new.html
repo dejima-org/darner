@@ -10,7 +10,7 @@
 <input id="name" name="name" maxlength="35" pattern="(dn-)?[a-z0-9][a-z0-9\-]{0,31}" autocomplete="off" placeholder="its id, such as dn-k3x7q">
 {% if configs %}
 <fieldset><legend>Config sets</legend>
-<div class="choices">{% for name in configs %}<label class="choice"><input type="checkbox" name="configs" value="{{ name }}"> <a href="/configs/{{ name | urlencode }}">{{ name }}</a></label>{% endfor %}</div>
+<div class="choices">{% for name in configs %}<label class="choice"><input type="checkbox" name="configs" value="{{ name }}"> <a href="/configs/{{ name | urlencode }}">{{ name }}</a>{% if descriptions.get(name) %} <span class="description">{{ descriptions[name] }}</span>{% endif %}</label>{% endfor %}</div>
 </fieldset>
 {% endif %}
 {% if blurbs %}
