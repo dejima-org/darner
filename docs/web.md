@@ -70,7 +70,7 @@ The nginx example uses `Host $http_host`, not `$host`, because darner-web checks
 
 ## Sessions it started
 
-darner-web sees and acts on only the sessions it started, as each frontend does. A session started from Matrix is followed up in Matrix.
+darner-web sees and acts on only the sessions it started, as each frontend does: a session is followed up from the frontend that started it.
 
 A session's page leads with what it's waiting on you for, a domain request or a help request, or else its newest event, with the answer box below it, then what it was started with. Its history follows, newest first, each event folded until you open it.
 
