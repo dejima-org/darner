@@ -11,7 +11,8 @@ darner runs dejima on the dejima host and relies on these of its flags, tools an
 - `dejima-allow`: `--container`, `--internal` and `--port`, and exit status 2 meaning granted but not answering on 443
 - `dejima-share`: `prune --isolated [share]` and `--yes`, as its `--help` lists them
 - the manifests, `harnesses/*/harness.conf` (`api_styles`, and `keys` with `effort:?enum:...` and `context_window`) and `backends/*/backend.conf` (`api_style`), found beside the directory `dejima` resolves to from `bin/`
-- `$XDG_RUNTIME_DIR/dejima/sessions/<run id>` with its `pane=` and `pid=` lines, and the `SANDBOX_ISOLATED_WORK=dejima_isolated-work-<run id>` volume name
+- `$XDG_RUNTIME_DIR/dejima/sessions/<run id>` with its `pane=` and `pid=` lines. `pid=` is matched against the process the launcher started, so `--dejima` should name dejima or a wrapper that `exec`s it; with any other wrapper, the launcher falls back to the run id in its dejima's environment
+- the `SANDBOX_ISOLATED_WORK=dejima_isolated-work-<run id>` volume name
 
 A darner release is released against one dejima release, the tag on dejima's `main` that it was tested with and that has everything it needs. `CHANGELOG.md` names it under the version's heading:
 

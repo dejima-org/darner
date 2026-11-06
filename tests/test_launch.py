@@ -623,6 +623,7 @@ def test_another_session_in_a_reused_pane_is_not_the_task_s(env, share, register
     monkeypatch.setenv("FAKE_DOCKER_PS", "c0ffee")
     assert status(a)[0]["run_id"] is None
     code, _, err = run(a, "--docker", str(docker), "--stop-timeout", "0", "stop", "dn-abc23")
+    assert code == 0, err
     assert ["stop", "c0ffee"] not in docker_calls(env)
 
 
