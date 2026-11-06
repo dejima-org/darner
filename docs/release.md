@@ -23,7 +23,7 @@ Released against dejima: 2026.10.14
 
 dejima's releases are named for the day they merge, so the line can be written before dejima's tag exists. A darner release that needs something not in that dejima release waits for the next one. Between releases the line says `N/A`. Pre-releases from `development` may need dejima's `development`, and say so in their pull requests.
 
-The release workflow refuses a stable release whose `CHANGELOG.md` entry is missing, has no `Released against dejima:` line, or says `N/A`. It doesn't check that the tag exists on dejima's `main`, so check it once dejima's release has merged.
+The release workflow refuses a stable release whose `CHANGELOG.md` entry is missing, has no `Released against dejima:` line, or says `N/A`. It doesn't check that the tag exists on dejima's `main`, so check it once dejima's release has merged: a second dejima release on the same day gets a letter, such as `2026.10.12b`, so a line written beforehand can name the wrong one.
 
 ## 2. What the forge must protect
 
