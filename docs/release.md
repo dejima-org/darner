@@ -13,6 +13,8 @@ darner runs dejima on the dejima host and relies on these of its flags, tools an
 - the manifests, `harnesses/*/harness.conf` (`api_styles`, and `keys` with `effort:?enum:...` and `context_window`) and `backends/*/backend.conf` (`api_style`), found beside the directory `dejima` resolves to from `bin/`
 - `$XDG_RUNTIME_DIR/dejima/sessions/<run id>` with its `pane=` line, and the `SANDBOX_ISOLATED_WORK=dejima_isolated-work-<run id>` volume name
 
+`tests/test_dejima.py` checks these against a real dejima, which CI fetches: the release the newest `CHANGELOG.md` entry names, or dejima's `development` while that's `N/A`. Locally, it runs when `DEJIMA_SRC` names a dejima checkout.
+
 A darner release is released against one dejima release, the tag on dejima's `main` that it was tested with and that has everything it needs. `CHANGELOG.md` names it under the version's heading:
 
 ```

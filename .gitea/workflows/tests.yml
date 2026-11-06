@@ -29,6 +29,14 @@ jobs:
 
       - uses: actions/checkout@v4
 
+      # For tests/test_dejima.py: the dejima release the newest changelog entry
+      # names, or dejima's development while it names none.
+      - name: Fetch dejima
+        run: |
+          ref="$(sed -n 's/^Released against dejima: *//p' CHANGELOG.md | head -n 1)"
+          if [ -z "$ref" ] || [ "$ref" = N/A ]; then ref=development; fi
+          git clone --quiet --depth 1 --branch "$ref" "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY_OWNER/dejima.git" /tmp/dejima
+
       # As an unprivileged user, since root ignores file permissions and the
       # tests that check unreadable files would skip. Dependencies come from
       # requirements/test.txt, pinned with hashes.
@@ -38,7 +46,7 @@ jobs:
           su node -c "python3 -m venv .venv \
             && .venv/bin/pip install --quiet --require-hashes -r requirements/test.txt \
             && .venv/bin/pip install --quiet --no-deps --no-build-isolation -e . \
-            && .venv/bin/python -m pytest -q"
+            && DEJIMA_SRC=/tmp/dejima .venv/bin/python -m pytest -q"
 
   privileged:
     runs-on: dejima-privileged
