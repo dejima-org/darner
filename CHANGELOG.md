@@ -9,7 +9,7 @@ Each release names the dejima release it was released against: the one it was te
 Released against dejima: N/A
 
 - **Stop reaches only its own session:** the launcher finds a task's session in dejima's registry by its tmux pane and its dejima's pid together, not the pane alone. After a tmux server restart, a new task's pane could take the id of a dead pane whose session was still running, and the task's Stop, Allow and remote-access link would have acted on that session instead. ([#83](https://gitbox.branderson.io/dejima/darner/pulls/83))
-- **The plugin is now `page.dejima.darner`** (was `io.branderson.dejima.darner`), after dejima's domain, dejima.page. maubot sees a new plugin, so create an instance of it, enter its config again and remove the old one. Replies to messages the old plugin sent no longer name their task, so name it instead, as in `@darner stop dn-7f3k2`. The docs call the bot darner's Matrix bot throughout. ([#84](https://gitbox.branderson.io/dejima/darner/pulls/84))
+- **The plugin is now `page.dejima.darner`** (was `io.branderson.dejima.darner`), after dejima's domain, dejima.page. maubot sees a new plugin, so create an instance of it on the same bot account, enter its config again and remove the old one. Replies to the old plugin's messages still work in this release, including answering a help request and allowing or denying domains. On a different account they don't, so answer anything left waiting from darner-web, or name the session, as in `@darner tell dn-7f3k2 <answer>`. The docs call the bot darner's Matrix bot throughout. ([#84](https://gitbox.branderson.io/dejima/darner/pulls/84))
 
 ## 0.1.18
 

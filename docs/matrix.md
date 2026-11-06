@@ -32,7 +32,7 @@ mbc auth -h "$MAUBOT_HOMESERVER" -u "$BOT_USER" --update-client
 
 Download the plugin, `page.dejima.darner-v<version>.mbp`, from the repository's latest release, then upload it in maubot's web UI under **Plugins**. `mbc upload <file>` does the same from the command line.
 
-To build the plugin from a checkout instead, run `python3 -m zipfile -c darner.mbp maubot.yaml dragonlet base-config.yaml ../LICENSE` in its `plugin` directory, as the release workflow does.
+To build the plugin from a fresh clone instead, run `python3 -m zipfile -c darner.mbp maubot.yaml dragonlet base-config.yaml ../LICENSE` in its `plugin` directory, as the release workflow does. In a clone where the tests have run, `git clean -fdX plugin` first, or the `.mbp` carries their `__pycache__`.
 
 In maubot's web UI:
 
