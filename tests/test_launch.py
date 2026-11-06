@@ -1609,8 +1609,9 @@ def test_result_pending_until_delivered(env, share):
 
 FAKE_DEJIMA_SHARE = """#!/bin/sh
 printf '%s\\n' "$*" >> "$FAKE_SHARE_LOG"
-if [ "$1" = --help ]; then
-    if [ -n "$FAKE_SHARE_OLD" ]; then echo "Usage: dejima-share <path|list|adopt|prune> [path]"; echo "  prune --isolated  delete every ended share"
+if [ "$1" = --help-full ]; then
+    # One without --help-full prints its usage and fails, as an old dejima-share does.
+    if [ -n "$FAKE_SHARE_OLD" ]; then echo "Usage: dejima-share <path|list|adopt|prune> [path]"; echo "  prune --isolated  delete every ended share"; exit 1
     else echo "Usage: dejima-share <path|list|adopt|prune> [path] [--yes]"; echo "  prune --isolated [share]  delete one"; echo "  --yes  answer y"; fi
     exit 0
 fi
