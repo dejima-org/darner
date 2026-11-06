@@ -38,7 +38,8 @@ def home(tmp_path, monkeypatch):
 
 
 def usage(tool):
-    return subprocess.run([str(SRC / "bin" / tool), "--help"], capture_output=True, text=True, timeout=30, check=True).stdout
+    # --help-full, since --help is budgeted and a row may move down from it.
+    return subprocess.run([str(SRC / "bin" / tool), "--help-full"], capture_output=True, text=True, timeout=30, check=True).stdout
 
 
 def test_dejima_takes_every_flag_the_launcher_passes():

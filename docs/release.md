@@ -6,10 +6,10 @@ Work lands on `development`, and every merge there publishes a pre-release. A re
 
 darner runs dejima on the dejima host and relies on these of its flags, tools and files:
 
-- `dejima`: `--isolated`, `--no-pause`, `--shared-path-file`, `--keep-records`, `--identity`, `--harness`, `--backend`, `--model`, `--effort`, `--context-window`, `--domains`, `--internal-domain`, `--dependencies`, `--drop-domains`, `--require-sealed` and `--print-config`
+- `dejima`, in its `--help-full`: `--isolated`, `--no-pause`, `--shared-path-file`, `--keep-records`, `--identity`, `--harness`, `--backend`, `--model`, `--effort`, `--context-window`, `--domains`, `--internal-domain`, `--dependencies`, `--drop-domains`, `--require-sealed` and `--print-config`
 - `--print-config`'s `section.key=value` lines, for `core.harness` and `harness.<name>.{backend,model,effort,context_window}`
 - `dejima-allow`: `--container`, `--internal` and `--port`, and exit status 2 meaning granted but not answering on 443
-- `dejima-share`: `prune --isolated [share]` and `--yes`, as its `--help` lists them
+- `dejima-share`: `prune --isolated [share]` and `--yes`, as its `--help-full` lists them
 - the manifests, `harnesses/*/harness.conf` (`api_styles`, and `keys` with `effort:?enum:...` and `context_window`) and `backends/*/backend.conf` (`api_style`), found beside the directory `dejima` resolves to from `bin/`
 - `$XDG_RUNTIME_DIR/dejima/sessions/<run id>` with its `pane=` line, and the `SANDBOX_ISOLATED_WORK=dejima_isolated-work-<run id>` volume name
 
