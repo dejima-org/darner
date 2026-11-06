@@ -2,7 +2,7 @@
 
 docs/release.md lists the same things. DEJIMA_SRC names the checkout; CI sets
 it to the dejima release CHANGELOG.md names, or dejima's development while
-that's N/A. Without it, these skip.
+that's N/A or not tagged yet. Without it, these skip.
 """
 
 import os
