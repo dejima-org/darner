@@ -32,7 +32,7 @@ TASK_ID = re.compile(r"dn-[a-z2-7]{5}")
 _ID = r"dn-[a-z0-9][a-z0-9-]{0,31}"
 SESSION = re.compile(_ID, re.IGNORECASE)
 # Content keys on the bot's messages. TASK_TAG marks each message about a task, so a reply to any of them can name it.
-TAG = "io.branderson.dejima.darner"
+TAG = "page.dejima.darner"
 TASK_TAG, HELP_TAG, DOMAINS_TAG = f"{TAG}.task", f"{TAG}.help", f"{TAG}.domains"
 # Every message the bot sends mentions no one, whatever text it carries.
 NO_MENTIONS = {"m.mentions": {}}
