@@ -227,20 +227,25 @@ def _start_window(args: argparse.Namespace, job, task_dir: Path) -> dict:
 def session_run_id(task_dir: Path) -> str | None:
     """dejima's run id for the session in this task's pane, once dejima has registered it.
 
-    dejima records each session's tmux pane in its remote-access registry, so
-    the pane darner created is what identifies the session there. Nothing
-    is registered unless dejima's remote access is enabled.
+    dejima records each session's tmux pane and its own pid in its
+    remote-access registry. Both must be this task's: tmux numbers panes
+    afresh when its server restarts, and an entry whose pane died outlives it
+    (dejima#404), so a pane alone can name another session. Nothing is
+    registered unless dejima's remote access is enabled.
     """
     try:
         pane = (task_dir / "pane").read_text()
     except FileNotFoundError:
+        return None
+    if (pid := _dejima_pid(task_dir)) is None:
         return None
     sessions = Path(_tmux_env()["XDG_RUNTIME_DIR"]) / "dejima" / "sessions"
     for entry in sessions.glob("*") if sessions.is_dir() else ():
         if not RUN_ID.fullmatch(entry.name):
             continue
         try:
-            if f"pane={pane}" in entry.read_text().splitlines():
+            lines = entry.read_text().splitlines()
+            if f"pane={pane}" in lines and f"pid={pid}" in lines:
                 return entry.name
         except OSError:
             continue
