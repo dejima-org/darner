@@ -23,7 +23,7 @@ This page is what has to be true of it. Give it a name of its own, as darner-web
 
 **If you're writing one,** security is its first requirement, ahead of every feature. Every rule below is a boundary, not a nicety. Meet all of them, test each one, and treat what the agent writes, and every request your frontend receives, as hostile until you've checked it.
 
-**If you're running one that someone else wrote,** read its code thoroughly before giving it a token, as you would anything you let start sessions on your dejima host, and again before each update. Check it against this page. darner can't check a frontend for you. Neither the Matrix bot's allowlist nor darner-web's proxy protects you from a different frontend's mistakes.
+**If you're running one that someone else wrote,** read its code thoroughly before giving it a token, as you should anything you let start sessions on your dejima host, and again before each update. Check it against this page. darner can't check a frontend for you. Neither the Matrix bot's allowlist nor darner-web's proxy protects you from a different frontend's mistakes.
 
 ## The contract
 
