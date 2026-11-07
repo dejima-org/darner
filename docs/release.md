@@ -16,7 +16,7 @@ darner runs dejima on the dejima host and relies on these of its flags, tools an
 
 `tests/test_dejima.py` checks these against a real dejima, which CI fetches: the release the newest `CHANGELOG.md` entry names, or dejima's `development` while that's `N/A` or not tagged yet. Locally, it runs when `DEJIMA_SRC` names a dejima checkout.
 
-darner releases in lockstep with dejima: its release pull request is prepared alongside a dejima release's, and both merge the same day, as [dejima's release process](https://gitbox.branderson.io/dejima/dejima/src/branch/main/docs/release.md) describes. `CHANGELOG.md` names that dejima release, the one it was tested with, under the version's heading:
+darner releases in lockstep with dejima: its release pull request is prepared alongside a dejima release's, and both merge the same day, as [dejima's release process](https://github.com/dejima-org/dejima/blob/main/docs/release.md) describes. `CHANGELOG.md` names that dejima release, the one it was tested with, under the version's heading:
 
 ```
 ## 0.1.18

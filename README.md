@@ -18,9 +18,15 @@
      inline and indents the image by one space. -->
 &nbsp;
 
-&nbsp;<img src="assets/dejima-wordmark-darkmode.png" alt="dejima" height="72">
+&nbsp;<picture><source media="(prefers-color-scheme: dark)" srcset="assets/dejima-wordmark-darkmode.png"><img src="assets/dejima-wordmark-lightmode.png" alt="dejima" height="72"></picture>
 
 ---
+
+> **This is a read-only mirror.** Development happens on the forge its
+> maintainer runs, which takes no accounts, issues or pull requests;
+> [this repository](https://gitbox.branderson.io/dejima/darner) is
+> public to read there. Issues and pull requests are off here too. See
+> [CONTRIBUTING.md](https://github.com/dejima-org/dejima/blob/main/CONTRIBUTING.md).
 
 &nbsp;
 
@@ -33,7 +39,7 @@ For each task, darner starts a coding agent in a `dejima --isolated` session, wi
 
 **→ [Try darner-web](https://darner-demo.dejima.page/)**, in a demo with no model or sandbox behind it: start a task, watch it run, and get its output, without anything you type leaving your browser.
 
-[![Developed in dejima](assets/dejima-badge.svg)](https://gitbox.branderson.io/dejima/dejima)
+[![Developed in dejima](assets/dejima-badge.svg)](https://github.com/dejima-org/dejima)
 
 ## How it fits together
 
@@ -43,7 +49,7 @@ frontend ──► darner-api ──ssh──► darner-launch ──► dejima 
 
 - **Frontends** are where you work. Two ship with darner, as equals: the [Matrix bot](docs/matrix.md), which takes tasks from a room or a direct chat, and [darner-web](docs/web.md), in a browser. Run either or both. Each has its own token and sees only the sessions it started. For anywhere else, such as Slack, [docs/frontends.md](docs/frontends.md) is what a frontend has to do.
 - **darner-api** holds tasks and their events, applies your policy, and collects output. Frontends talk only to it.
-- **The dejima host** runs [dejima](https://gitbox.branderson.io/dejima/dejima) and `darner-launch`. The API reaches it over ssh with a key that can run nothing but the launcher.
+- **The dejima host** runs [dejima](https://github.com/dejima-org/dejima) and `darner-launch`. The API reaches it over ssh with a key that can run nothing but the launcher.
 
 They can share a machine or not.
 
@@ -114,4 +120,4 @@ darner-web takes the same settings as a form, and shows what will launch before 
 
 GPL-3.0-or-later. See [LICENSE](LICENSE).
 
-The dejima wordmark and logo are not code and are not covered by that licence. They are trademarks; who holds them and what may be done with them is stated once for the organisation, at [dejima's ATTRIBUTION.md](https://gitbox.branderson.io/dejima/dejima/src/branch/main/ATTRIBUTION.md).
+The dejima wordmark and logo are not code and are not covered by that licence. They are trademarks; who holds them and what may be done with them is stated once for the organisation, at [dejima's ATTRIBUTION.md](https://github.com/dejima-org/dejima/blob/main/ATTRIBUTION.md).
