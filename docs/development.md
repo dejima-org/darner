@@ -17,7 +17,7 @@ What the API image and CI install is pinned, with hashes, in `requirements/api.t
 
 ## Releasing
 
-Pull requests target `development`, which merges to `main` when it's ready to release. `development` carries the next version: the first change after a release bumps both `plugin/maubot.yaml` and `pyproject.toml`, and opens its entry in [`CHANGELOG.md`](../CHANGELOG.md). Each release names the dejima release it was released against, so it trails that dejima release. [release.md](release.md) is the release process.
+Pull requests target `development`, which merges to `main` when it's ready to release. `development` carries the next version: the first change after a release bumps both `plugin/maubot.yaml` and `pyproject.toml`, and opens its entry in [`CHANGELOG.md`](../CHANGELOG.md). Each release ships with a dejima release, and names it. [release.md](release.md) is the release process.
 
 [`.gitea/workflows/release.yml`](../.gitea/workflows/release.yml) publishes the plugin on a `dejima-confined` runner:
 
@@ -28,7 +28,7 @@ A pushed tag releases nothing; only these two branches do, so the forge must pro
 
 ## Checking a frontend
 
-The API passes on what the agent wrote with control and invisible characters removed, and nothing more: making it safe to show is each frontend's job. `POST /v1/selftest`, darner-web's **Self-test**, or `selftest` to the Matrix bot, sends text written like a hostile agent's ([`darner/selftest.py`](../darner/selftest.py)) as a finished task's output, help request and waiting screen. It arrives through `/v1/events` like any task's, so it goes down the same paths an agent's text does.
+The API passes on what the agent wrote with control and format characters (Unicode Cc and Cf) removed, and nothing more: making it safe to show is each frontend's job. `POST /v1/selftest`, darner-web's **Self-test**, or `selftest` to the Matrix bot, sends text written like a hostile agent's ([`darner/selftest.py`](../darner/selftest.py)) as a finished task's output, help request and waiting screen. It arrives through `/v1/events` like any task's, so it goes down the same paths an agent's text does.
 
 Each check says what you see if the frontend is safe (PASS) and what you see if it isn't (FAIL), then gives a test line on its own: raw HTML, scripts and HTML links must show as characters; markdown and Slack links and markdown images must show where they really point, not just "click here", and an address too long for the screen must wrap rather than be cut off; `@room` and the like, in Matrix or Slack syntax, must notify nobody; and the last check must arrive, so a cut-off message shows.
 

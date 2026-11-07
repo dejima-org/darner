@@ -4,7 +4,7 @@ import pytest
 
 from dragonlet.parse import ParseError, Request, parse_reply, strip_mention
 
-NAMES = ["@dragonlet:example.org", "Dragonlet"]
+NAMES = ["@darner:example.org", "darner"]
 
 
 def parse(body):
@@ -13,7 +13,7 @@ def parse(body):
 
 def test_design_example():
     req = parse(
-        "@dragonlet fix the flaky tests, use pytest-xdist\n"
+        "@darner fix the flaky tests, use pytest-xdist\n"
         "blurb: myapp\n"
         "allow: pypi.org, files.pythonhosted.org\n"
         "dependency: apt:python3-venv pip:pytest-xdist\n"
@@ -71,13 +71,13 @@ def test_single_value_keywords(key):
 @pytest.mark.parametrize(
     "body",
     [
-        "@dragonlet:example.org do it",
-        "@dragonlet:example.org: do it",
-        "dragonlet: do it",
-        "Dragonlet do it",
-        "@Dragonlet do it",
-        "@dragonlet: do it",
-        "DRAGONLET: do it",
+        "@darner:example.org do it",
+        "@darner:example.org: do it",
+        "darner: do it",
+        "Darner do it",
+        "@Darner do it",
+        "@darner: do it",
+        "DARNER: do it",
     ],
 )
 def test_leading_mention_forms(body):
@@ -85,79 +85,79 @@ def test_leading_mention_forms(body):
 
 
 def test_mention_mid_line():
-    assert parse("hey @dragonlet:example.org do it").context == "hey do it"
-    assert parse("thanks Dragonlet!").context == "thanks !"
+    assert parse("hey @darner:example.org do it").context == "hey do it"
+    assert parse("thanks darner!").context == "thanks !"
 
 
 def test_mention_not_inside_word():
-    assert parse("Dragonlet: the dragonletbox repo").context == "the dragonletbox repo"
+    assert parse("darner: the darnerbox repo").context == "the darnerbox repo"
 
 
 def test_mention_before_keyword_line():
-    req = parse("@dragonlet:example.org ctx: myapp")
+    req = parse("@darner:example.org ctx: myapp")
     assert req.blurbs == ["myapp"] and req.context == ""
 
 
 def test_keyword_values_keep_bot_name():
-    assert parse("Dragonlet\nctx: darner").blurbs == ["darner"]
+    assert parse("darner\nctx: darner").blurbs == ["darner"]
 
 
 def test_empty_context():
-    assert parse("@dragonlet:example.org\nallow: a.org").context == ""
+    assert parse("@darner:example.org\nallow: a.org").context == ""
     assert parse("").context == ""
 
 
 def test_reply_fallback_stripped():
-    body = "> <@alice:example.org> the note\n> more\n\ndragonlet: go"
+    body = "> <@alice:example.org> the note\n> more\n\ndarner: go"
     assert parse(body).context == "go"
 
 
 def test_no_names():
-    assert parse_reply("dragonlet: go", []).context == "dragonlet: go"
+    assert parse_reply("darner: go", []).context == "darner: go"
 
 
 def test_model_and_effort_keywords():
-    req = parse_reply("@dragonlet:example.org do it\nmodel: claude-opus-5[1m]\neffort: high", ["@dragonlet:example.org"])
+    req = parse_reply("@darner:example.org do it\nmodel: claude-opus-5[1m]\neffort: high", ["@darner:example.org"])
     assert req.model == "claude-opus-5[1m]" and req.effort == "high" and req.context == "do it"
 
 
 def test_context_window_keyword():
-    assert parse_reply("go\ncontext_window: 32768", ["@dragonlet:example.org"]).context_window == "32768"
+    assert parse_reply("go\ncontext_window: 32768", ["@darner:example.org"]).context_window == "32768"
 
 
 def test_network_keyword():
-    assert parse_reply("go\nnetwork: sealed", ["@dragonlet:example.org"]).network == "sealed"
+    assert parse_reply("go\nnetwork: sealed", ["@darner:example.org"]).network == "sealed"
 
 
 @pytest.mark.parametrize("key", ["model", "effort", "context_window", "network"])
 def test_model_and_effort_take_one_value(key):
     with pytest.raises(ParseError, match=f"{key} takes one value"):
-        parse_reply(f"go\n{key}: a b", ["@dragonlet:example.org"])
+        parse_reply(f"go\n{key}: a b", ["@darner:example.org"])
 
 
-BOT_ID = "@dragonlet:example.org"
+BOT_ID = "@darner:example.org"
 
 
 @pytest.mark.parametrize(
     "link",
     [
-        "[@dragonlet:example.org](https://matrix.to/#/@dragonlet:example.org)",
-        "[Dragonlet](https://matrix.to/#/%40dragonlet%3Aexample.org)",
-        "[@dragonlet:example.org](https://matrix.to/#/@dragonlet:example.org?via=example.org)",
-        "[Dragonlet](https://chat.example.org/#/user/@dragonlet:example.org)",
+        "[@darner:example.org](https://matrix.to/#/@darner:example.org)",
+        "[darner](https://matrix.to/#/%40darner%3Aexample.org)",
+        "[@darner:example.org](https://matrix.to/#/@darner:example.org?via=example.org)",
+        "[darner](https://chat.example.org/#/user/@darner:example.org)",
     ],
 )
 def test_markdown_pill_is_stripped(link):
-    assert strip_mention(f"{link} help", [BOT_ID, "Dragonlet"]).strip() == "help"
-    req = parse_reply(f"{link} fix it\nallow: pypi.org", [BOT_ID, "Dragonlet"])
+    assert strip_mention(f"{link} help", [BOT_ID, "darner"]).strip() == "help"
+    req = parse_reply(f"{link} fix it\nallow: pypi.org", [BOT_ID, "darner"])
     assert req.context == "fix it" and req.domains == ["pypi.org"]
 
 
 def test_links_to_others_are_kept():
-    body = "[@dragonlet:example.org](https://matrix.to/#/@dragonlet:example.org) ask [Alice](https://matrix.to/#/@alice:example.org) and see [docs](https://example.org/x)"
+    body = "[@darner:example.org](https://matrix.to/#/@darner:example.org) ask [Alice](https://matrix.to/#/@alice:example.org) and see [docs](https://example.org/x)"
     assert parse_reply(body, [BOT_ID]).context == "ask [Alice](https://matrix.to/#/@alice:example.org) and see [docs](https://example.org/x)"
 
 
 def test_internal_keyword():
-    req = parse_reply("go\ninternal: recipes.example.com:8443, wiki.example.com", ["@dragonlet:example.org"])
+    req = parse_reply("go\ninternal: recipes.example.com:8443, wiki.example.com", ["@darner:example.org"])
     assert req.internal_domains == ["recipes.example.com:8443", "wiki.example.com"] and req.domains == []

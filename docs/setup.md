@@ -22,7 +22,6 @@ The commands below take your values from shell variables, so they can be pasted 
 
 | variable | what it is | where the value comes from |
 |---|---|---|
-| `DARNER_REPO` | this repository's clone URL | your forge's clone button |
 | `DEJIMA_HOST` | the dejima host's hostname or IP, as the API host reaches it over ssh | your network; test with `ssh $DEJIMA_HOST` from the API host |
 | `DEJIMA_USER` | the account on the dejima host that runs dejima; the API logs in as it | `whoami` on the dejima host, as the user you run dejima as |
 | `API_ADDR` | the address the API host's connections arrive from, as the dejima host sees them. Under Docker, that's the Docker host's address | `ip -brief addr` on the API host. For the address the dejima host actually sees, run `echo $SSH_CLIENT` in an ssh session from the API host, or check the `from=` on a key that machine already uses, such as dejima-guard's |
@@ -30,10 +29,11 @@ The commands below take your values from shell variables, so they can be pasted 
 | `FRONTEND` | your first frontend's token name: `maubot` or `web` | your choice |
 | `API_TOKEN` | the secret that frontend uses to authenticate to the API | generated in step 5 |
 
-These set where things are installed. The defaults work as they are:
+These set where darner comes from and where it is installed. The defaults work as they are:
 
 | variable | default | what goes there |
 |---|---|---|
+| `DARNER_REPO` | `https://gitbox.branderson.io/dejima/darner.git` | where darner is cloned from |
 | `LAUNCHER_SRC` | `~/src/darner` | the launcher's clone, on the dejima host |
 | `DARNER_DIR` | `/opt/darner` | on the API host: the clone and virtualenv under systemd, or the whole deployment directory under Docker Compose |
 | `DARNER_CONFIG` | `/etc/darner` | systemd only: `api.toml` and the blurbs |
@@ -46,7 +46,7 @@ Under systemd, the service user `darner` must be able to read `DARNER_DIR` and `
 On the dejima host, as `DEJIMA_USER`:
 
 ```sh
-DARNER_REPO=https://git.example.com/example/darner.git
+DARNER_REPO=https://gitbox.branderson.io/dejima/darner.git
 LAUNCHER_SRC=~/src/darner
 
 git clone "$DARNER_REPO" "$LAUNCHER_SRC"
@@ -87,7 +87,7 @@ The API runs either as a systemd service or in Docker Compose. Steps 2, 3 and 5 
 **With systemd:** create a service user and install into a virtualenv:
 
 ```sh
-DARNER_REPO=https://git.example.com/example/darner.git
+DARNER_REPO=https://gitbox.branderson.io/dejima/darner.git
 DARNER_DIR=/opt/darner
 DARNER_STATE=/var/lib/darner
 
@@ -101,7 +101,7 @@ sudo "$DARNER_DIR/venv/bin/pip" install --no-deps --no-build-isolation --editabl
 **With Docker Compose:** lay out a deployment directory around a clone, and build the image. The container runs as uid 10001, so its data directory belongs to that uid:
 
 ```sh
-DARNER_REPO=https://git.example.com/example/darner.git
+DARNER_REPO=https://gitbox.branderson.io/dejima/darner.git
 DARNER_DIR=/opt/darner
 
 sudo install -d -o "$USER" "$DARNER_DIR" && cd "$DARNER_DIR"

@@ -26,6 +26,9 @@ case "$1" in
     new-window)
         # Every window gets its own ids, as tmux gives them: @7 %7 for the first.
         n=$(( $(cat "$FAKE_TMUX_LOG.n" 2>/dev/null || echo 6) + 1 )); echo "$n" > "$FAKE_TMUX_LOG.n"
+        if [ -n "$FAKE_TMUX_PID" ]; then
+            for arg; do [ "$prev" = --exec ] && printf %s "$FAKE_TMUX_PID" > "$arg/pid"; prev=$arg; done
+        fi
         while [ "$1" != -n ]; do shift; done; echo "darner:$2 @$n %$n" ;;
 esac
 """
@@ -573,10 +576,30 @@ def test_exec_records_a_dejima_that_cannot_start(env):
     assert "couldn't start" in result.stderr and "Press Enter" in result.stdout
 
 
-def register_session(env, pane="%7", run_id="0123456789abcdef"):
-    sessions = env / "run" / "dejima" / "sessions"
-    sessions.mkdir(parents=True, exist_ok=True)
-    (sessions / run_id).write_text(f"workspace=isolated\npane={pane}\nlabel=darner:1\n")
+@pytest.fixture
+def register_session(env):
+    """Registers a session as dejima does, with a live process standing in for its dejima.
+
+    The process is recorded as dn-abc23's dejima when that task exists, unless
+    the session is another's.
+    """
+    processes = []
+
+    def register(pane="%7", run_id="0123456789abcdef", own=True):
+        dejima = subprocess.Popen(["sleep", "600"])
+        processes.append(dejima)
+        sessions = env / "run" / "dejima" / "sessions"
+        sessions.mkdir(parents=True, exist_ok=True)
+        (sessions / run_id).write_text(f"workspace=isolated\npane={pane}\nlabel=darner:1\npid={dejima.pid}\n")
+        task = env / "tasks" / "dn-abc23"
+        if own and task.is_dir():
+            (task / "pid").write_text(str(dejima.pid))
+        return dejima.pid
+
+    yield register
+    for dejima in processes:
+        dejima.kill()
+        dejima.wait()
 
 
 def test_pane_is_recorded(env):
@@ -584,12 +607,24 @@ def test_pane_is_recorded(env):
     assert (env / "tasks" / "dn-abc23" / "pane").read_text() == "%7"
 
 
-def test_launch_waits_for_the_session_run_id(env):
-    register_session(env, pane="%9", run_id="ffffffffffffffff")
-    register_session(env)
+def test_launch_waits_for_the_session_run_id(env, register_session, monkeypatch):
+    register_session(pane="%9", run_id="ffffffffffffffff")
+    monkeypatch.setenv("FAKE_TMUX_PID", str(register_session()))
     (env / "run" / "dejima" / "sessions" / "not-a-run-id").write_text("pane=%3\n")
     result = launch(args(env), {"id": "dn-abc23", "prompt": "p", "session_wait": 5})
     assert result["run_id"] == "0123456789abcdef"
+
+
+def test_another_session_in_a_reused_pane_is_not_the_task_s(env, share, register_session, docker, monkeypatch):
+    # A tmux server restart numbers panes afresh, and a dead pane's entry stays
+    # behind while its container runs (dejima#404).
+    a, _ = share
+    register_session(own=False)
+    monkeypatch.setenv("FAKE_DOCKER_PS", "c0ffee")
+    assert status(a)[0]["run_id"] is None
+    code, _, err = run(a, "--docker", str(docker), "--stop-timeout", "0", "stop", "dn-abc23")
+    assert code == 0, err
+    assert ["stop", "c0ffee"] not in docker_calls(env)
 
 
 def test_launch_gives_up_waiting(env):
@@ -600,14 +635,14 @@ def test_launch_gives_up_waiting(env):
     assert "run_id" not in result and time.monotonic() - start < 3
 
 
-def test_launch_without_session_wait_does_not_look(env):
-    register_session(env)
+def test_launch_without_session_wait_does_not_look(env, register_session):
+    register_session()
     assert "run_id" not in launch(args(env), {"id": "dn-abc23", "prompt": "p"})
 
 
-def test_status_reports_run_id_of_running_task(env, share):
+def test_status_reports_run_id_of_running_task(env, share, register_session):
     a, _ = share
-    register_session(env)
+    register_session()
     assert status(a)[0]["run_id"] == "0123456789abcdef"
 
 
@@ -752,9 +787,9 @@ def docker_calls(env):
     return [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
 
 
-def test_stop_stops_the_container_then_closes_the_window(env, share, docker, monkeypatch):
+def test_stop_stops_the_container_then_closes_the_window(env, share, docker, register_session, monkeypatch):
     a, _ = share
-    register_session(env)
+    register_session()
     monkeypatch.setenv("FAKE_DOCKER_PS", "c0ffee")
     monkeypatch.setenv("FAKE_DOCKER_EXIT", str(env / "tasks" / "dn-abc23" / "exit"))
     (env / "tmux.log").write_text("")
@@ -864,13 +899,13 @@ esac
 
 
 @pytest.fixture
-def allow_env(env, share, docker, monkeypatch):
+def allow_env(env, share, docker, register_session, monkeypatch):
     a, shared = share
     tool = env / "bin" / "dejima-allow"
     tool.write_text(FAKE_DEJIMA_ALLOW)
     tool.chmod(0o755)
     monkeypatch.setenv("FAKE_ALLOW_LOG", str(env / "allow.log"))
-    register_session(env)
+    register_session()
     monkeypatch.setenv("FAKE_DOCKER_PS", "c0ffee")
     return a, shared
 
@@ -1574,8 +1609,9 @@ def test_result_pending_until_delivered(env, share):
 
 FAKE_DEJIMA_SHARE = """#!/bin/sh
 printf '%s\\n' "$*" >> "$FAKE_SHARE_LOG"
-if [ "$1" = --help ]; then
-    if [ -n "$FAKE_SHARE_OLD" ]; then echo "Usage: dejima-share <path|list|adopt|prune> [path]"; echo "  prune --isolated  delete every ended share"
+if [ "$1" = --help-full ]; then
+    # One without --help-full prints its usage and fails, as an old dejima-share does.
+    if [ -n "$FAKE_SHARE_OLD" ]; then echo "Usage: dejima-share <path|list|adopt|prune> [path]"; echo "  prune --isolated  delete every ended share"; exit 1
     else echo "Usage: dejima-share <path|list|adopt|prune> [path] [--yes]"; echo "  prune --isolated [share]  delete one"; echo "  --yes  answer y"; fi
     exit 0
 fi

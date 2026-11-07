@@ -2,6 +2,7 @@
 # Copyright (C) 2026 Brad Anderson
 import asyncio
 import hashlib
+import re
 from html.parser import HTMLParser
 from pathlib import Path
 
@@ -113,13 +114,15 @@ class FakeApi:
             return await record(request, "Use <script>the API</script>.\n")
 
         async def configs(request):
-            return await record(request, ["recipes", "local"])
+            return await record(request, ["recipes", "local"] + getattr(self, "more_configs", []))
 
         async def config(request):
             sets = {
                 "recipes": {"blurb": ["mealie"], "harness": "<i>cline</i>", "file": ["token"], "description": "Adds <b>recipes</b>."},
                 "local": {"backend": "openrouter"},
             }
+            if request.match_info["name"] == "broken":
+                return web.json_response({"error": "broken: unknown keyword 'harnes'"}, status=400)
             if request.match_info["name"] not in sets:
                 raise web.HTTPNotFound()
             return await record(request, sets[request.match_info["name"]])
@@ -330,6 +333,21 @@ async def test_blurbs_and_config_sets_are_read_only_and_escaped(client):
     assert "harness: &lt;i&gt;cline&lt;/i&gt;" in html and "blurb: mealie" in html and "contents aren" in html
     # The description is shown as such, not as a keyword.
     assert "<p>Adds &lt;b&gt;recipes&lt;/b&gt;.</p>" in html and "description:" not in html
+
+
+async def test_config_sets_are_listed_with_their_descriptions(client):
+    for path in ("/configs", "/new"):
+        _, html = await get(client, path)
+        assert '<span class="description">Adds &lt;b&gt;recipes&lt;/b&gt;.</span>' in html, path
+        # local has none, so nothing follows its name.
+        assert re.search(r'>local</a>(</li>|</label>)', html), path
+
+
+async def test_a_config_set_that_wont_load_is_listed_without_a_description(client, fake):
+    fake.more_configs = ["broken"]
+    for path in ("/configs", "/new"):
+        resp, html = await get(client, path)
+        assert resp.status == 200 and re.search(r'>broken</a>(</li>|</label>)', html), path
 
 
 async def test_every_response_carries_the_security_headers(client):

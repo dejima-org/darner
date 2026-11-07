@@ -284,6 +284,7 @@ fieldset { border: 1px solid var(--rule); border-radius: 6px; padding: 0.4rem 1.
 legend { padding: 0 0.4rem; margin: 0; color: var(--fg-dim); }
 .choices { display: flex; flex-wrap: wrap; gap: 0.5rem 1.4rem; margin-top: 0.6rem; }
 .choice { display: inline-flex; align-items: baseline; gap: 0.45rem; font-family: var(--font-head); font-weight: 400; margin: 0; }
+.choice > a { flex-shrink: 0; }
 .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 1.25rem; }
 @media (max-width: 40rem) { .grid { grid-template-columns: 1fr; } }
 
@@ -295,6 +296,8 @@ legend { padding: 0 0.4rem; margin: 0; color: var(--fg-dim); }
 
 .names { list-style: none; padding: 0; margin: 0; display: grid; gap: 0.5rem; }
 .names a { font-family: var(--font-mono); font-size: 0.98rem; }
+.description { color: var(--fg-dim); font-family: var(--font-body); font-size: 0.92rem; }
+.names .description { margin-left: 0.5rem; }
 .well { background: var(--bg-well); border: 1px solid var(--rule-strong); border-radius: 6px; padding: 1.1rem 1.3rem; }
 
 /* --- what Start launches ------------------------------------------------ */

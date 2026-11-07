@@ -347,7 +347,7 @@ async def download(request: web.Request) -> web.StreamResponse:
 
 
 async def blurbs_page(request: web.Request) -> web.Response:
-    return page(request, "names.html", kind="blurbs", title="Context blurbs", names=await api(request, "GET", "/v1/blurbs"))
+    return page(request, "names.html", kind="blurbs", title="Context blurbs", names=await api(request, "GET", "/v1/blurbs"), descriptions={})
 
 
 async def blurb_page(request: web.Request) -> web.Response:
@@ -362,7 +362,24 @@ async def blurb_page(request: web.Request) -> web.Response:
 
 
 async def configs_page(request: web.Request) -> web.Response:
-    return page(request, "names.html", kind="configs", title="Config sets", names=await api(request, "GET", "/v1/configs"))
+    names = await api(request, "GET", "/v1/configs")
+    return page(request, "names.html", kind="configs", title="Config sets", names=names, descriptions=await _descriptions(request, names))
+
+
+async def _descriptions(request: web.Request, names: list[str]) -> dict[str, str]:
+    """Each config set's description, the comment lines it starts with, to show beside its name."""
+    found = {}
+    for name in names:
+        try:
+            described = await api(request, "GET", f"/v1/configs/{quote(name, safe='')}")
+        except ApiError as e:
+            # Removed since it was listed, or doesn't load: its own page says why.
+            if e.status in (400, 404):
+                continue
+            raise
+        if isinstance(described, dict) and isinstance(described.get("description"), str):
+            found[name] = described["description"]
+    return found
 
 
 async def config_page(request: web.Request) -> web.Response:
@@ -519,7 +536,8 @@ async def new_task_page(request: web.Request) -> web.Response:
                 efforts.append(level)
     # A fresh source per page, so sending the form twice finds the task the first send started.
     return page(
-        request, "new.html", catalog=catalog, blurbs=blurbs, configs=configs, efforts=efforts, ref=secrets.token_hex(16)
+        request, "new.html", catalog=catalog, blurbs=blurbs, configs=configs, descriptions=await _descriptions(request, configs),
+        efforts=efforts, ref=secrets.token_hex(16),
     )
 
 

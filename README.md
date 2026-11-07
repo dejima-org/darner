@@ -31,6 +31,8 @@
 
 For each task, darner starts a coding agent in a `dejima --isolated` session, with the context, domains and dependencies the task asks for. While it runs, you answer its questions, approve the domains it asks for, and send it files, all from where you started it. When it's done, its summary and a zip of what it left in `~/shared` come back to you.
 
+**→ [Try darner-web](https://darner-demo.dejima.page/)**, in a demo with no model or sandbox behind it: start a task, watch it run, and get its output, without anything you type leaving your browser.
+
 [![Developed in dejima](assets/dejima-badge.svg)](https://gitbox.branderson.io/dejima/dejima)
 
 ## How it fits together
@@ -39,7 +41,7 @@ For each task, darner starts a coding agent in a `dejima --isolated` session, wi
 frontend ──► darner-api ──ssh──► darner-launch ──► dejima --isolated, in tmux
 ```
 
-- **Frontends** are where you work. Two ship with darner, as equals: the [Matrix bot](docs/matrix.md), which takes tasks from a room or a direct chat, and [darner-web](docs/web.md), in a browser. Run either or both. Each has its own token and sees only the sessions it started.
+- **Frontends** are where you work. Two ship with darner, as equals: the [Matrix bot](docs/matrix.md), which takes tasks from a room or a direct chat, and [darner-web](docs/web.md), in a browser. Run either or both. Each has its own token and sees only the sessions it started. For anywhere else, such as Slack, [docs/frontends.md](docs/frontends.md) is what a frontend has to do.
 - **darner-api** holds tasks and their events, applies your policy, and collects output. Frontends talk only to it.
 - **The dejima host** runs [dejima](https://gitbox.branderson.io/dejima/dejima) and `darner-launch`. The API reaches it over ssh with a key that can run nothing but the launcher.
 
@@ -82,7 +84,7 @@ You need dejima working on a Linux host, with tmux, pipx and Python 3.11 there, 
 A task is an instruction, plus keyword lines for what it needs. In Matrix, mention the bot with it:
 
 ```
-@dragonlet the import job started failing after the deploy, find out why
+@darner the import job started failing after the deploy, find out why
 blurb: myapp
 allow: pypi.org, files.pythonhosted.org
 harness: cline
@@ -99,6 +101,7 @@ darner-web takes the same settings as a form, and shows what will launch before 
 | [setup.md](docs/setup.md) | Installing the launcher and the API, and updating |
 | [matrix.md](docs/matrix.md) | The Matrix bot: setting it up, starting tasks, its commands |
 | [web.md](docs/web.md) | darner-web: what reaching it means, its proxy, setting it up |
+| [frontends.md](docs/frontends.md) | Writing a frontend for another platform: what it must do |
 | [tasks.md](docs/tasks.md) | What a task can ask for, and the prompt the agent gets |
 | [sessions.md](docs/sessions.md) | Help and domain requests, typing into a session, output, what's kept |
 | [reference.md](docs/reference.md) | Launcher options, API config and endpoints |
