@@ -373,8 +373,8 @@ async def _descriptions(request: web.Request, names: list[str]) -> dict[str, str
         try:
             described = await api(request, "GET", f"/v1/configs/{quote(name, safe='')}")
         except ApiError as e:
-            # Removed since it was listed.
-            if e.status == 404:
+            # Removed since it was listed, or doesn't load: its own page says why.
+            if e.status in (400, 404):
                 continue
             raise
         if isinstance(described, dict) and isinstance(described.get("description"), str):
