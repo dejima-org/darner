@@ -8,7 +8,7 @@ Each release ships with a dejima release, and names it: the one it was tested wi
 
 Released against dejima: N/A
 
-- **darner-web keeps what you're typing:** a task or message not yet sent is kept in the browser tab until it's sent, so reading a blurb or leaving the page doesn't lose it. `drafts = false` in `web.toml` turns it off. Pointing at a config set or blurb on the new-task form shows what it holds, without leaving the form. The form says that the task isn't kept once started, and says beside Domains, Internal domains and Dependencies that each takes a comma-separated list. Agent markdown tables render as tables. ([#95](https://gitbox.branderson.io/dejima/darner/pulls/95), [#96](https://gitbox.branderson.io/dejima/darner/pulls/96))
+- **darner-web keeps what you're typing:** a task or message not yet sent is kept in the browser tab until it's sent, so reading a blurb or leaving the page doesn't lose it. `drafts = false` in `web.toml` turns it off. Pointing at a config set or blurb on the new-task form, or pressing its View on a phone, shows what it holds without leaving the form. The form says that the task isn't kept once started, and says beside Domains, Internal domains and Dependencies that each takes a comma-separated list. Agent markdown tables render as tables. ([#95](https://gitbox.branderson.io/dejima/darner/pulls/95), [#96](https://gitbox.branderson.io/dejima/darner/pulls/96))
 
 ## 0.1.19
 
