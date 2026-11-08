@@ -110,6 +110,7 @@ async def test_the_actions_work_under_the_csp(aiohttp_server):
     assert result["message_draft"] == "use postgres" and result["message_after"] == ""
     assert result["task_draft"] == {"task": "add this recipe", "domains": "allrecipes.example.org", "mealie": True, "same_ref": True}
     assert result["task_after"] == ""
+    assert result["peek"] == {"before": False, "after": True, "text": "Use <script>the API</script>.\n"}
     [task] = [body for path, body in posted if path == "/v1/tasks"]
     assert task["task"] == "add this recipe" and task["blurbs"] == ["mealie"] and task["grants"]["domains"] == ["allrecipes.example.org"]
     assert (task["harness"], task["backend"], task["model"], task["name"]) == ("cline", "openrouter", "z-ai/glm-5.3", "recipes")

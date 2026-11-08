@@ -148,6 +148,18 @@ for (const form of document.querySelectorAll("form[data-action]")) {
   });
 }
 
+// A config set's or blurb's contents open beside it, and are moved left if they'd run off the page.
+for (const choice of document.querySelectorAll(".choice")) {
+  const peek = choice.querySelector(".peek");
+  const place = () => {
+    peek.style.left = "";
+    const over = peek.getBoundingClientRect().right - (document.documentElement.clientWidth - 8);
+    if (over > 0) peek.style.left = `${-over}px`;
+  };
+  choice.addEventListener("mouseenter", place);
+  choice.addEventListener("focusin", place);
+}
+
 // A session's history: folded, with what was unfolded kept across the page's reloads.
 for (const button of document.querySelectorAll("button[data-expand]")) {
   const list = document.querySelector(button.dataset.expand);

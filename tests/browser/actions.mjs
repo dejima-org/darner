@@ -60,6 +60,12 @@ await page.goto(`${origin}/new`, { waitUntil: "networkidle" });
 await page.fill("#task", "add this recipe");
 await page.check('input[name="blurbs"][value="mealie"]');
 await page.fill("#domains", "allrecipes.example.org");
+// Pointing at a blurb shows what it adds, on the form itself.
+const peek = page.locator('.choice:has(input[value="mealie"]) .peek');
+result.peek = { before: await peek.isVisible() };
+await page.hover('.choice:has(input[value="mealie"]) label');
+result.peek.after = await peek.isVisible();
+result.peek.text = await peek.textContent();
 // Reading a blurb and coming back keeps the form, and its ref, so sending it again finds a task it started.
 const ref = await page.inputValue('input[name="ref"]');
 await page.goto(`${origin}/blurbs/mealie`, { waitUntil: "networkidle" });

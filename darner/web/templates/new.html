@@ -11,21 +11,17 @@
 <label for="name">Name <span class="quiet">optional: lowercase letters, digits and hyphens, unique among open sessions</span></label>
 <input id="name" name="name" maxlength="35" pattern="(dn-)?[a-z0-9][a-z0-9\-]{0,31}" autocomplete="off" placeholder="its id, such as dn-k3x7q">
 {% if configs %}
-<fieldset><legend>Config sets</legend>
-<div class="choices">{% for name in configs %}<label class="choice"><input type="checkbox" name="configs" value="{{ name }}"> {{ name }}{% if descriptions.get(name) %} <span class="description">{{ descriptions[name] }}</span>{% endif %}</label>{% endfor %}</div>
-{% if configs %}<details class="contents"><summary>What each applies</summary>
-{% for name in configs %}<h3>{{ name }}</h3>
-{% if name in described %}<pre>{{ settings(described[name]) }}</pre>{% else %}<p class="quiet">Couldn't be read: <a href="/configs/{{ name | urlencode }}">its page</a> says why.</p>{% endif %}
-{% endfor %}</details>{% endif %}
+<fieldset><legend>Config sets <span class="quiet">point at one to see what it applies</span></legend>
+<div class="choices">{% for name in configs %}<div class="choice"><label><input type="checkbox" name="configs" value="{{ name }}"> {{ name }}{% if descriptions.get(name) %} <span class="description">{{ descriptions[name] }}</span>{% endif %}</label>
+<div class="peek">{% if name in described %}<pre>{{ settings(described[name]) }}</pre>{% else %}<p class="quiet">Couldn't be read: <a href="/configs/{{ name | urlencode }}">its page</a> says why.</p>{% endif %}</div></div>
+{% endfor %}</div>
 </fieldset>
 {% endif %}
 {% if blurbs %}
-<fieldset><legend>Context blurbs</legend>
-<div class="choices">{% for name in blurbs %}<label class="choice"><input type="checkbox" name="blurbs" value="{{ name }}"> {{ name }}</label>{% endfor %}</div>
-<details class="contents"><summary>What each adds to the prompt</summary>
-{% for name in blurbs %}<h3>{{ name }}</h3>
-{% if name in blurb_texts %}<pre>{{ blurb_texts[name] }}</pre>{% else %}<p class="quiet">Couldn't be read: <a href="/blurbs/{{ name | urlencode }}">its page</a> says why.</p>{% endif %}
-{% endfor %}</details>
+<fieldset><legend>Context blurbs <span class="quiet">point at one to read it</span></legend>
+<div class="choices">{% for name in blurbs %}<div class="choice"><label><input type="checkbox" name="blurbs" value="{{ name }}"> {{ name }}</label>
+<div class="peek">{% if name in blurb_texts %}<pre>{{ blurb_texts[name] }}</pre>{% else %}<p class="quiet">Couldn't be read: <a href="/blurbs/{{ name | urlencode }}">its page</a> says why.</p>{% endif %}</div></div>
+{% endfor %}</div>
 </fieldset>
 {% endif %}
 <fieldset><legend>Access</legend>
