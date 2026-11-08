@@ -20,12 +20,19 @@ await page.addInitScript(() => {
 
 await page.goto(`${origin}/sessions/dn-aaaaa`, { waitUntil: "networkidle" });
 await page.fill("#message", "use postgres");
+// A message not yet sent is still there after leaving the page.
+await page.goto(`${origin}/blurbs`, { waitUntil: "networkidle" });
+await page.goto(`${origin}/sessions/dn-aaaaa`, { waitUntil: "networkidle" });
+result.message_draft = await page.inputValue("#message");
 await page.click("form[data-action] button[type=submit]");
 await page.waitForFunction(() => !document.querySelector("form[data-action] .sent").hidden);
 result.sent = await page.evaluate(() => ({
   note: document.querySelector("form[data-action] .sent").textContent, field: document.querySelector("#message").value,
 }));
 result.violations.push(...(await page.evaluate(() => window.__violations)));
+// Once sent, it's forgotten.
+await page.reload({ waitUntil: "networkidle" });
+result.message_after = await page.inputValue("#message");
 
 // A stop that fails puts the button back and says why.
 page.once("dialog", (dialog) => dialog.accept());
@@ -53,6 +60,14 @@ await page.goto(`${origin}/new`, { waitUntil: "networkidle" });
 await page.fill("#task", "add this recipe");
 await page.check('input[name="blurbs"][value="mealie"]');
 await page.fill("#domains", "allrecipes.example.org");
+// Reading a blurb and coming back keeps the form, and its ref, so sending it again finds a task it started.
+const ref = await page.inputValue('input[name="ref"]');
+await page.goto(`${origin}/blurbs/mealie`, { waitUntil: "networkidle" });
+await page.goto(`${origin}/new`, { waitUntil: "networkidle" });
+result.task_draft = {
+  task: await page.inputValue("#task"), domains: await page.inputValue("#domains"),
+  mealie: await page.isChecked('input[name="blurbs"][value="mealie"]'), same_ref: (await page.inputValue('input[name="ref"]')) === ref,
+};
 const offered = (id) => page.$$eval(`#${id} option`, (os) => os.map((o) => o.value));
 const shown = () => page.$$eval("#preview dt", (dts) => Object.fromEntries(dts.map((dt) => [dt.textContent, dt.nextElementSibling.textContent])));
 const firstLabel = (id) => page.$eval(`#${id} option`, (o) => o.textContent);
@@ -98,6 +113,8 @@ await page.waitForFunction(() => !document.querySelector(".status").hidden);
 result.starting = { button: await page.textContent("button[type=submit]"), status: await page.textContent(".status") };
 await landing;
 result.landed = page.url();
+await page.goto(`${origin}/new`, { waitUntil: "networkidle" });
+result.task_after = await page.inputValue("#task");
 result.violations.push(...(await page.evaluate(() => window.__violations)));
 await browser.close();
 console.log(JSON.stringify(result));

@@ -9,7 +9,7 @@
 <link rel="stylesheet" href="/static/app.css">
 <script src="/static/app.js" defer></script>
 </head>
-<body{% if state %} data-state="{{ state }}" data-version="{{ version }}"{% endif %}>
+<body{% if state %} data-state="{{ state }}" data-version="{{ version }}"{% endif %}{% if drafts %} data-drafts{% endif %}>
 <header>
 <nav aria-label="darner">
 <a href="/" class="brand"><img src="/static/dejima-wordmark-darkmode.png" alt="dejima" width="106" height="26"></a>

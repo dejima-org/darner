@@ -1,0 +1,3 @@
+{# A config set's keywords, one a line, as a task naming it applies them. #}
+{% macro settings(described) %}{% for key, value in described.items() if key != "description" %}{{ key }}: {% if value is string %}{{ value }}{% else %}{{ value | join(", ") }}{% endif %}
+{% endfor %}{% endmacro %}

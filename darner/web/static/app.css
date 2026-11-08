@@ -244,6 +244,10 @@ nav .new { padding: 0.5rem 0.9rem; font-size: 0.95rem; }
 .event .agent pre, .event pre.agent { padding: 1rem 1.1rem; }
 .event .agent p:last-child { margin-bottom: 0.6rem; }
 .event .agent pre { background: none; }
+/* A table the agent wrote scrolls on its own rather than widening the page. */
+.agent .table { overflow-x: auto; margin: 0 0 1rem; }
+.agent table { border-collapse: collapse; overflow-wrap: normal; }
+.agent th, .agent td { border: 1px solid var(--rule-strong); padding: 0.3rem 0.6rem; text-align: left; vertical-align: top; }
 .event.ended > h2, .event.expired > h2 { border-bottom: 0; }
 .event.expired > h2 { color: var(--refused); }
 .event .footer { padding: 0 1.1rem 1rem; display: flex; gap: 0.75rem; flex-wrap: wrap; align-items: center; }
@@ -285,6 +289,11 @@ legend { padding: 0 0.4rem; margin: 0; color: var(--fg-dim); }
 .choices { display: flex; flex-wrap: wrap; gap: 0.5rem 1.4rem; margin-top: 0.6rem; }
 .choice { display: inline-flex; align-items: baseline; gap: 0.45rem; font-family: var(--font-head); font-weight: 400; margin: 0; }
 .choice > a { flex-shrink: 0; }
+/* What each config set or blurb holds, folded under its choices, so reading it doesn't leave the form. */
+.contents { margin-top: 0.9rem; }
+.contents summary { cursor: pointer; font-family: var(--font-head); color: var(--fg-dim); }
+.contents h3 { font-family: var(--font-mono); font-size: 0.95rem; font-weight: 400; margin: 0.9rem 0 0.35rem; }
+.contents pre { margin: 0; }
 .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 1.25rem; }
 @media (max-width: 40rem) { .grid { grid-template-columns: 1fr; } }
 

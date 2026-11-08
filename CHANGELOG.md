@@ -4,6 +4,12 @@ What each release changed, newest first, for one question: should I update, and 
 
 Each release ships with a dejima release, and names it: the one it was tested with. It's N/A until the release is prepared, and a release can't be published while it is. See [docs/release.md](docs/release.md).
 
+## 0.1.20
+
+Released against dejima: N/A
+
+- **darner-web keeps what you're typing:** a task or message not yet sent is kept in the browser tab until it's sent, so reading a blurb or leaving the page doesn't lose it. `drafts = false` in `web.toml` turns it off. The new-task form shows what each config set and blurb holds, folded beneath them, says that the task isn't kept once started, and says beside Domains, Internal domains and Dependencies that each takes a comma-separated list. Agent markdown tables render as tables. ([#95](https://gitbox.branderson.io/dejima/darner/pulls/95))
+
 ## 0.1.19
 
 Released against dejima: 2026.11.06b

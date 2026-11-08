@@ -340,14 +340,48 @@ async def test_config_sets_are_listed_with_their_descriptions(client):
         _, html = await get(client, path)
         assert '<span class="description">Adds &lt;b&gt;recipes&lt;/b&gt;.</span>' in html, path
         # local has none, so nothing follows its name.
-        assert re.search(r'>local</a>(</li>|</label>)', html), path
+        assert re.search(r'\blocal(</a>)?(</li>|</label>)', html), path
+
+
+async def test_the_new_task_form_shows_what_each_config_set_and_blurb_holds(client):
+    _, html = await get(client, "/new")
+    # On the form itself, escaped, so reading one doesn't leave it.
+    assert "<h3>recipes</h3>\n<pre>blurb: mealie\nharness: &lt;i&gt;cline&lt;/i&gt;\nfile: token\n</pre>" in html
+    assert "<h3>mealie</h3>\n<pre>Use &lt;script&gt;the API&lt;/script&gt;.\n</pre>" in html
+    assert 'href="/configs/' not in html and 'href="/blurbs/' not in html
+    # Every field that takes a list says how.
+    assert html.count('<span class="quiet">comma separated') == 3
+    assert "The task is given to the agent and not kept" in html
+
+
+async def test_a_config_set_or_blurb_that_wont_load_says_where_to_look(client, fake):
+    fake.more_configs = ["broken"]
+    _, html = await get(client, "/new")
+    assert '<h3>broken</h3>\n<p class="quiet">Couldn\'t be read: <a href="/configs/broken">its page</a> says why.</p>' in html
+
+
+async def test_a_message_draft_is_kept_for_one_session_only(client):
+    _, html = await get(client, "/sessions/dn-aaaaa")
+    # By id and start, so a later session given the same name doesn't get it.
+    assert re.search(r'data-draft="message:dn-aaaaa:\d+(\.\d+)?"', html)
+
+
+async def test_drafts_can_be_turned_off(aiohttp_client, fake):
+    on = await aiohttp_client(make_app(config_for(fake)))
+    off = await aiohttp_client(make_app(config_for(fake, drafts=False)))
+    for path in ("/new", "/sessions/dn-aaaaa"):
+        _, html = await get(on, path)
+        assert re.search(r"<body[^>]* data-drafts>", html), path
+        assert "kept in this tab" in html, path
+        _, html = await get(off, path)
+        assert "data-drafts" not in html and "kept in this tab" not in html, path
 
 
 async def test_a_config_set_that_wont_load_is_listed_without_a_description(client, fake):
     fake.more_configs = ["broken"]
     for path in ("/configs", "/new"):
         resp, html = await get(client, path)
-        assert resp.status == 200 and re.search(r'>broken</a>(</li>|</label>)', html), path
+        assert resp.status == 200 and re.search(r'\bbroken(</a>)?(</li>|</label>)', html), path
 
 
 async def test_every_response_carries_the_security_headers(client):
@@ -497,6 +531,9 @@ async def test_the_api_being_down_is_an_error_page(aiohttp_client, fake):
     ("[x](javascript:alert(1))", "[x](javascript:alert(1))"),
     ("![p](https://px.example/a.png)", "p (https://px.example/a.png)"),
     ("<b>hi</b>", "&lt;b&gt;hi&lt;/b&gt;"),
+    # A table, in a box that scrolls, with no inline style for the CSP to refuse.
+    ("| a | b |\n|:--|--:|\n| <i>x</i> | 2 |", '<div class="table"><table>\n<thead>\n<tr>\n<th>a</th>\n<th>b</th>'),
+    ("| a | b |\n|:--|--:|\n| <i>x</i> | 2 |", "<td>&lt;i&gt;x&lt;/i&gt;</td>\n<td>2</td>"),
 ])
 def test_agent_markdown_rules(markdown, html):
     assert html in render(markdown)
@@ -511,6 +548,7 @@ def test_agent_markdown_rules(markdown, html):
     ({"user_header": ""}, "user_header"),
     ({"public_origin": "https://user@darner.example.com"}, "public_origin"),
     ({"launch_timeout": "300"}, "launch_timeout must be a positive number"),
+    ({"drafts": "no"}, "drafts must be true or false"),
     ({"max_upload": 0}, "max_upload must be a positive number"),
     ({"max_download": True}, "max_download must be a positive number"),
     ({"public_origin": "https://darner.example.com:notaport"}, "public_origin"),
