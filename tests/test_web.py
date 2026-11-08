@@ -872,3 +872,51 @@ def test_the_vendored_static_files_are_the_recorded_ones():
     assert set(recorded) == {name for name in present if name not in reviewed and not name.startswith("fonts/LICENSE-")}
     for name, digest in recorded.items():
         assert hashlib.sha256((static / name).read_bytes()).hexdigest() == digest, name
+
+
+@pytest.mark.parametrize("used, shown", [
+    ([{"model": "m", "requests": 3, "metered": 3, "input": 12345, "output": 999, "cache_read": 58000, "cache_write": 1200000}],
+     # dejima's counts don't overlap, so the whole prompt is their sum.
+     "1.3M in (58k cached), 999 out"),
+    # Summed over models, each count only where some model has it.
+    ([{"model": "a", "requests": 1, "metered": 1, "output": 5}, {"model": None, "requests": 1, "metered": 1, "output": 7}], "12 out"),
+    # Without input, the prompt's size isn't known, so the cache counts are shown as they are.
+    ([{"model": "m", "requests": 1, "metered": 1, "cache_read": 5}], "5 cache read"),
+    # A partial count says so, rather than passing for the whole.
+    ([{"model": "m", "requests": 100, "metered": 60, "input": 999950, "output": 1000}], "1M in, 1k out; 40 of 100 requests not counted"),
+    # Requests with no counts are said to be uncounted, not shown as zero.
+    ([{"model": "m", "requests": 2, "metered": 0}], "2 model requests, not counted by the provider"),
+    ([], ""),
+])
+def test_tokens_are_shown_as_dejima_counts_them(used, shown):
+    from darner.web import _tokens
+    assert _tokens(used) == shown
+
+
+def test_each_model_says_how_many_requests_werent_counted():
+    from darner.web import _tokens_by_model
+    assert _tokens_by_model([{"model": "m", "requests": 4, "metered": 3, "output": 10}]) == "m: 4 requests (1 not counted), 10 out"
+
+
+async def test_usage_is_shown_on_events_and_the_session(client, fake):
+    fake.sessions[0]["usage"] = [{"model": "<i>m</i>", "requests": 4, "metered": 4, "input": 2000, "output": 300}]
+    fake.events["dn-aaaaa"][1]["data"] = {"usage": [{"model": "<i>m</i>", "requests": 1, "metered": 1, "input": 500, "output": 40}]}
+    _, html = await get(client, "/sessions/dn-aaaaa")
+    assert '<span class="tokens" title="&lt;i&gt;m&lt;/i&gt;: 1 request, 500 fresh in, 40 out">500 in, 40 out</span>' in html
+    assert "Used so far: 2k in, 300 out." in html
+    _, html = await get(client, "/")
+    assert '<p class="meta tokens" title="&lt;i&gt;m&lt;/i&gt;: 4 requests, 2k fresh in, 300 out">2k in, 300 out</p>' in html
+
+
+async def test_an_unmetered_session_says_so_once_it_has_started(client, fake):
+    _, html = await get(client, "/sessions/dn-aaaaa")
+    assert "Token usage isn't metered for this session." in html
+    fake.sessions[0]["state"] = "starting"
+    _, html = await get(client, "/sessions/dn-aaaaa")
+    assert "metered" not in html
+
+
+async def test_an_ended_session_says_what_it_used(client, fake):
+    fake.events["dn-bbbbb"][1]["data"] = {"share_pruned": True, "usage": [], "usage_total": [{"model": "m", "requests": 9, "metered": 9, "output": 4500}]}
+    _, html = await get(client, "/sessions/dn-bbbbb")
+    assert '<span class="tokens" title="m: 9 requests, 4.5k out">It used 4.5k out.</span>' in html

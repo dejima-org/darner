@@ -252,7 +252,8 @@ async def test_end_to_end_with_launcher(aiohttp_client, config, tmp_path, monkey
     task_id = (await resp.json())["id"]
     argv = json.loads((tmp_path / "tasks" / task_id / "argv.json").read_text())
     assert argv[3:5] == ["--shared-path-file", str(tmp_path / "tasks" / task_id / "shared-path")]
-    assert argv[5:9] == ["--harness", "claude-code", "--backend", "anthropic"]
+    assert argv[5:7] == ["--usage-path-file", str(tmp_path / "tasks" / task_id / "usage-path")]
+    assert argv[7:11] == ["--harness", "claude-code", "--backend", "anthropic"]
     assert argv[-1].startswith("Investigate these logs")
 
     # What dejima and the agent would do: record ~/shared, leave output, signal it.
@@ -2037,3 +2038,47 @@ async def test_errors_are_json_for_frontends_to_relay(client):
     assert resp.status == 404 and await resp.json() == {"error": "no session dn-recipes"}
     resp = await client.get("/v1/nothing-here", headers=AUTH)
     assert resp.status == 404 and await resp.json() == {"error": "Not Found"}
+
+
+async def test_usage_reaches_events_and_the_session_view(started, tmp_path, monkeypatch):
+    app, client, task_id, status, output = started
+    path = tmp_path / "status.json"
+
+    def report(state, used, hostile=False):
+        path.write_text(json.dumps([{"id": task_id, "state": state, "ready": True, "usage": used}]))
+        monkeypatch.setenv("STUB_STATUS", str(path))
+
+    used = [{"model": "claude-opus-5-5", "requests": 3, "metered": 3, "input": 30, "output": 12, "cache_read": 900}]
+    report("running", used)
+    output(zip_bytes([("RESULT.md", "Found it."), ("MANIFEST.txt", "x")]))
+    await poll_once(app)
+    [event] = await events(client)
+    assert event["type"] == "output" and event["data"]["usage"] == used
+
+    resp = await client.get(f"/v1/tasks/{task_id}", headers=AUTH)
+    assert (await resp.json())["usage"] == used
+
+    # Whatever the launcher says is checked again: an entry that isn't a model's totals is dropped.
+    app[STATUS_CACHE].clear()
+    report("running", [{"model": "<script>", "requests": 1}, *used])
+    resp = await client.get(f"/v1/tasks/{task_id}", headers=AUTH)
+    assert (await resp.json())["usage"] == used
+
+    more = [{"model": "claude-opus-5-5", "requests": 4, "metered": 4, "input": 41, "output": 20, "cache_read": 1200}]
+    report("exited", more)
+    output(zip_bytes([("RESULT.md", "Done."), ("MANIFEST.txt", "x")]))
+    await poll_once(app)
+    *_, last, ended = await events(client)
+    assert last["data"]["usage"] == [{"model": "claude-opus-5-5", "requests": 1, "metered": 1, "input": 11, "output": 8, "cache_read": 300}]
+    assert ended["type"] == "ended" and ended["data"]["usage"] == [] and ended["data"]["usage_total"] == more
+
+
+async def test_a_failed_usage_read_doesnt_erase_what_was_counted(started, tmp_path, monkeypatch):
+    app, client, task_id, status, output = started
+    path = tmp_path / "status.json"
+    used = [{"model": "m", "requests": 2, "metered": 2, "output": 9}]
+    for reported in (used, None):
+        path.write_text(json.dumps([{"id": task_id, "state": "running", "ready": False, "usage": reported}]))
+        monkeypatch.setenv("STUB_STATUS", str(path))
+        await poll_once(app)
+    assert app[STORE].usage(task_id) == used

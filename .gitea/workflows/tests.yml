@@ -22,10 +22,12 @@ jobs:
     container:
       image: node:20-bookworm@sha256:8f693eaa7e0a8e71560c9a82b55fd54c2ae920a2ba5d2cde28bac7d1c01c9ba5  # by digest, as the Dockerfile's base
     steps:
+      # jq for tests/test_dejima.py: dejima-usage sums a usage record with it, as
+      # it does on a dejima host, where dejima needs it too.
       - name: Install Python
         run: |
           apt-get update
-          apt-get install -y --no-install-recommends python3 python3-venv ca-certificates
+          apt-get install -y --no-install-recommends python3 python3-venv ca-certificates jq
 
       - uses: actions/checkout@v4
 

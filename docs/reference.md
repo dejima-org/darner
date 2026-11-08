@@ -26,6 +26,7 @@
 | `--max-upload BYTES` | 50 MiB | largest file a requester can upload into a session |
 | `--docker PATH` | `docker` | the docker CLI, used to find and stop a session's container |
 | `--dejima-allow PATH` | `dejima-allow` | dejima's `dejima-allow`, used to grant a session the domains it requested |
+| `--dejima-usage PATH` | `dejima-usage` | dejima's `dejima-usage`, used to delete dejima's record of an ended session's token usage along with its task directory; without it, or with `--keep-records`, dejima removes each record once it's a month old. `catalog` says when it can't be found |
 | `--dejima-share PATH` | `dejima-share` | dejima's `dejima-share`, used to remove an ended session's `~/shared` once its output has been delivered whole, or once it's cleared; it needs a dejima with `prune --isolated [share]` and `--yes`, and without one, shares are kept. `catalog` says so, and the API logs it at startup |
 | `--keep-shared` | off | keep every ended session's `~/shared` on the dejima host, even once its output has been delivered; separate from `--keep-records`, which keeps dejima's records |
 | `--stop-timeout SECONDS` | 60 | how long a stopped session may take to exit before dejima itself is ended |
@@ -100,7 +101,7 @@ Every `poll_interval` seconds the API asks the dejima host for the status of lau
 | `GET /v1/catalog` | the dejima host's harnesses and backends, the default harness and each harness's defaults (dejima's own, from `dejima --print-config`, with the launcher's options in their place), and under `options`, what each harness can be set to: its backends, effort levels, whether it takes a context window, and `[catalog]`'s models for each backend |
 | `POST /v1/tasks/<id>/domains/<n>/allow` | `{requester}`: grant domain request `n` as it was shown, minus what policy refuses |
 | `POST /v1/tasks/<id>/domains/<n>/deny` | `{requester}`: refuse domain request `n` |
-| `GET /v1/tasks` | the client's open sessions, with what each is waiting on: `{id, name, target, link, requester, started, state, answerable, waiting: {answer, domains}, started_with}`. `started_with` is what the request asked for, without the prompt: its `configs`, `blurbs`, agent settings, grants and file names |
+| `GET /v1/tasks` | the client's open sessions, with what each is waiting on: `{id, name, target, link, requester, started, state, answerable, waiting: {answer, domains}, started_with, usage}`. `started_with` is what the request asked for, without the prompt: its `configs`, `blurbs`, agent settings, grants and file names. `usage` is the session's token usage so far, by model, or `null` if it isn't metered; see [Token usage](frontends.md#what-each-event-means) |
 | `GET /v1/tasks/<id>` | one open session, in the same form |
 | `POST /v1/tasks/<id>/message` | `{text, requester}`: type a message into the session; 409 with the reason if the host refuses |
 | `POST /v1/tasks/<id>/files?name=&requester=` | the request body is a file for the session's `~/shared/uploads`; 413 over `max_upload` |

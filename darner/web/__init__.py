@@ -268,9 +268,10 @@ async def session_page(request: web.Request) -> web.Response:
     # What became of its ~/shared, as its latest ended event says, so the page can say where its files are.
     ended = [e.get("data") or {} for e in data["events"] if e["type"] == "ended" and e.get("data")]
     share = ended and ("kept" if ended[-1].get("share_kept") else "pruned" if ended[-1].get("share_pruned") else None)
+    total = next((e["usage_total"] for e in reversed(ended) if isinstance(e.get("usage_total"), list)), None)
     return page(
         request, "session.html", state=f"/state/sessions/{task_id}", version=_version(data), task_id=task_id,
-        latest=latest, history=history, share=share, **data,
+        latest=latest, history=history, share=share, total=total, **data,
     )
 
 
@@ -618,6 +619,65 @@ async def api_errors(request: web.Request, handler):
         return page(request, "error.html", status=_status(e), message=str(e))
 
 
+# dejima's counts never overlap: input is what was read fresh, so input, cache_read and
+# cache_write together are the whole prompt, on every backend.
+TOKEN_COUNTS = (("input", "fresh in"), ("cache_read", "cache read"), ("cache_write", "cache write"), ("output", "out"))
+
+
+def _short(n: int) -> str:
+    if n < 1000:
+        return str(n)
+    # The unit is chosen after rounding, so 999,950 is 1M rather than 1000k.
+    for size, unit in ((10**3, "k"), (10**6, "M"), (10**9, "G")):
+        shown = round(n / size, 1)
+        if shown < 1000 or unit == "G":
+            return f"{shown:.1f}".removesuffix(".0") + unit
+
+
+def _sums(used: list[dict]) -> dict:
+    return {key: sum(t[key] for t in used if key in t) for key, _ in TOKEN_COUNTS if any(key in t for t in used)}
+
+
+def _tokens(used: list[dict]) -> str:
+    """Token usage summed over models, as dejima's credential proxy counted it, or "" if there was none.
+
+    The whole prompt as "in", with how much of it came from the cache, then
+    "out". A count the provider didn't send isn't made up: without input, the
+    cache counts are shown as they are.
+    """
+    sums = _sums(used)
+    parts = []
+    if "input" in sums:
+        whole = sums["input"] + sums.get("cache_read", 0) + sums.get("cache_write", 0)
+        parts.append(f"{_short(whole)} in" + (f" ({_short(sums['cache_read'])} cached)" if sums.get("cache_read") else ""))
+    else:
+        parts += [f"{_short(sums[key])} {label}" for key, label in TOKEN_COUNTS[1:3] if key in sums]
+    if "output" in sums:
+        parts.append(f"{_short(sums['output'])} out")
+    requests = sum(t["requests"] for t in used)
+    if parts:
+        return ", ".join(parts) + _uncounted(requests, sum(t.get("metered", 0) for t in used))
+    return f"{requests} model request{'s' if requests != 1 else ''}, not counted by the provider" if requests else ""
+
+
+def _uncounted(requests: int, metered: int) -> str:
+    """Calls whose counts are missing, said rather than left out of a sum that would look whole."""
+    return f"; {requests - metered} of {requests} requests not counted" if metered < requests else ""
+
+
+def _tokens_by_model(used: list[dict]) -> str:
+    """Each model's requests and every count, as dejima names them, for a title."""
+    lines = []
+    for t in used:
+        counted = ", ".join(f"{_short(t[key])} {label}" for key, label in TOKEN_COUNTS if key in t)
+        missing = t["requests"] - t.get("metered", 0)
+        lines.append(
+            f"{t['model'] or 'unnamed model'}: {t['requests']} request{'s' if t['requests'] != 1 else ''}"
+            + (f" ({missing} not counted)" if missing > 0 else "") + (f", {counted}" if counted else "")
+        )
+    return "\n".join(lines)
+
+
 def _age(started) -> str:
     minutes = max(0, int(time.time() - started) // 60)
     if minutes < 60:
@@ -635,6 +695,8 @@ def make_app(config: dict) -> web.Application:
     )
     templates.filters["agent"] = render
     templates.filters["age"] = _age
+    templates.filters["tokens"] = _tokens
+    templates.filters["tokens_by_model"] = _tokens_by_model
     templates.globals["SETTING_LABELS"] = SETTING_LABELS
     app[TEMPLATES] = templates
 

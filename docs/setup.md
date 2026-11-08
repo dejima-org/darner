@@ -171,7 +171,7 @@ On the dejima host, as `DEJIMA_USER`, authorise the API's key to run the launche
 API_ADDR=192.0.2.10
 API_PUBKEY='ssh-ed25519 AAAA... darner-api'
 SHARE_DIR=$(dejima --print-config | sed -n 's/^core.share_dir=//p'); SHARE_DIR=${SHARE_DIR/#\~/$HOME}
-LAUNCHER_OPTIONS="--dejima $(command -v dejima) --dejima-allow $(command -v dejima-allow) --dejima-share $(command -v dejima-share) --share-root $SHARE_DIR/isolated"
+LAUNCHER_OPTIONS="--dejima $(command -v dejima) --dejima-allow $(command -v dejima-allow) --dejima-share $(command -v dejima-share) --dejima-usage $(command -v dejima-usage) --share-root $SHARE_DIR/isolated"
 
 install -d -m 700 ~/.ssh
 touch ~/.ssh/authorized_keys

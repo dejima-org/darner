@@ -5,6 +5,8 @@ import sqlite3
 import time
 from dataclasses import dataclass
 
+from darner import usage
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS tasks (
     id TEXT PRIMARY KEY,
@@ -64,6 +66,10 @@ class Event:
     name: str | None = None
 
 
+# The events that end a stretch of the agent's work, each carrying what that stretch used.
+USAGE_EVENTS = ("output", "help", "waiting")
+
+
 class NameTaken(Exception):
     pass
 
@@ -81,6 +87,8 @@ class Store:
             ("tasks", "ended", "REAL"),
             ("tasks", "name", "TEXT"),
             ("tasks", "share_kept", "INTEGER NOT NULL DEFAULT 0"),
+            ("tasks", "usage", "TEXT"),
+            ("tasks", "usage_reported", "TEXT"),
         ):
             if column not in {row[1] for row in self.db.execute(f"PRAGMA table_info({table})")}:
                 self.db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
@@ -125,13 +133,17 @@ class Store:
         """Keep only what the task's frontend has yet to collect: its unacknowledged output.
 
         The prompt, requester, run id, and every other event go now. An ended
-        event follows, for the frontend to say so.
+        event follows, for the frontend to say so, with the session's token
+        usage since its last event and in all, if it was metered.
         """
+        total = self.usage(task_id)
+        if total is not None:
+            data = {**(data or {}), "usage": usage.since(total, self._usage_reported(task_id)), "usage_total": total}
         with self.db:
             self.db.execute("BEGIN IMMEDIATE")
             self.db.execute(
                 "UPDATE tasks SET status = 'ended', ended = ?, job_json = '{}', requester = '', target = NULL,"
-                " run_id = NULL, error = NULL, typed = NULL WHERE id = ?",
+                " run_id = NULL, error = NULL, typed = NULL, usage = NULL, usage_reported = NULL WHERE id = ?",
                 (time.time(), task_id),
             )
             self.db.execute("DELETE FROM events WHERE task_id = ? AND (acked = 1 OR type != 'output')", (task_id,))
@@ -189,6 +201,17 @@ class Store:
     def ended(self) -> list[str]:
         return [r[0] for r in self.db.execute("SELECT id FROM tasks WHERE status = 'ended'")]
 
+    def set_usage(self, task_id: str, totals: list[dict] | None) -> None:
+        self.db.execute("UPDATE tasks SET usage = ? WHERE id = ?", (None if totals is None else json.dumps(totals), task_id))
+
+    def usage(self, task_id: str) -> list[dict] | None:
+        row = self.db.execute("SELECT usage FROM tasks WHERE id = ?", (task_id,)).fetchone()
+        return json.loads(row[0]) if row and row[0] else None
+
+    def _usage_reported(self, task_id: str) -> list[dict] | None:
+        row = self.db.execute("SELECT usage_reported FROM tasks WHERE id = ?", (task_id,)).fetchone()
+        return json.loads(row[0]) if row and row[0] else None
+
     def set_run_id(self, task_id: str, run_id: str) -> None:
         self.db.execute("UPDATE tasks SET run_id = ? WHERE id = ?", (run_id, task_id))
 
@@ -222,6 +245,10 @@ class Store:
         signalled: bool = True,
         data: dict | None = None,
     ) -> int:
+        # What the session used since its last such event: what this response cost.
+        if type in USAGE_EVENTS and (total := self.usage(task_id)) is not None:
+            data = {**(data or {}), "usage": usage.since(total, self._usage_reported(task_id))}
+            self.db.execute("UPDATE tasks SET usage_reported = usage WHERE id = ?", (task_id,))
         return self.db.execute(
             "INSERT INTO events (task_id, type, summary, size, answerable, signalled, data, created)"
             " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",

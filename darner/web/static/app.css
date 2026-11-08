@@ -238,6 +238,8 @@ nav .new { padding: 0.5rem 0.9rem; font-size: 0.95rem; }
   flex-wrap: wrap;
 }
 .event > h2 .by, .event > summary > h2 .by { color: var(--accent); font-size: 0.85rem; margin-left: auto; }
+/* What a stretch of the agent's work cost, as dejima's credential proxy counted it. Not the agent's. */
+.event h2 .tokens { color: var(--fg-dim); font-size: 0.85rem; font-weight: 400; margin-left: 0.6rem; }
 .event > summary > h2 { flex: 1; padding-left: 0; border-bottom: 0; }
 .event .body { padding: 1rem 1.1rem 0.4rem; }
 .event .agent { background: var(--bg-well); }
