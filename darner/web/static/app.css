@@ -301,6 +301,10 @@ legend { padding: 0 0.4rem; margin: 0; color: var(--fg-dim); }
    couldn't close it there. */
 @media (hover: hover) { .choice:hover > .peek { display: block; } }
 .choice.open > .peek { display: block; }
+/* Opened by pointing, it lets the pointer through, so moving down reaches the names it covers.
+   Opened with View, it takes the pointer, to scroll it or follow its link. */
+.peek { pointer-events: none; }
+.choice.open > .peek { pointer-events: auto; }
 .choice > .view { font-size: 0.85rem; padding: 0.05rem 0.45rem; margin-left: 0.35rem; }
 .peek pre, .peek p { margin: 0; }
 .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 1.25rem; }
