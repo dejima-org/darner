@@ -106,6 +106,10 @@ async def test_the_actions_work_under_the_csp(aiohttp_server):
     assert ("/v1/tasks/dn-aaaaa/message", {"text": "use postgres", "requester": "web"}) in posted
     # A message isn't kept, so the page says it was sent rather than reloading.
     assert result["sent"] == {"note": "Sent.", "field": ""}
+    # What's typed is kept in the tab until it's sent, then forgotten.
+    assert result["message_draft"] == "use postgres" and result["message_after"] == ""
+    assert result["task_draft"] == {"task": "add this recipe", "domains": "allrecipes.example.org", "mealie": True, "same_ref": True}
+    assert result["task_after"] == ""
     [task] = [body for path, body in posted if path == "/v1/tasks"]
     assert task["task"] == "add this recipe" and task["blurbs"] == ["mealie"] and task["grants"]["domains"] == ["allrecipes.example.org"]
     assert (task["harness"], task["backend"], task["model"], task["name"]) == ("cline", "openrouter", "z-ai/glm-5.3", "recipes")

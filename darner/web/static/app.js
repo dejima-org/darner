@@ -8,11 +8,15 @@
 
 const REQUEST_HEADER = "X-Darner-Request";
 
+const drafts = "drafts" in document.body.dataset;
+
 // Someone is typing, or has typed something not yet sent, which a reload would lose.
+// A draft that's kept comes back after a reload, so only being in its form counts.
 function typing() {
   const field = document.activeElement;
   if (field && (field.tagName === "TEXTAREA" || field.tagName === "INPUT" || field.tagName === "SELECT")) return true;
-  return [...document.querySelectorAll("textarea, input:not([type=hidden]):not([type=checkbox])")].some((f) => f.value);
+  return [...document.querySelectorAll("textarea, input:not([type=hidden]):not([type=checkbox])")]
+    .some((f) => f.value && !(drafts && f.closest("form[data-draft]")));
 }
 
 function show(near, message, ok = false) {
@@ -101,7 +105,26 @@ function busy(button) {
   };
 }
 
+// What's typed into a form, kept in this tab until it's sent, so leaving the page doesn't lose it.
+// Set back as values, never as HTML. The key names one session's message form, by its id and
+// start, so a draft can't reach another session. A task's draft keeps its ref, so sending it
+// again after an unclear outcome finds the task it started. Returns what forgets it once sent.
+function keepDraft(form) {
+  const key = `draft:${form.dataset.draft}`;
+  const saved = JSON.parse(sessionStorage.getItem(key) ?? "null");
+  if (saved) {
+    for (const el of form.elements) {
+      if (!el.name || !(el.name in saved)) continue;
+      if (el.type === "checkbox") el.checked = saved[el.name].includes(el.value);
+      else el.value = saved[el.name];
+    }
+  }
+  form.addEventListener("input", () => sessionStorage.setItem(key, JSON.stringify(fields(form))));
+  return () => sessionStorage.removeItem(key);
+}
+
 for (const form of document.querySelectorAll("form[data-action]")) {
+  const forget = drafts && form.dataset.draft ? keepDraft(form) : () => {};
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     const button = form.querySelector("button[type=submit]");
@@ -111,7 +134,10 @@ for (const form of document.querySelectorAll("form[data-action]")) {
     const done = button.dataset.busy ? busy(button) : () => {};
     const json = { "Content-Type": "application/json" };
     const sent = await send(form.dataset.action, { headers: json, body: JSON.stringify(fields(form)) }, form);
-    if (sent) form.reset();
+    if (sent) {
+      form.reset();
+      forget();
+    }
     if (sent === true && !note) location.reload();
     else if (sent !== "moved") {
       // A message isn't kept, so a reload wouldn't show it was sent: it's said beside Send instead.

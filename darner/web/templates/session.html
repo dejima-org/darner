@@ -61,10 +61,10 @@
 </section>
 {% if session %}
 <section class="panel">
-<form method="post" data-action="/sessions/{{ task_id }}/message">
+<form method="post" data-action="/sessions/{{ task_id }}/message" data-draft="message:{{ session.id }}:{{ session.started }}">
 <label for="message">{% if session.waiting.answer is not none %}Answer its help request{% else %}Send it a message{% endif %}</label>
 <textarea id="message" name="text" rows="3" required aria-describedby="message-note"></textarea>
-<p class="quiet" id="message-note">What you send is typed into the session and not kept, so it won't appear here.</p>
+<p class="quiet" id="message-note">What you send is typed into the session and not kept, so it won't appear here: keep a copy if you'll want it later.{% if drafts %} Until you send it, what you've typed here is kept in this tab.{% endif %}</p>
 <button type="submit">Send</button> <span class="quiet sent" role="status" hidden>Sent.</span>
 </form>
 <form method="post" data-upload="/sessions/{{ task_id }}/files">

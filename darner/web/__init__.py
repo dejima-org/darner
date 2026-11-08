@@ -10,6 +10,7 @@ rebinding.
 """
 
 import argparse
+import asyncio
 import hashlib
 import json
 import logging
@@ -43,6 +44,8 @@ DEFAULTS = {
     "listen": "127.0.0.1:8081", "user_header": None, "max_download": 100 * 1024 * 1024, "max_upload": 50 * 1024 * 1024,
     # Longer than the API's own launch_timeout, so a slow launch is answered rather than abandoned.
     "launch_timeout": 300,
+    # What's typed into a form is kept in the browser tab's sessionStorage until it's sent.
+    "drafts": True,
 }
 # Room for the API's longest text fields, 32,768 characters each, at JSON's
 # worst case of six bytes a character, with the rest of a request beside them.
@@ -109,6 +112,8 @@ def check_config(config: dict) -> dict:
     for key in ("max_download", "max_upload", "launch_timeout"):
         if type(full[key]) not in (int, float) or full[key] <= 0:
             raise ValueError(f"{key} must be a positive number")
+    if type(full["drafts"]) is not bool:
+        raise ValueError("drafts must be true or false")
     if full["user_header"] is not None and not (isinstance(full["user_header"], str) and full["user_header"].strip()):
         raise ValueError("user_header must be a header name, such as X-authentik-username")
     return full
@@ -219,7 +224,7 @@ async def api(request: web.Request, method: str, path: str, with_status: bool = 
 
 
 def page(request: web.Request, template: str, state: str | None = None, status: int = 200, **context) -> web.Response:
-    html = request.app[TEMPLATES].get_template(template).render(state=state, **context)
+    html = request.app[TEMPLATES].get_template(template).render(state=state, drafts=request.app[CONFIG]["drafts"], **context)
     return web.Response(text=html, status=status, content_type="text/html")
 
 
@@ -363,23 +368,26 @@ async def blurb_page(request: web.Request) -> web.Response:
 
 async def configs_page(request: web.Request) -> web.Response:
     names = await api(request, "GET", "/v1/configs")
-    return page(request, "names.html", kind="configs", title="Config sets", names=names, descriptions=await _descriptions(request, names))
+    return page(request, "names.html", kind="configs", title="Config sets", names=names, descriptions=_descriptions(await _each(request, "configs", names)))
 
 
-async def _descriptions(request: web.Request, names: list[str]) -> dict[str, str]:
-    """Each config set's description, the comment lines it starts with, to show beside its name."""
-    found = {}
-    for name in names:
+async def _each(request: web.Request, kind: str, names: list[str]) -> dict:
+    """Each config set or blurb as the API gives it, by name."""
+    async def one(name):
         try:
-            described = await api(request, "GET", f"/v1/configs/{quote(name, safe='')}")
+            return await api(request, "GET", f"/v1/{kind}/{quote(name, safe='')}")
         except ApiError as e:
             # Removed since it was listed, or doesn't load: its own page says why.
             if e.status in (400, 404):
-                continue
+                return None
             raise
-        if isinstance(described, dict) and isinstance(described.get("description"), str):
-            found[name] = described["description"]
-    return found
+    found = await asyncio.gather(*(one(name) for name in names))
+    return {name: value for name, value in zip(names, found) if value is not None}
+
+
+def _descriptions(described: dict) -> dict[str, str]:
+    """Each config set's description, the comment lines it starts with, to show beside its name."""
+    return {name: d["description"] for name, d in described.items() if isinstance(d, dict) and isinstance(d.get("description"), str)}
 
 
 async def config_page(request: web.Request) -> web.Response:
@@ -528,6 +536,7 @@ async def new_task_page(request: web.Request) -> web.Response:
     catalog = await api(request, "GET", "/v1/catalog")
     blurbs = await api(request, "GET", "/v1/blurbs")
     configs = await api(request, "GET", "/v1/configs")
+    described = {name: d for name, d in (await _each(request, "configs", configs)).items() if isinstance(d, dict)}
     # Every level a harness's manifest lists; one that lists none takes any of dejima's.
     efforts = []
     for options in catalog.get("options", {}).values():
@@ -536,7 +545,8 @@ async def new_task_page(request: web.Request) -> web.Response:
                 efforts.append(level)
     # A fresh source per page, so sending the form twice finds the task the first send started.
     return page(
-        request, "new.html", catalog=catalog, blurbs=blurbs, configs=configs, descriptions=await _descriptions(request, configs),
+        request, "new.html", catalog=catalog, blurbs=blurbs, configs=configs, descriptions=_descriptions(described), described=described,
+        blurb_texts=await _each(request, "blurbs", blurbs),
         efforts=efforts, ref=secrets.token_hex(16),
     )
 
