@@ -148,6 +148,31 @@ for (const form of document.querySelectorAll("form[data-action]")) {
   });
 }
 
+// A config set's or blurb's contents open beside it when it's pointed at, or stay open from View
+// until View is pressed again, which is how a phone opens them. Moved left if they'd run off the page.
+const choices = [...document.querySelectorAll(".choice")];
+for (const choice of choices) {
+  const peek = choice.querySelector(".peek");
+  const view = choice.querySelector(".view");
+  const place = () => {
+    peek.style.left = "";
+    const over = peek.getBoundingClientRect().right - (document.documentElement.clientWidth - 8);
+    if (over > 0) peek.style.left = `${-over}px`;
+  };
+  const toggle = (open) => {
+    choice.classList.toggle("open", open);
+    view.setAttribute("aria-expanded", String(open));
+    view.textContent = open ? "hide" : "view";
+  };
+  choice.addEventListener("mouseenter", place);
+  view.addEventListener("click", () => {
+    const open = !choice.classList.contains("open");
+    for (const other of choices) if (other !== choice && other.classList.contains("open")) other.querySelector(".view").click();
+    toggle(open);
+    if (open) place();
+  });
+}
+
 // A session's history: folded, with what was unfolded kept across the page's reloads.
 for (const button of document.querySelectorAll("button[data-expand]")) {
   const list = document.querySelector(button.dataset.expand);

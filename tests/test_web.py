@@ -346,8 +346,8 @@ async def test_config_sets_are_listed_with_their_descriptions(client):
 async def test_the_new_task_form_shows_what_each_config_set_and_blurb_holds(client):
     _, html = await get(client, "/new")
     # On the form itself, escaped, so reading one doesn't leave it.
-    assert "<h3>recipes</h3>\n<pre>blurb: mealie\nharness: &lt;i&gt;cline&lt;/i&gt;\nfile: token\n</pre>" in html
-    assert "<h3>mealie</h3>\n<pre>Use &lt;script&gt;the API&lt;/script&gt;.\n</pre>" in html
+    assert '<div class="peek"><pre>blurb: mealie\nharness: &lt;i&gt;cline&lt;/i&gt;\nfile: token\n</pre></div>' in html
+    assert '<div class="peek"><pre>Use &lt;script&gt;the API&lt;/script&gt;.\n</pre></div>' in html
     assert 'href="/configs/' not in html and 'href="/blurbs/' not in html
     # Every field that takes a list says how.
     assert html.count('<span class="quiet">comma separated') == 3
@@ -357,7 +357,7 @@ async def test_the_new_task_form_shows_what_each_config_set_and_blurb_holds(clie
 async def test_a_config_set_or_blurb_that_wont_load_says_where_to_look(client, fake):
     fake.more_configs = ["broken"]
     _, html = await get(client, "/new")
-    assert '<h3>broken</h3>\n<p class="quiet">Couldn\'t be read: <a href="/configs/broken">its page</a> says why.</p>' in html
+    assert '<div class="peek"><p class="quiet">Couldn\'t be read: <a href="/configs/broken">its page</a> says why.</p>' in html
 
 
 async def test_a_message_draft_is_kept_for_one_session_only(client):
