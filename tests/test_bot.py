@@ -1525,7 +1525,7 @@ async def test_an_output_notice_says_what_it_used(maubot_plugin, maubot_test_bot
     ]}
     await maubot_plugin.poll_once()
     # Sums only: a model name never reaches the room.
-    assert sent(maubot_test_bot)[0] == agent_notice(UNTRUSTED, "done", "Used 1.5k input, 250 output, 30k cache read since the last notice.")
+    assert sent(maubot_test_bot)[0] == agent_notice(UNTRUSTED, "done", "Used 31.5k in (30k cached), 250 out since the last notice.")
 
 
 async def test_an_ended_notice_says_what_the_session_used(maubot_plugin, maubot_test_bot, api):

@@ -13,7 +13,7 @@ darner runs dejima on the dejima host and relies on these of its flags, tools an
 - the manifests, `harnesses/*/harness.conf` (`api_styles`, and `keys` with `effort:?enum:...` and `context_window`) and `backends/*/backend.conf` (`api_style`), found beside the directory `dejima` resolves to from `bin/`
 - `$XDG_RUNTIME_DIR/dejima/sessions/<run id>` with its `pane=` and `pid=` lines. `pid=` is matched against the process the launcher started, so `--dejima` should name dejima or a wrapper that `exec`s it; with any other wrapper, the launcher falls back to the run id in its dejima's environment
 - the `SANDBOX_ISOLATED_WORK=dejima_isolated-work-<run id>` volume name
-- the usage record `--usage-path-file` names, `<run id>.jsonl`: one JSON line per model request, with `model` and any of `input`, `output`, `cache_read` and `cache_write`; empty while nothing's spent, and absent for a session that isn't metered
+- the usage record `--usage-path-file` names, `<run id>.jsonl`: one JSON line per model call, with `model` and any of `input`, `output`, `cache_read` and `cache_write`, where `input`, `cache_read` and `cache_write` don't overlap; empty while nothing's spent, and absent for a session that isn't metered
 
 `tests/test_dejima.py` checks these against a real dejima, which CI fetches: the release the newest `CHANGELOG.md` entry names, or dejima's `development` while that's `N/A` or not tagged yet. Locally, it runs when `DEJIMA_SRC` names a dejima checkout.
 

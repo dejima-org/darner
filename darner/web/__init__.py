@@ -619,7 +619,9 @@ async def api_errors(request: web.Request, handler):
         return page(request, "error.html", status=_status(e), message=str(e))
 
 
-TOKEN_COUNTS = (("input", "input"), ("output", "output"), ("cache_read", "cache read"), ("cache_write", "cache write"))
+# dejima's counts never overlap: input is what was read fresh, so input, cache_read and
+# cache_write together are the whole prompt, on every backend.
+TOKEN_COUNTS = (("input", "fresh in"), ("cache_read", "cache read"), ("cache_write", "cache write"), ("output", "out"))
 
 
 def _short(n: int) -> str:
@@ -629,25 +631,39 @@ def _short(n: int) -> str:
     return str(n)
 
 
-def _tokens(used: list[dict]) -> str:
-    """Token usage, summed over models, as dejima's credential proxy counted it, or "" if there was none.
+def _sums(used: list[dict]) -> dict:
+    return {key: sum(t[key] for t in used if key in t) for key, _ in TOKEN_COUNTS if any(key in t for t in used)}
 
-    The counts are the provider's own, named as dejima names them, and never
-    added together: whether input includes cache reads differs between providers.
+
+def _tokens(used: list[dict]) -> str:
+    """Token usage summed over models, as dejima's credential proxy counted it, or "" if there was none.
+
+    The whole prompt as "in", with how much of it came from the cache, then
+    "out". A count the provider didn't send isn't made up: without input, the
+    cache counts are shown as they are.
     """
-    sums = {key: sum(t[key] for t in used if key in t) for key, _ in TOKEN_COUNTS if any(key in t for t in used)}
-    if sums:
-        return ", ".join(f"{_short(sums[key])} {label}" for key, label in TOKEN_COUNTS if key in sums)
+    sums = _sums(used)
+    parts = []
+    if "input" in sums:
+        whole = sums["input"] + sums.get("cache_read", 0) + sums.get("cache_write", 0)
+        parts.append(f"{_short(whole)} in" + (f" ({_short(sums['cache_read'])} cached)" if sums.get("cache_read") else ""))
+    else:
+        parts += [f"{_short(sums[key])} {label}" for key, label in TOKEN_COUNTS[1:3] if key in sums]
+    if "output" in sums:
+        parts.append(f"{_short(sums['output'])} out")
+    if parts:
+        return ", ".join(parts)
     requests = sum(t["requests"] for t in used)
     return f"{requests} model request{'s' if requests != 1 else ''}, not counted by the provider" if requests else ""
 
 
 def _tokens_by_model(used: list[dict]) -> str:
-    return "\n".join(
-        f"{t['model'] or 'unnamed model'}: {t['requests']} request{'s' if t['requests'] != 1 else ''}"
-        + (f", {counted}" if (counted := _tokens([t])) and t.get("metered") else "")
-        for t in used
-    )
+    """Each model's requests and every count, as dejima names them, for a title."""
+    lines = []
+    for t in used:
+        counted = ", ".join(f"{_short(t[key])} {label}" for key, label in TOKEN_COUNTS if key in t)
+        lines.append(f"{t['model'] or 'unnamed model'}: {t['requests']} request{'s' if t['requests'] != 1 else ''}" + (f", {counted}" if counted else ""))
+    return "\n".join(lines)
 
 
 def _age(started) -> str:

@@ -876,9 +876,12 @@ def test_the_vendored_static_files_are_the_recorded_ones():
 
 @pytest.mark.parametrize("used, shown", [
     ([{"model": "m", "requests": 3, "metered": 3, "input": 12345, "output": 999, "cache_read": 58000, "cache_write": 1200000}],
-     "12.3k input, 999 output, 58k cache read, 1.2M cache write"),
+     # dejima's counts don't overlap, so the whole prompt is their sum.
+     "1.3M in (58k cached), 999 out"),
     # Summed over models, each count only where some model has it.
-    ([{"model": "a", "requests": 1, "metered": 1, "output": 5}, {"model": None, "requests": 1, "metered": 1, "output": 7}], "12 output"),
+    ([{"model": "a", "requests": 1, "metered": 1, "output": 5}, {"model": None, "requests": 1, "metered": 1, "output": 7}], "12 out"),
+    # Without input, the prompt's size isn't known, so the cache counts are shown as they are.
+    ([{"model": "m", "requests": 1, "metered": 1, "cache_read": 5}], "5 cache read"),
     # Requests with no counts are said to be uncounted, not shown as zero.
     ([{"model": "m", "requests": 2, "metered": 0}], "2 model requests, not counted by the provider"),
     ([], ""),
@@ -892,10 +895,10 @@ async def test_usage_is_shown_on_events_and_the_session(client, fake):
     fake.sessions[0]["usage"] = [{"model": "<i>m</i>", "requests": 4, "metered": 4, "input": 2000, "output": 300}]
     fake.events["dn-aaaaa"][1]["data"] = {"usage": [{"model": "<i>m</i>", "requests": 1, "metered": 1, "input": 500, "output": 40}]}
     _, html = await get(client, "/sessions/dn-aaaaa")
-    assert '<span class="tokens" title="&lt;i&gt;m&lt;/i&gt;: 1 request, 500 input, 40 output">500 input, 40 output</span>' in html
-    assert "Used so far: 2k input, 300 output." in html
+    assert '<span class="tokens" title="&lt;i&gt;m&lt;/i&gt;: 1 request, 500 fresh in, 40 out">500 in, 40 out</span>' in html
+    assert "Used so far: 2k in, 300 out." in html
     _, html = await get(client, "/")
-    assert '<p class="meta tokens" title="&lt;i&gt;m&lt;/i&gt;: 4 requests, 2k input, 300 output">2k input, 300 output</p>' in html
+    assert '<p class="meta tokens" title="&lt;i&gt;m&lt;/i&gt;: 4 requests, 2k fresh in, 300 out">2k in, 300 out</p>' in html
 
 
 async def test_an_unmetered_session_says_so_once_it_has_started(client, fake):
@@ -909,4 +912,4 @@ async def test_an_unmetered_session_says_so_once_it_has_started(client, fake):
 async def test_an_ended_session_says_what_it_used(client, fake):
     fake.events["dn-bbbbb"][1]["data"] = {"share_pruned": True, "usage": [], "usage_total": [{"model": "m", "requests": 9, "metered": 9, "output": 4500}]}
     _, html = await get(client, "/sessions/dn-bbbbb")
-    assert '<span class="tokens" title="m: 9 requests, 4.5k output">It used 4.5k output.</span>' in html
+    assert '<span class="tokens" title="m: 9 requests, 4.5k out">It used 4.5k out.</span>' in html

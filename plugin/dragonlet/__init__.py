@@ -669,24 +669,32 @@ def _is_file(content) -> bool:
     )
 
 
-TOKEN_COUNTS = (("input", "input"), ("output", "output"), ("cache_read", "cache read"), ("cache_write", "cache write"))
+TOKEN_COUNTS = ("input", "cache_read", "cache_write", "output")
 
 
 def _tokens(used: object) -> str:
     """Token usage summed over models, as dejima's credential proxy counted it, or "".
 
     darner-web's wording, which this can't share: the plugin ships on its own.
-    Only numbers reach the room, never a model name. The counts are never added
-    together, since whether input includes cache reads differs between providers.
+    Only numbers reach the room, never a model name. dejima's counts never
+    overlap, so input, cache_read and cache_write together are the whole prompt.
     """
     if not isinstance(used, list):
         return ""
     used = [t for t in used if isinstance(t, dict)]
     def count(t, key):
         return t[key] if type(t.get(key)) is int and t[key] >= 0 else 0
-    sums = {key: sum(count(t, key) for t in used) for key, _ in TOKEN_COUNTS if any(key in t for t in used)}
-    if sums:
-        return ", ".join(f"{_short(sums[key])} {label}" for key, label in TOKEN_COUNTS if key in sums)
+    sums = {key: sum(count(t, key) for t in used) for key in TOKEN_COUNTS if any(key in t for t in used)}
+    parts = []
+    if "input" in sums:
+        whole = sums["input"] + sums.get("cache_read", 0) + sums.get("cache_write", 0)
+        parts.append(f"{_short(whole)} in" + (f" ({_short(sums['cache_read'])} cached)" if sums.get("cache_read") else ""))
+    else:
+        parts += [f"{_short(sums[key])} {key.replace('_', ' ')}" for key in ("cache_read", "cache_write") if key in sums]
+    if "output" in sums:
+        parts.append(f"{_short(sums['output'])} out")
+    if parts:
+        return ", ".join(parts)
     requests = sum(count(t, "requests") for t in used)
     return f"{requests} model request{'s' if requests != 1 else ''}, not counted by the provider" if requests else ""
 
