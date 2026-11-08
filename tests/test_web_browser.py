@@ -112,7 +112,9 @@ async def test_the_actions_work_under_the_csp(aiohttp_server):
     assert result["task_after"] == ""
     assert result["peek"] == {
         "before": False, "after": True, "text": "Use <script>the API</script>.\n",
-        "viewed": {"open": True, "label": "hide", "expanded": "true"}, "hidden": {"open": False, "label": "view", "expanded": "false"},
+        # Opened by pointing, it lets the pointer through to the names below it; opened with View, it takes it.
+        "pointed": "none",
+        "viewed": {"open": True, "label": "hide", "expanded": "true", "pointer": "auto"}, "hidden": {"open": False, "label": "view", "expanded": "false"},
         # The box was checked above, and View doesn't touch it.
         "checked": True,
     }

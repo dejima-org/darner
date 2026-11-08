@@ -62,15 +62,21 @@ await page.check('input[name="blurbs"][value="mealie"]');
 await page.fill("#domains", "allrecipes.example.org");
 // Pointing at a blurb shows what it adds, on the form itself.
 const peek = page.locator('.choice:has(input[value="mealie"]) .peek');
+// Away from the checkbox ticked above, which would otherwise leave it pointed at.
+await page.mouse.move(0, 0);
 result.peek = { before: await peek.isVisible() };
 await page.hover('.choice:has(input[value="mealie"]) label');
 result.peek.after = await peek.isVisible();
 result.peek.text = await peek.textContent();
+const through = () => peek.evaluate((e) => getComputedStyle(e).pointerEvents);
+result.peek.pointed = await through();
 // View keeps it open once the pointer leaves, and closes it when pressed again.
 const view = page.locator('.choice:has(input[value="mealie"]) .view');
 await view.click();
 await page.mouse.move(0, 0);
-result.peek.viewed = { open: await peek.isVisible(), label: await view.textContent(), expanded: await view.getAttribute("aria-expanded") };
+result.peek.viewed = {
+  open: await peek.isVisible(), label: await view.textContent(), expanded: await view.getAttribute("aria-expanded"), pointer: await through(),
+};
 await view.click();
 await page.mouse.move(0, 0);
 result.peek.hidden = { open: await peek.isVisible(), label: await view.textContent(), expanded: await view.getAttribute("aria-expanded") };
