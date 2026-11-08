@@ -11,15 +11,17 @@
 <label for="name">Name <span class="quiet">optional: lowercase letters, digits and hyphens, unique among open sessions</span></label>
 <input id="name" name="name" maxlength="35" pattern="(dn-)?[a-z0-9][a-z0-9\-]{0,31}" autocomplete="off" placeholder="its id, such as dn-k3x7q">
 {% if configs %}
-<fieldset><legend>Config sets <span class="quiet">point at one to see what it applies</span></legend>
+<fieldset><legend>Config sets <span class="quiet">point at one, or View, to see what it applies</span></legend>
 <div class="choices">{% for name in configs %}<div class="choice"><label><input type="checkbox" name="configs" value="{{ name }}"> {{ name }}{% if descriptions.get(name) %} <span class="description">{{ descriptions[name] }}</span>{% endif %}</label>
+<button type="button" class="view quiet" aria-expanded="false" aria-label="View {{ name }}">view</button>
 <div class="peek">{% if name in described %}<pre>{{ settings(described[name]) }}</pre>{% else %}<p class="quiet">Couldn't be read: <a href="/configs/{{ name | urlencode }}">its page</a> says why.</p>{% endif %}</div></div>
 {% endfor %}</div>
 </fieldset>
 {% endif %}
 {% if blurbs %}
-<fieldset><legend>Context blurbs <span class="quiet">point at one to read it</span></legend>
+<fieldset><legend>Context blurbs <span class="quiet">point at one, or View, to read it</span></legend>
 <div class="choices">{% for name in blurbs %}<div class="choice"><label><input type="checkbox" name="blurbs" value="{{ name }}"> {{ name }}</label>
+<button type="button" class="view quiet" aria-expanded="false" aria-label="View {{ name }}">view</button>
 <div class="peek">{% if name in blurb_texts %}<pre>{{ blurb_texts[name] }}</pre>{% else %}<p class="quiet">Couldn't be read: <a href="/blurbs/{{ name | urlencode }}">its page</a> says why.</p>{% endif %}</div></div>
 {% endfor %}</div>
 </fieldset>

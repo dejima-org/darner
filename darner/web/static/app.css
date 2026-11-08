@@ -289,7 +289,7 @@ legend { padding: 0 0.4rem; margin: 0; color: var(--fg-dim); }
 .choices { display: flex; flex-wrap: wrap; gap: 0.5rem 1.4rem; margin-top: 0.6rem; }
 .choice { position: relative; }
 .choice > label { display: inline-flex; align-items: baseline; gap: 0.45rem; font-family: var(--font-head); font-weight: 400; margin: 0; }
-/* What a config set or blurb holds, shown while it's pointed at or its box has focus, so reading
+/* What a config set or blurb holds, shown while it's pointed at or opened with View, so reading
    it doesn't leave the form. Beside the label, not in it, so a click in it doesn't tick the box. */
 .peek {
   display: none; position: absolute; top: 100%; left: 0; z-index: 10;
@@ -297,7 +297,11 @@ legend { padding: 0 0.4rem; margin: 0; color: var(--fg-dim); }
   background: var(--bg-well); border: 1px solid var(--rule-strong); border-radius: 6px;
   padding: 0.75rem 1rem; box-shadow: 0 0.5rem 1.5rem rgb(0 0 0 / 45%);
 }
-.choice:hover > .peek, .choice:focus-within > .peek { display: block; }
+/* Hover only where there's a real pointer: a phone keeps a tapped element hovered, so View
+   couldn't close it there. */
+@media (hover: hover) { .choice:hover > .peek { display: block; } }
+.choice.open > .peek { display: block; }
+.choice > .view { font-size: 0.85rem; padding: 0.05rem 0.45rem; margin-left: 0.35rem; }
 .peek pre, .peek p { margin: 0; }
 .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 1.25rem; }
 @media (max-width: 40rem) { .grid { grid-template-columns: 1fr; } }

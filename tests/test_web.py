@@ -357,7 +357,7 @@ async def test_the_new_task_form_shows_what_each_config_set_and_blurb_holds(clie
 async def test_a_config_set_or_blurb_that_wont_load_says_where_to_look(client, fake):
     fake.more_configs = ["broken"]
     _, html = await get(client, "/new")
-    assert 'value="broken"> broken</label>\n<div class="peek"><p class="quiet">Couldn\'t be read: <a href="/configs/broken">its page</a> says why.</p>' in html
+    assert '<div class="peek"><p class="quiet">Couldn\'t be read: <a href="/configs/broken">its page</a> says why.</p>' in html
 
 
 async def test_a_message_draft_is_kept_for_one_session_only(client):
