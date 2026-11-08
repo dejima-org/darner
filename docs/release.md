@@ -10,6 +10,7 @@ darner runs dejima on the dejima host and relies on these of its flags, tools an
 - `--print-config`'s `section.key=value` lines, for `core.harness` and `harness.<name>.{backend,model,effort,context_window}`
 - `dejima-allow`: `--container`, `--internal` and `--port`, and exit status 2 meaning granted but not answering on 443
 - `dejima-share`: `prune --isolated [share]` and `--yes`, as its `--help-full` lists them
+- `dejima-usage`: `--forget <run id>`, and `--total <run id>`, whose sums the launcher's own must match
 - the manifests, `harnesses/*/harness.conf` (`api_styles`, and `keys` with `effort:?enum:...` and `context_window`) and `backends/*/backend.conf` (`api_style`), found beside the directory `dejima` resolves to from `bin/`
 - `$XDG_RUNTIME_DIR/dejima/sessions/<run id>` with its `pane=` and `pid=` lines. `pid=` is matched against the process the launcher started, so `--dejima` should name dejima or a wrapper that `exec`s it; with any other wrapper, the launcher falls back to the run id in its dejima's environment
 - the `SANDBOX_ISOLATED_WORK=dejima_isolated-work-<run id>` volume name

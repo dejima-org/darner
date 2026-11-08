@@ -625,10 +625,13 @@ TOKEN_COUNTS = (("input", "fresh in"), ("cache_read", "cache read"), ("cache_wri
 
 
 def _short(n: int) -> str:
-    for size, unit in ((10**9, "G"), (10**6, "M"), (10**3, "k")):
-        if n >= size:
-            return f"{n / size:.1f}".removesuffix(".0") + unit
-    return str(n)
+    if n < 1000:
+        return str(n)
+    # The unit is chosen after rounding, so 999,950 is 1M rather than 1000k.
+    for size, unit in ((10**3, "k"), (10**6, "M"), (10**9, "G")):
+        shown = round(n / size, 1)
+        if shown < 1000 or unit == "G":
+            return f"{shown:.1f}".removesuffix(".0") + unit
 
 
 def _sums(used: list[dict]) -> dict:
@@ -651,10 +654,15 @@ def _tokens(used: list[dict]) -> str:
         parts += [f"{_short(sums[key])} {label}" for key, label in TOKEN_COUNTS[1:3] if key in sums]
     if "output" in sums:
         parts.append(f"{_short(sums['output'])} out")
-    if parts:
-        return ", ".join(parts)
     requests = sum(t["requests"] for t in used)
+    if parts:
+        return ", ".join(parts) + _uncounted(requests, sum(t.get("metered", 0) for t in used))
     return f"{requests} model request{'s' if requests != 1 else ''}, not counted by the provider" if requests else ""
+
+
+def _uncounted(requests: int, metered: int) -> str:
+    """Calls whose counts are missing, said rather than left out of a sum that would look whole."""
+    return f"; {requests - metered} of {requests} requests not counted" if metered < requests else ""
 
 
 def _tokens_by_model(used: list[dict]) -> str:
@@ -662,7 +670,11 @@ def _tokens_by_model(used: list[dict]) -> str:
     lines = []
     for t in used:
         counted = ", ".join(f"{_short(t[key])} {label}" for key, label in TOKEN_COUNTS if key in t)
-        lines.append(f"{t['model'] or 'unnamed model'}: {t['requests']} request{'s' if t['requests'] != 1 else ''}" + (f", {counted}" if counted else ""))
+        missing = t["requests"] - t.get("metered", 0)
+        lines.append(
+            f"{t['model'] or 'unnamed model'}: {t['requests']} request{'s' if t['requests'] != 1 else ''}"
+            + (f" ({missing} not counted)" if missing > 0 else "") + (f", {counted}" if counted else "")
+        )
     return "\n".join(lines)
 
 

@@ -684,8 +684,10 @@ async def poll_once(app: web.Application) -> None:
                 log.warning("can't read %s's ~/shared, so its output can't be collected: %s", task["id"], task["error"])
         if isinstance(task.get("run_id"), str) and RUN_ID.fullmatch(task["run_id"]):
             store.set_run_id(task["id"], task["run_id"])
-        # Before any event this poll adds, so each carries what was used up to now.
-        store.set_usage(task["id"], usage.clean(task.get("usage")))
+        # Before any event this poll adds, so each carries what was used up to now. A metered
+        # session never turns unmetered, so a read that failed doesn't erase what was counted.
+        if (used := usage.clean(task.get("usage"))) is not None or store.usage(task["id"]) is None:
+            store.set_usage(task["id"], used)
         # One task's failure must not hold up the others.
         try:
             if task.get("help"):

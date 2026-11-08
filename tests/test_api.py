@@ -2071,3 +2071,14 @@ async def test_usage_reaches_events_and_the_session_view(started, tmp_path, monk
     *_, last, ended = await events(client)
     assert last["data"]["usage"] == [{"model": "claude-opus-5-5", "requests": 1, "metered": 1, "input": 11, "output": 8, "cache_read": 300}]
     assert ended["type"] == "ended" and ended["data"]["usage"] == [] and ended["data"]["usage_total"] == more
+
+
+async def test_a_failed_usage_read_doesnt_erase_what_was_counted(started, tmp_path, monkeypatch):
+    app, client, task_id, status, output = started
+    path = tmp_path / "status.json"
+    used = [{"model": "m", "requests": 2, "metered": 2, "output": 9}]
+    for reported in (used, None):
+        path.write_text(json.dumps([{"id": task_id, "state": "running", "ready": False, "usage": reported}]))
+        monkeypatch.setenv("STUB_STATUS", str(path))
+        await poll_once(app)
+    assert app[STORE].usage(task_id) == used

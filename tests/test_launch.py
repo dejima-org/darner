@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 Brad Anderson
 import contextlib
+import errno
 import io
 import json
 import os
@@ -13,7 +14,7 @@ from pathlib import Path
 import pytest
 
 from darner.job import JobError
-from darner.launch import FETCH_REJECTED, launch, main, parse_args, session_usage, status
+from darner.launch import FETCH_REJECTED, forget, launch, main, parse_args, session_usage, status
 
 FAKE_TMUX = """#!/bin/sh
 python3 -c 'import json, sys; print(json.dumps(sys.argv[1:]))' "$@" >> "$FAKE_TMUX_LOG"
@@ -2021,16 +2022,43 @@ def test_an_empty_record_is_metered_and_no_record_is_not(metered, env):
     assert session_usage(task) is None
 
 
-def test_status_reports_usage_and_forget_deletes_the_record(metered, env):
+FAKE_DEJIMA_USAGE = """#!/bin/sh
+echo "$@" >> "$(dirname "$0")/dejima-usage.log"
+"""
+
+
+@pytest.mark.parametrize("keep_records", [False, True])
+def test_status_reports_usage_and_forget_has_dejima_usage_delete_it(metered, env, keep_records):
     task, record = metered
     record.write_text('{"model": "m", "input": 4}\n')
-    a = args(env)
+    tool = env / "dejima-usage"
+    tool.write_text(FAKE_DEJIMA_USAGE)
+    tool.chmod(0o755)
+    a = args(env, "--dejima-usage", str(tool), *(["--keep-records"] if keep_records else []))
     [entry] = status(a)
     assert entry["usage"] == [{"model": "m", "requests": 1, "metered": 1, "input": 4}]
     (task / "exit").write_text("0\n")
-    code, _, err = run(a, "forget", "dn-abc23")
-    assert code == 0, err
-    assert not record.exists() and not task.exists()
+    forget(a, "dn-abc23")
+    assert not task.exists()
+    # Deleted by dejima's own tool, by run id, unless dejima's records are being kept.
+    log = env / "dejima-usage.log"
+    assert (log.read_text() if log.exists() else "") == ("" if keep_records else "--forget 0123456789abcdef\n")
+
+
+def test_a_failed_usage_read_keeps_the_last_totals_and_status_working(metered, env, monkeypatch):
+    task, record = metered
+    record.write_text('{"model": "m", "input": 4}\n')
+    first = session_usage(task)
+    import darner.launch
+
+    def broken(*_):
+        raise OSError(errno.EIO, "I/O error")
+
+    monkeypatch.setattr(darner.launch, "_write_atomic", broken)
+    record.write_text('{"model": "m", "input": 4}\n{"model": "m", "input": 5}\n')
+    assert session_usage(task) == first
+    [entry] = status(args(env))
+    assert entry["usage"] == first
 
 
 def test_usage_is_read_on_from_where_it_stopped(metered):

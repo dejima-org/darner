@@ -693,17 +693,23 @@ def _tokens(used: object) -> str:
         parts += [f"{_short(sums[key])} {key.replace('_', ' ')}" for key in ("cache_read", "cache_write") if key in sums]
     if "output" in sums:
         parts.append(f"{_short(sums['output'])} out")
+    requests = sum(count(t, "requests") for t in used)
+    # Calls whose counts are missing are said, rather than left out of a sum that would look whole.
+    if parts and (metered := sum(count(t, "metered") for t in used)) < requests:
+        parts[-1] += f"; {requests - metered} of {requests} requests not counted"
     if parts:
         return ", ".join(parts)
-    requests = sum(count(t, "requests") for t in used)
     return f"{requests} model request{'s' if requests != 1 else ''}, not counted by the provider" if requests else ""
 
 
 def _short(n: int) -> str:
-    for size, unit in ((10**9, "G"), (10**6, "M"), (10**3, "k")):
-        if n >= size:
-            return f"{n / size:.1f}".removesuffix(".0") + unit
-    return str(n)
+    if n < 1000:
+        return str(n)
+    # The unit is chosen after rounding, so 999,950 is 1M rather than 1000k.
+    for size, unit in ((10**3, "k"), (10**6, "M"), (10**9, "G")):
+        shown = round(n / size, 1)
+        if shown < 1000 or unit == "G":
+            return f"{shown:.1f}".removesuffix(".0") + unit
 
 
 def _age(started: float) -> str:

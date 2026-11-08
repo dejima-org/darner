@@ -26,6 +26,7 @@
 | `--max-upload BYTES` | 50 MiB | largest file a requester can upload into a session |
 | `--docker PATH` | `docker` | the docker CLI, used to find and stop a session's container |
 | `--dejima-allow PATH` | `dejima-allow` | dejima's `dejima-allow`, used to grant a session the domains it requested |
+| `--dejima-usage PATH` | `dejima-usage` | dejima's `dejima-usage`, used to delete dejima's record of an ended session's token usage along with its task directory; without it, or with `--keep-records`, dejima removes each record once it's a month old. `catalog` says when it can't be found |
 | `--dejima-share PATH` | `dejima-share` | dejima's `dejima-share`, used to remove an ended session's `~/shared` once its output has been delivered whole, or once it's cleared; it needs a dejima with `prune --isolated [share]` and `--yes`, and without one, shares are kept. `catalog` says so, and the API logs it at startup |
 | `--keep-shared` | off | keep every ended session's `~/shared` on the dejima host, even once its output has been delivered; separate from `--keep-records`, which keeps dejima's records |
 | `--stop-timeout SECONDS` | 60 | how long a stopped session may take to exit before dejima itself is ended |

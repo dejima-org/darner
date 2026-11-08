@@ -1543,3 +1543,10 @@ async def test_hostile_usage_shows_nothing(maubot_plugin, maubot_test_bot, api):
     api.events[-1]["data"] = {"usage": "lots"}
     await maubot_plugin.poll_once()
     assert sent(maubot_test_bot)[0] == agent_notice(UNTRUSTED, "done")
+
+
+async def test_an_output_notice_says_when_requests_werent_counted(maubot_plugin, maubot_test_bot, api):
+    api.add(1, summary="done")
+    api.events[-1]["data"] = {"usage": [{"model": "m", "requests": 5, "metered": 3, "input": 100, "output": 20}]}
+    await maubot_plugin.poll_once()
+    assert sent(maubot_test_bot)[0] == agent_notice(UNTRUSTED, "done", "Used 100 in, 20 out; 2 of 5 requests not counted since the last notice.")

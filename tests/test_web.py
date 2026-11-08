@@ -882,6 +882,8 @@ def test_the_vendored_static_files_are_the_recorded_ones():
     ([{"model": "a", "requests": 1, "metered": 1, "output": 5}, {"model": None, "requests": 1, "metered": 1, "output": 7}], "12 out"),
     # Without input, the prompt's size isn't known, so the cache counts are shown as they are.
     ([{"model": "m", "requests": 1, "metered": 1, "cache_read": 5}], "5 cache read"),
+    # A partial count says so, rather than passing for the whole.
+    ([{"model": "m", "requests": 100, "metered": 60, "input": 999950, "output": 1000}], "1M in, 1k out; 40 of 100 requests not counted"),
     # Requests with no counts are said to be uncounted, not shown as zero.
     ([{"model": "m", "requests": 2, "metered": 0}], "2 model requests, not counted by the provider"),
     ([], ""),
@@ -889,6 +891,11 @@ def test_the_vendored_static_files_are_the_recorded_ones():
 def test_tokens_are_shown_as_dejima_counts_them(used, shown):
     from darner.web import _tokens
     assert _tokens(used) == shown
+
+
+def test_each_model_says_how_many_requests_werent_counted():
+    from darner.web import _tokens_by_model
+    assert _tokens_by_model([{"model": "m", "requests": 4, "metered": 3, "output": 10}]) == "m: 4 requests (1 not counted), 10 out"
 
 
 async def test_usage_is_shown_on_events_and_the_session(client, fake):

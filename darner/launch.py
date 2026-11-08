@@ -15,6 +15,7 @@ sent to its server and the prompt is passed as a single argument.
 
 import argparse
 import contextlib
+import errno
 import fcntl
 import hashlib
 import threading
@@ -112,6 +113,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--docker", default="docker")
     p.add_argument("--dejima-allow", default="dejima-allow")
     p.add_argument("--dejima-share", default="dejima-share")
+    p.add_argument("--dejima-usage", default="dejima-usage")
     p.add_argument("--keep-shared", action="store_true", help="keep an ended session's ~/shared rather than pruning it")
     p.add_argument("--stop-timeout", default=60, type=int, help="seconds to wait for a stopped session to exit")
     p.add_argument("--exec", dest="exec_dir", type=Path, help=argparse.SUPPRESS)
@@ -396,14 +398,27 @@ def session_usage(task_dir: Path) -> list[dict] | None:
     provider didn't send stays absent rather than becoming zero. An empty record
     is a metered session that has spent nothing yet; none at all, one that isn't
     metered, such as a self-hosted model's. The running totals, and how far into
-    the record they reach, are kept in the task directory between reads.
+    the record they reach, are kept in the task directory between reads, under a
+    lock, so two status calls at once can't save older totals over newer ones.
     """
     if (path := _usage_record(task_dir)) is None:
         return None
     try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with _domains_lock(task_dir, "usage.lock"):
+            return _read_usage(task_dir, path)
     except OSError:
-        return None
+        # One task's failure mustn't fail status for every task: its last totals stand.
+        return _saved_usage(task_dir)
+
+
+def _read_usage(task_dir: Path, path: str) -> list[dict] | None:
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError as e:
+        # No record, or a symlink in its place: not metered. Anything else may pass.
+        if e.errno in (errno.ENOENT, errno.ELOOP):
+            return None
+        raise
     with os.fdopen(fd, "rb") as f:
         st = os.fstat(f.fileno())
         if not stat.S_ISREG(st.st_mode):
@@ -420,6 +435,14 @@ def session_usage(task_dir: Path) -> list[dict] | None:
     state["totals"] = sorted(totals.values(), key=lambda t: (t["model"] is None, t["model"] or ""))
     _write_atomic(task_dir / "usage-sum.json", json.dumps(state))
     return state["totals"]
+
+
+def _saved_usage(task_dir: Path) -> list[dict] | None:
+    try:
+        totals = json.loads((task_dir / "usage-sum.json").read_text()).get("totals")
+    except (OSError, ValueError, AttributeError):
+        return None
+    return totals if isinstance(totals, list) else None
 
 
 def _usage_sum(task_dir: Path, st: os.stat_result) -> dict:
@@ -454,10 +477,20 @@ def _add_usage(totals: dict, line: bytes) -> None:
         total[k] = total.get(k, 0) + n
 
 
-def _forget_usage(task_dir: Path) -> None:
-    if path := _usage_record(task_dir):
-        with contextlib.suppress(OSError):
-            os.unlink(path)
+def _forget_usage(args: argparse.Namespace, task_dir: Path) -> None:
+    """Have dejima-usage delete dejima's usage record for an ended session.
+
+    Through dejima's own tool, which deletes only a record in its usage
+    directory, by run id. With --keep-records, or if that fails, the record is
+    left for dejima to remove when it's a month old.
+    """
+    if args.keep_records or (path := _usage_record(task_dir)) is None or (tool := shutil.which(args.dejima_usage)) is None:
+        return
+    with contextlib.suppress(OSError, subprocess.SubprocessError):
+        subprocess.run(
+            [tool, "--forget", os.path.basename(path).removesuffix(".jsonl")],
+            stdin=subprocess.DEVNULL, capture_output=True, timeout=30,
+        )
 
 
 def _keeps_records(dejima: list[str]) -> bool:
@@ -644,7 +677,7 @@ def forget(args: argparse.Namespace, task_id: str, delivered: str | None = None)
     share = _existing_share(args, task_dir)
     problem = _prune_share(args, task_dir, delivered) if delivered else "its output wasn't delivered whole"
     kept = problem and _keep(args, task_dir, task_id)
-    _forget_usage(task_dir)
+    _forget_usage(args, task_dir)
     # A clear's discard may be forgetting it at the same time.
     with contextlib.suppress(FileNotFoundError):
         shutil.rmtree(task_dir)
@@ -1509,8 +1542,11 @@ def catalog(args: argparse.Namespace) -> dict:
     # Not fatal, but each costs something quietly: printed for the API's log.
     if not args.keep_shared and (problem := _dejima_share(args)[1]):
         print(f"ended sessions' ~/shared will be kept, not pruned: {problem}", file=sys.stderr)
-    for option, tool, costs in (("--dejima-allow", args.dejima_allow, "domain requests can't be granted"),
-                                ("--docker", args.docker, "sessions can't be stopped")):
+    tools = [("--dejima-allow", args.dejima_allow, "domain requests can't be granted"),
+             ("--docker", args.docker, "sessions can't be stopped")]
+    if not args.keep_records:
+        tools.append(("--dejima-usage", args.dejima_usage, "token usage records are left for dejima to remove after a month"))
+    for option, tool, costs in tools:
         if shutil.which(tool) is None:
             print(f"{Path(tool).name} not found on PATH, so {costs}; pass {option} with its full path", file=sys.stderr)
     return {

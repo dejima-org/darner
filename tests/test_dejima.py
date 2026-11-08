@@ -5,6 +5,7 @@ it to the dejima release CHANGELOG.md names, or dejima's development while
 that's N/A or not tagged yet. Without it, these skip.
 """
 
+import json
 import os
 import re
 import subprocess
@@ -13,7 +14,7 @@ from pathlib import Path
 import pytest
 
 from darner.job import Job
-from darner.launch import _dejima_share, dejima_argv, dejima_defaults, dejima_root, harness_options, parse_args
+from darner.launch import _dejima_share, _forget_usage, dejima_argv, dejima_defaults, dejima_root, harness_options, parse_args, session_usage
 
 SRC = Path(os.environ["DEJIMA_SRC"]) if os.environ.get("DEJIMA_SRC") else None
 pytestmark = pytest.mark.skipif(SRC is None, reason="DEJIMA_SRC is not set")
@@ -95,3 +96,25 @@ def test_sessions_are_registered_and_named_as_the_launcher_finds_them():
     source = (SRC / "bin" / "dejima").read_text()
     assert "printf 'pane=%s\\n'" in source and "printf 'pid=%s\\n' \"$$\"" in source
     assert 'SANDBOX_ISOLATED_WORK="dejima_isolated-work-$DEJIMA_RUN_ID"' in source
+
+
+def test_dejima_usage_totals_a_record_as_the_launcher_does_and_forgets_it(home, tmp_path):
+    # Two sums of one record would drift apart over an absent count eventually; this keeps them together.
+    run_id = "0123456789abcdef"
+    store = home / ".local" / "share" / "dejima" / "usage"
+    store.mkdir(parents=True, mode=0o700)
+    record = store / f"{run_id}.jsonl"
+    record.write_text(
+        '{"t": 1, "model": "claude-opus-5-5", "status": 200, "input": 2, "output": 122, "cache_read": 12589, "cache_write": 11735}\n'
+        '{"t": 2, "model": "claude-opus-5-5", "status": 200, "input": 2, "output": 47, "cache_read": 24324}\n'
+        '{"t": 3, "model": "z-ai/glm-5.3", "status": 200}\n'
+        '{"t": 4, "status": 500, "output": 3}\n'
+    )
+    tool = str(SRC / "bin" / "dejima-usage")
+    out = subprocess.run([tool, "--total", run_id], capture_output=True, text=True, timeout=30, check=True).stdout
+    task = tmp_path / "task"
+    task.mkdir()
+    (task / "usage-path").write_text(f"{record}\n")
+    assert session_usage(task) == [json.loads(line) for line in out.splitlines()]
+    _forget_usage(parse_args(["--dejima-usage", tool]), task)
+    assert not record.exists()
