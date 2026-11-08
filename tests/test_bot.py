@@ -1515,3 +1515,31 @@ async def test_an_undeliverable_event_is_given_up_on(maubot_plugin, maubot_test_
 async def test_a_hyphenated_word_is_not_taken_for_a_task_id(maubot_plugin, maubot_test_bot, api, command):
     await send(maubot_test_bot, message(f"@darner:example.org {command}", reply_to=None))
     assert api.requests[0][1]["task"] == command
+
+
+async def test_an_output_notice_says_what_it_used(maubot_plugin, maubot_test_bot, api):
+    api.add(1, summary="done")
+    api.events[-1]["data"] = {"usage": [
+        {"model": "@room", "requests": 2, "metered": 2, "input": 1500, "output": 200},
+        {"model": "n", "requests": 1, "metered": 1, "output": 50, "cache_read": 30000},
+    ]}
+    await maubot_plugin.poll_once()
+    # Sums only: a model name never reaches the room.
+    assert sent(maubot_test_bot)[0] == agent_notice(UNTRUSTED, "done", "Used 1.5k input, 250 output, 30k cache read since the last notice.")
+
+
+async def test_an_ended_notice_says_what_the_session_used(maubot_plugin, maubot_test_bot, api):
+    api.add(1, type="ended", summary="", data=None)
+    api.events[-1]["data"] = {"usage": [], "usage_total": [{"model": "m", "requests": 3, "metered": 0}], "share_kept": True}
+    await maubot_plugin.poll_once()
+    assert replies(maubot_test_bot) == [
+        "dn-7f3k2 ended. It used 3 model requests, not counted by the provider. Its ~/shared is kept on the dejima host until you clear it:"
+        " reply clear to this, with a mention."
+    ]
+
+
+async def test_hostile_usage_shows_nothing(maubot_plugin, maubot_test_bot, api):
+    api.add(1, summary="done")
+    api.events[-1]["data"] = {"usage": "lots"}
+    await maubot_plugin.poll_once()
+    assert sent(maubot_test_bot)[0] == agent_notice(UNTRUSTED, "done")

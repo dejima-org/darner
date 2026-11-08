@@ -21,7 +21,7 @@ from pathlib import Path
 
 from aiohttp import web
 
-from darner import archive, configsets, selftest
+from darner import archive, configsets, selftest, usage
 from darner.job import (
     OUTPUT_INSTRUCTIONS, JobError, check_harness, compose_prompt, new_task_id, valid_context_window, valid_domain, valid_model,
     valid_name, valid_task_id, validate_job,
@@ -571,6 +571,8 @@ def end_task(app: web.Application, task_id: str, note: str = "", share: str | No
 
     share, "kept" or "pruned", is what became of its ~/shared, for its frontend to say.
     """
+    if (total := app[STORE].usage(task_id)) is not None:
+        audit.info("usage %s: %s", task_id, json.dumps(total, separators=(",", ":")))
     app[STORE].end(task_id, note, {f"share_{share}": True} if share else None)
     kept = app[STORE].kept_outputs(task_id)
     task_dir = Path(app[CONFIG]["results_dir"]) / task_id
@@ -682,6 +684,8 @@ async def poll_once(app: web.Application) -> None:
                 log.warning("can't read %s's ~/shared, so its output can't be collected: %s", task["id"], task["error"])
         if isinstance(task.get("run_id"), str) and RUN_ID.fullmatch(task["run_id"]):
             store.set_run_id(task["id"], task["run_id"])
+        # Before any event this poll adds, so each carries what was used up to now.
+        store.set_usage(task["id"], usage.clean(task.get("usage")))
         # One task's failure must not hold up the others.
         try:
             if task.get("help"):
@@ -1077,6 +1081,7 @@ async def _sessions(request: web.Request, task_id: str | None = None) -> list[di
             "state": state.get("state", "unknown"),
             "answerable": bool(state.get("answerable")),
             "waiting": waiting,
+            "usage": usage.clean(state["usage"]) if "usage" in state else store.usage(task["id"]),
             "started_with": {key: task["job"][key] for key in STARTED_WITH if task["job"].get(key)},
         })
     return sessions

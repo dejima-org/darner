@@ -268,9 +268,10 @@ async def session_page(request: web.Request) -> web.Response:
     # What became of its ~/shared, as its latest ended event says, so the page can say where its files are.
     ended = [e.get("data") or {} for e in data["events"] if e["type"] == "ended" and e.get("data")]
     share = ended and ("kept" if ended[-1].get("share_kept") else "pruned" if ended[-1].get("share_pruned") else None)
+    total = next((e["usage_total"] for e in reversed(ended) if isinstance(e.get("usage_total"), list)), None)
     return page(
         request, "session.html", state=f"/state/sessions/{task_id}", version=_version(data), task_id=task_id,
-        latest=latest, history=history, share=share, **data,
+        latest=latest, history=history, share=share, total=total, **data,
     )
 
 
@@ -618,6 +619,37 @@ async def api_errors(request: web.Request, handler):
         return page(request, "error.html", status=_status(e), message=str(e))
 
 
+TOKEN_COUNTS = (("input", "input"), ("output", "output"), ("cache_read", "cache read"), ("cache_write", "cache write"))
+
+
+def _short(n: int) -> str:
+    for size, unit in ((10**9, "G"), (10**6, "M"), (10**3, "k")):
+        if n >= size:
+            return f"{n / size:.1f}".removesuffix(".0") + unit
+    return str(n)
+
+
+def _tokens(used: list[dict]) -> str:
+    """Token usage, summed over models, as dejima's credential proxy counted it, or "" if there was none.
+
+    The counts are the provider's own, named as dejima names them, and never
+    added together: whether input includes cache reads differs between providers.
+    """
+    sums = {key: sum(t[key] for t in used if key in t) for key, _ in TOKEN_COUNTS if any(key in t for t in used)}
+    if sums:
+        return ", ".join(f"{_short(sums[key])} {label}" for key, label in TOKEN_COUNTS if key in sums)
+    requests = sum(t["requests"] for t in used)
+    return f"{requests} model request{'s' if requests != 1 else ''}, not counted by the provider" if requests else ""
+
+
+def _tokens_by_model(used: list[dict]) -> str:
+    return "\n".join(
+        f"{t['model'] or 'unnamed model'}: {t['requests']} request{'s' if t['requests'] != 1 else ''}"
+        + (f", {counted}" if (counted := _tokens([t])) and t.get("metered") else "")
+        for t in used
+    )
+
+
 def _age(started) -> str:
     minutes = max(0, int(time.time() - started) // 60)
     if minutes < 60:
@@ -635,6 +667,8 @@ def make_app(config: dict) -> web.Application:
     )
     templates.filters["agent"] = render
     templates.filters["age"] = _age
+    templates.filters["tokens"] = _tokens
+    templates.filters["tokens_by_model"] = _tokens_by_model
     templates.globals["SETTING_LABELS"] = SETTING_LABELS
     app[TEMPLATES] = templates
 

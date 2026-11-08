@@ -11,6 +11,7 @@
 <div class="card-head"><a href="/sessions/{{ s.id }}" class="id">{% if s.name %}dn-{{ s.name }}{% else %}{{ s.id }}{% endif %}</a><span class="state {{ s.state }}">{{ s.state }}</span></div>
 {% if s.name %}<p class="meta id">{{ s.id }}</p>{% endif %}
 <p class="meta">{{ s.requester }} · {{ s.started | age }} ago</p>
+{% set u = s.get("usage") %}{% if u and u | tokens %}<p class="meta tokens" title="{{ u | tokens_by_model }}">{{ u | tokens }}</p>{% endif %}
 <p class="meta">{% if s.waiting.answer is not none %}<span class="waits">Waiting on a help request</span>{% elif s.waiting.domains is not none %}<span class="waits">Waiting on a domain request</span>{% else %}<span class="quiet">Waiting on nothing</span>{% endif %}</p>
 {% if s.link %}<p class="meta"><a href="{{ s.link }}" rel="noopener noreferrer" class="remote">Remote access</a></p>{% endif %}
 </li>

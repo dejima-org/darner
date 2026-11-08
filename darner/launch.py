@@ -41,6 +41,16 @@ SHA256 = re.compile(r"[0-9a-f]{64}")
 KEPT = ".kept"
 RUN_ID = re.compile(r"[0-9a-f]{16}")
 MAX_HELP = 16 * 1024
+# A session's token usage, as dejima's credential proxy recorded it: one JSON line per model request.
+USAGE_RECORD = re.compile(r"[0-9a-f]{16}\.jsonl")
+USAGE_COUNTS = ("input", "output", "cache_read", "cache_write")
+# Read from where the last read stopped, at most this much at a time, so a flooded record
+# neither freezes the totals nor costs a full parse every poll.
+MAX_USAGE_READ = 4 * 1024 * 1024
+MAX_COUNT = 10**12
+# Model names past this many are counted unnamed: a refused request's model is the one the
+# agent's request named, so it could otherwise name enough to swamp the real ones.
+MAX_USAGE_MODELS = 50
 SIGNALS = {
     "done": (".done", "consumed"),
     "help": (".help", "consumed-help"),
@@ -126,7 +136,10 @@ def dejima_argv(args: argparse.Namespace, job, task_dir: Path, dejima: str) -> l
         harness_options(dejima_root(dejima)), used, backend or d.get("backend"), effort or d.get("effort"),
         int(context_window) if context_window else d.get("context_window"),
     )
-    argv = [dejima, "--isolated", "--no-pause", "--shared-path-file", str(task_dir / "shared-path")]
+    argv = [
+        dejima, "--isolated", "--no-pause", "--shared-path-file", str(task_dir / "shared-path"),
+        "--usage-path-file", str(task_dir / "usage-path"),
+    ]
     if args.keep_records:
         argv.append("--keep-records")
     for flag, value in (
@@ -363,6 +376,90 @@ def _share_path(args: argparse.Namespace, task_dir: Path, record: Path | None = 
     return root, leaf
 
 
+def _usage_record(task_dir: Path) -> str | None:
+    """Where dejima records a session's token usage, from the path it wrote at launch, or None."""
+    try:
+        path = (task_dir / "usage-path").read_text().removesuffix("\n")
+    except OSError:
+        return None
+    if not os.path.isabs(path) or "\0" in path or not USAGE_RECORD.fullmatch(os.path.basename(path)):
+        return None
+    return path
+
+
+def session_usage(task_dir: Path) -> list[dict] | None:
+    """A session's token usage so far, summed by model, or None if it isn't metered.
+
+    dejima's credential proxy writes the record on the host, where no session
+    can reach it, from the provider's responses. It's still re-checked here: a
+    count is a non-negative integer, a model a model name, and a count the
+    provider didn't send stays absent rather than becoming zero. An empty record
+    is a metered session that has spent nothing yet; none at all, one that isn't
+    metered, such as a self-hosted model's. The running totals, and how far into
+    the record they reach, are kept in the task directory between reads.
+    """
+    if (path := _usage_record(task_dir)) is None:
+        return None
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError:
+        return None
+    with os.fdopen(fd, "rb") as f:
+        st = os.fstat(f.fileno())
+        if not stat.S_ISREG(st.st_mode):
+            return None
+        state = _usage_sum(task_dir, st)
+        f.seek(state["offset"])
+        raw = f.read(MAX_USAGE_READ)
+    # A line still being written is left for the next read; one longer than a whole read is skipped.
+    end = raw.rfind(b"\n") + 1 or (len(raw) if len(raw) == MAX_USAGE_READ else 0)
+    totals = {t["model"]: t for t in state["totals"]}
+    for line in raw[:end].split(b"\n"):
+        _add_usage(totals, line)
+    state["offset"] += end
+    state["totals"] = sorted(totals.values(), key=lambda t: (t["model"] is None, t["model"] or ""))
+    _write_atomic(task_dir / "usage-sum.json", json.dumps(state))
+    return state["totals"]
+
+
+def _usage_sum(task_dir: Path, st: os.stat_result) -> dict:
+    """The totals read so far from this record, or a fresh start if they're for another file or past its end."""
+    fresh = {"file": [st.st_dev, st.st_ino], "offset": 0, "totals": []}
+    try:
+        state = json.loads((task_dir / "usage-sum.json").read_text())
+    except (OSError, ValueError):
+        return fresh
+    if not isinstance(state, dict) or state.get("file") != fresh["file"] or not isinstance(state.get("offset"), int):
+        return fresh
+    if not 0 <= state["offset"] <= st.st_size or not isinstance(state.get("totals"), list):
+        return fresh
+    return state
+
+
+def _add_usage(totals: dict, line: bytes) -> None:
+    try:
+        entry = json.loads(line)
+    except ValueError:
+        return
+    if not isinstance(entry, dict):
+        return
+    model = entry.get("model") if valid_model(entry.get("model")) else None
+    if model not in totals and sum(m is not None for m in totals) >= MAX_USAGE_MODELS:
+        model = None
+    counts = {k: entry[k] for k in USAGE_COUNTS if type(entry.get(k)) is int and 0 <= entry[k] < MAX_COUNT}
+    total = totals.setdefault(model, {"model": model, "requests": 0, "metered": 0})
+    total["requests"] += 1
+    total["metered"] += bool(counts)
+    for k, n in counts.items():
+        total[k] = total.get(k, 0) + n
+
+
+def _forget_usage(task_dir: Path) -> None:
+    if path := _usage_record(task_dir):
+        with contextlib.suppress(OSError):
+            os.unlink(path)
+
+
 def _keeps_records(dejima: list[str]) -> bool:
     return "--" in dejima and "--keep-records" in dejima[: dejima.index("--")]
 
@@ -547,6 +644,7 @@ def forget(args: argparse.Namespace, task_id: str, delivered: str | None = None)
     share = _existing_share(args, task_dir)
     problem = _prune_share(args, task_dir, delivered) if delivered else "its output wasn't delivered whole"
     kept = problem and _keep(args, task_dir, task_id)
+    _forget_usage(task_dir)
     # A clear's discard may be forgetting it at the same time.
     with contextlib.suppress(FileNotFoundError):
         shutil.rmtree(task_dir)
@@ -719,6 +817,7 @@ def status(args: argparse.Namespace) -> list[dict]:
             "domain_request": _pending_request_number(task_dir),
             "answerable": args.answers and state == "running",
             "run_id": session_run_id(task_dir) if state == "running" else None,
+            "usage": session_usage(task_dir),
             "error": error,
         })
     return tasks
