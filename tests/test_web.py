@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 Brad Anderson
 import asyncio
+import base64
 import hashlib
 import re
 from html.parser import HTMLParser
@@ -90,6 +91,8 @@ class FakeApi:
             return await record(request, found)
 
         async def events(request):
+            if isinstance(self.events, dict) and isinstance(self.events.get("answer"), dict):
+                return await record(request, self.events["answer"])
             return await record(request, [e for es in self.events.values() for e in es])
 
         async def output(request):
@@ -552,6 +555,9 @@ def test_agent_markdown_rules(markdown, html):
     ({"max_upload": 0}, "max_upload must be a positive number"),
     ({"max_download": True}, "max_download must be a positive number"),
     ({"public_origin": "https://darner.example.com:notaport"}, "public_origin"),
+    ({"ntfy_url": "ntfy.example.com/darner"}, "ntfy_url"),
+    ({"ntfy_url": "https://ntfy.example.com/darner\nX-Actions: x"}, "ntfy_url"),
+    ({"ntfy_url": "https://ntfy.example.com/dar ner"}, "ntfy_url"),
 ])
 def test_a_config_that_wouldn_t_work_is_refused(change, message):
     config = {"api_url": "http://127.0.0.1:8080", "api_token": TOKEN, "public_origin": ORIGIN, **change}
@@ -931,3 +937,83 @@ async def test_a_flag_dejima_dropped_is_shown_as_darner_s_own(client, fake):
     assert 'Started without <code class="flag">--usage-path-file</code>' in event
     assert "so this session runs without it." in event
     assert "agent" not in event
+
+
+async def test_new_output_help_and_domain_requests_are_pushed_to_ntfy_in_darner_s_words(aiohttp_client, aiohttp_server, fake, monkeypatch, caplog):
+    pushed = []
+
+    async def topic(request):
+        pushed.append((dict(request.headers), await request.text()))
+        return web.json_response({})
+
+    ntfy = web.Application()
+    ntfy.router.add_post("/darner", topic)
+    server = await aiohttp_server(ntfy)
+    monkeypatch.setattr("darner.web.NTFY_POLL", 0.05)
+    url = str(server.make_url("/darner")).replace("://", "://:tk_secret@")
+    await aiohttp_client(make_app(config_for(fake, ntfy_url=url)))
+    await asyncio.sleep(0.2)
+    # What was there when it started isn't news.
+    assert pushed == []
+    new = [("output", None), ("help", "fix-db"), ("waiting", None), ("domains", "<b>x</b>"), ("ignored", None), ("ended", None)]
+    fake.events["dn-aaaaa"] += [
+        {"seq": 10 + i, "id": "dn-aaaaa", "type": kind, "summary": SELFTEST, "size": 0, "data": None, "name": name}
+        for i, (kind, name) in enumerate(new)
+    ]
+    for _ in range(100):
+        if len(pushed) == 3:
+            break
+        await asyncio.sleep(0.05)
+    await asyncio.sleep(0.2)
+    assert [h["Title"] for h, _ in pushed] == [
+        "darner: dn-aaaaa has output", "darner: dn-fix-db needs help", "darner: dn-aaaaa asks to reach more domains",
+    ]
+    for headers, body in pushed:
+        assert body == "Open it in darner-web."
+        assert headers["Click"] == f"{ORIGIN}/sessions/dn-aaaaa"
+        assert headers["Authorization"] == "Basic " + base64.b64encode(b":tk_secret").decode()
+        assert not {"X-Actions", "X-Attach", "X-Icon", "Actions", "Attach", "Icon"} & set(headers)
+
+    # A failing topic is logged without its credential.
+    await server.close()
+    fake.events["dn-aaaaa"].append({"seq": 20, "id": "dn-aaaaa", "type": "help", "summary": "", "size": 0, "data": None, "name": None})
+    await asyncio.sleep(0.3)
+    assert "couldn't push to ntfy" in caplog.text and "tk_secret" not in caplog.text
+
+
+async def test_without_ntfy_url_nothing_reads_events_in_the_background(client, fake):
+    await asyncio.sleep(0.1)
+    assert not [c for c in fake.calls if c[1] == "/v1/events"]
+
+
+def test_an_ntfy_credential_is_left_out_of_what_s_logged():
+    from darner.web import _redacted
+    assert _redacted("https://:tk_secret@ntfy.example.com/darner") == "https://ntfy.example.com/darner"
+    assert _redacted("https://ntfy.example.com:8443/darner?auth=tk_secret") == "https://ntfy.example.com:8443/darner"
+
+
+async def test_a_bad_answer_or_a_database_that_started_over_doesn_t_stop_pushes(aiohttp_client, aiohttp_server, fake, monkeypatch):
+    pushed = []
+
+    async def topic(request):
+        pushed.append(request.headers["Title"])
+        return web.json_response({})
+
+    ntfy = web.Application()
+    ntfy.router.add_post("/darner", topic)
+    server = await aiohttp_server(ntfy)
+    monkeypatch.setattr("darner.web.NTFY_POLL", 0.05)
+    fake.events = {"x": [{"seq": 500, "id": "dn-aaaaa", "type": "help", "name": None}]}
+    await aiohttp_client(make_app(config_for(fake, ntfy_url=str(server.make_url("/darner")))))
+    await asyncio.sleep(0.2)
+    fake.events = {"answer": {"error": "not a list"}}
+    await asyncio.sleep(0.2)
+    # Started over below what was seen: that's the new baseline, and what follows is pushed.
+    fake.events = {"x": [{"seq": 3, "id": "dn-aaaaa", "type": "help", "name": None}]}
+    await asyncio.sleep(0.2)
+    fake.events["x"].append({"seq": 4, "id": "dn-aaaaa", "type": "output", "name": None})
+    for _ in range(40):
+        if pushed:
+            break
+        await asyncio.sleep(0.05)
+    assert pushed == ["darner: dn-aaaaa has output"]
