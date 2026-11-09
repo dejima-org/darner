@@ -37,6 +37,9 @@ public_origin = "https://darner.example.com"
 
 # An ntfy topic to push to when a session darner-web started has output, a help
 # request or a domain request. A push names the session and links to its page,
-# never what the agent wrote. A topic that needs credentials takes them in the
-# URL. Unset, nothing is pushed (docs/web.md).
-# ntfy_url = "https://:tk_replace-with-a-token@ntfy.example.com/darner"
+# never what the agent wrote. Unset, nothing is pushed (docs/web.md).
+# ntfy_url = "https://ntfy.example.com/darner"
+
+# A token that can only write to that topic, sent as a Bearer header. Never put
+# it in ntfy_url, which is refused with a credential in it.
+# ntfy_token = "tk_replace-with-a-write-only-token"
