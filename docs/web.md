@@ -78,9 +78,17 @@ A session's page leads with what it's waiting on you for, a domain request or a 
 
 An ended session stays on its page, showing its output and zips, until someone presses **Clear**. The API then deletes it, and has the dejima host prune its `~/shared` if that was [kept](sessions.md#whats-kept). Uncleared output is deleted after the API's `output_retention`, 7 days by default. Files are uploaded from a running session's page, not when starting a task, since a session's `~/shared` doesn't exist until it's running.
 
+## Notifications
+
+With `ntfy_url` set in `web.toml`, darner-web pushes to that [ntfy](https://ntfy.sh) topic when one of its sessions has output, a help request or a domain request. Each push names the session and links to its page, and says nothing else: no summary, question or domain, since the phone is outside the sandbox and nothing the agent wrote should reach it. It doesn't push for a session that seems to be waiting, which dejima's own notifications cover where remote access is on.
+
+The topic is darner-web's, separate from the one dejima's remote access pushes to. Someone with access to darner but not to dejima's terminals can subscribe to darner-web's alone, and someone with both can subscribe to either or both. Everyone subscribed gets every push for every session darner-web started, so scope who can read the topic as you scope who gets past the proxy. A topic that needs credentials takes them in the URL, as `https://:<token>@ntfy.example.com/darner` or `?auth=`; use `https`, and they're never logged. The agent chooses when it asks for help or domains, so it chooses when some pushes happen, though never what they say; the launcher's `--help-interval` spaces its help requests, and your ntfy server's rate limit the rest.
+
+darner-web reads the API's events every 15 seconds for this. Events already there when it starts aren't pushed, including any that arrived while it was down or couldn't reach the API.
+
 ## What it keeps
 
-Nothing. It has no database and writes no files: every page is read from the API when it's asked for. The API keeps an ended session's output for this frontend until it's cleared, or for `output_retention` at most, and deletes everything else about a session when it ends.
+Nothing. It has no database and writes no files: every page is read from the API when it's asked for, and with notifications on it remembers only the newest event it has seen. The API keeps an ended session's output for this frontend until it's cleared, or for `output_retention` at most, and deletes everything else about a session when it ends.
 
 ## Setting it up
 

@@ -11,6 +11,7 @@ rebinding.
 
 import argparse
 import asyncio
+import contextlib
 import hashlib
 import json
 import logging
@@ -46,6 +47,8 @@ DEFAULTS = {
     "launch_timeout": 300,
     # What's typed into a form is kept in the browser tab's sessionStorage until it's sent.
     "drafts": True,
+    # An ntfy topic to push to when a session has output, a help request or a domain request.
+    "ntfy_url": None,
 }
 # Room for the API's longest text fields, 32,768 characters each, at JSON's
 # worst case of six bytes a character, with the rest of a request beside them.
@@ -73,6 +76,14 @@ HEADERS = {
     "Cross-Origin-Resource-Policy": "same-origin",
 }
 TASK_ID = "{id:dn-[a-z2-7]{5}}"
+# dejima's notify watcher's character set, which leaves no room for a header or
+# a second URL. A credential goes in the userinfo, as https://:<token>@host/topic.
+NTFY_URL = re.compile(r"https?://[A-Za-z0-9:/._~?=%@+-]+")
+NTFY_POLL = 15
+# What's pushed: darner's own words, never the agent's, since the phone is outside the sandbox.
+NOTICES = {"output": "has output", "help": "needs help", "domains": "asks to reach more domains"}
+NOTIFY_ID = re.compile(r"dn-[a-z2-7]{5}")
+NOTIFY_NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,31}")
 # What a session was started with, as its page labels it, in order.
 SETTING_LABELS = {
     "configs": "Config sets", "blurbs": "Blurbs", "harness": "Harness", "backend": "Backend", "model": "Model",
@@ -114,6 +125,10 @@ def check_config(config: dict) -> dict:
             raise ValueError(f"{key} must be a positive number")
     if type(full["drafts"]) is not bool:
         raise ValueError("drafts must be true or false")
+    if full["ntfy_url"] is not None and not (
+        isinstance(full["ntfy_url"], str) and NTFY_URL.fullmatch(full["ntfy_url"])
+    ):
+        raise ValueError("ntfy_url must be an http:// or https:// ntfy topic URL, such as https://ntfy.example.com/darner")
     if full["user_header"] is not None and not (isinstance(full["user_header"], str) and full["user_header"].strip()):
         raise ValueError("user_header must be a header name, such as X-authentik-username")
     return full
@@ -686,6 +701,61 @@ def _age(started) -> str:
     return f"{hours}h{minutes:02d}m" if hours < 24 else f"{hours // 24}d{hours % 24}h"
 
 
+def _redacted(url: str) -> str:
+    """The URL without a credential, which can be in its userinfo or its query, as ?auth=."""
+    parts = urlsplit(url)
+    return f"{parts.scheme}://{parts.netloc.rpartition('@')[2]}{parts.path}"
+
+
+async def notify(app: web.Application, event: dict) -> None:
+    """Push one event to the ntfy topic: which session, what happened, and its page."""
+    config, task_id = app[CONFIG], event.get("id")
+    what = NOTICES.get(event.get("type"))
+    if not what or not isinstance(task_id, str) or not NOTIFY_ID.fullmatch(task_id):
+        return
+    name = event.get("name")
+    label = f"dn-{name}" if isinstance(name, str) and NOTIFY_NAME.fullmatch(name) else task_id
+    headers = {"Title": f"darner: {label} {what}", "Click": f"{config['public_origin']}/sessions/{task_id}"}
+    try:
+        async with app[API].post(
+            config["ntfy_url"], data="Open it in darner-web.", headers=headers, timeout=aiohttp.ClientTimeout(total=10),
+            allow_redirects=False,  # nor take its credential elsewhere
+        ) as resp:
+            if resp.status >= 300:
+                log.warning("ntfy at %s answered %s for %s", _redacted(config["ntfy_url"]), resp.status, task_id)
+    except (aiohttp.ClientError, TimeoutError) as e:
+        log.warning("couldn't push to ntfy at %s for %s: %s", _redacted(config["ntfy_url"]), task_id, type(e).__name__)
+
+
+async def notify_forever(app: web.Application) -> None:
+    """Push each new event this frontend's sessions get. Events already there when
+    this starts were for someone to see on the page, so they aren't pushed."""
+    config, last = app[CONFIG], None
+    while True:
+        try:
+            async with app[API].get(
+                config["api_url"].rstrip("/") + "/v1/events", headers={"Authorization": f"Bearer {config['api_token']}"},
+            ) as resp:
+                resp.raise_for_status()
+                listed = await resp.json(content_type=None)
+            if not isinstance(listed, list):
+                raise ValueError("not a list")
+            events = [e for e in listed if isinstance(e, dict) and type(e.get("seq")) is int]
+            newest = max((e["seq"] for e in events), default=0)
+            if last is None or 0 < newest < last:
+                # At startup, or the API's database started over.
+                last = newest
+            for e in sorted(events, key=lambda e: e["seq"]):
+                if e["seq"] > last:
+                    last = e["seq"]
+                    await notify(app, e)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            log.warning("couldn't read darner-api's events for notifications: %s", type(e).__name__)
+        await asyncio.sleep(NTFY_POLL)
+
+
 def make_app(config: dict) -> web.Application:
     config = check_config(config)
     app = web.Application(middlewares=[guard, api_errors], client_max_size=MAX_REQUEST)
@@ -706,6 +776,16 @@ def make_app(config: dict) -> web.Application:
         await app[API].close()
 
     app.cleanup_ctx.append(client)
+
+    async def notifier(app: web.Application):
+        task = asyncio.create_task(notify_forever(app)) if app[CONFIG]["ntfy_url"] else None
+        yield
+        if task:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+
+    app.cleanup_ctx.append(notifier)
     app.router.add_get("/", sessions_page)
     app.router.add_get(f"/sessions/{TASK_ID}", session_page)
     app.router.add_get(f"/sessions/{TASK_ID}/outputs/{{seq:\\d+}}.zip", download)

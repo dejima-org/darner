@@ -34,3 +34,9 @@ public_origin = "https://darner.example.com"
 # a restored session, so on a shared computer the next person can too. false
 # keeps no drafts.
 # drafts = true
+
+# An ntfy topic to push to when a session darner-web started has output, a help
+# request or a domain request. A push names the session and links to its page,
+# never what the agent wrote. A topic that needs credentials takes them in the
+# URL. Unset, nothing is pushed (docs/web.md).
+# ntfy_url = "https://:tk_replace-with-a-token@ntfy.example.com/darner"
