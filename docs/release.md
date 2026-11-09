@@ -41,6 +41,8 @@ The release workflow publishes from exactly two places: a push to `main` makes a
 
 Pre-releases are published on this forge only. Before darner is mirrored to GitHub, stop them reaching it: the mirror publishes `main` and the tags on it, and a pre-release's `v<version>.dev<run>` tag is on `main` once `development` merges. Either exclude `.dev` tags from the mirror, or have pre-releases stop creating tags.
 
+The mirror publishes a release's `.mbp` only if the release notes state its sha256, which the release workflow adds, and a reader can rebuild it from the tag (`docs/matrix.md`). That holds only while everything it packages is committed source the mirror doesn't rewrite. `tests/test_plugin_build.py` checks the build is reproducible and that no packaged file carries a forge link, and `tests/test_dejima.py` runs the mirror's rewrite over a copy and rebuilds.
+
 ## 3. What is required
 
 The same bar as dejima's, for the same reason: one maintainer, so a gate has to be one that gets met.

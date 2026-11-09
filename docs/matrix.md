@@ -32,7 +32,19 @@ mbc auth -h "$MAUBOT_HOMESERVER" -u "$BOT_USER" --update-client
 
 Download the plugin, `page.dejima.darner-v<version>.mbp`, from the repository's latest release, then upload it in maubot's web UI under **Plugins**. `mbc upload <file>` does the same from the command line.
 
-To build the plugin from a fresh clone instead, run `python3 -m zipfile -c darner.mbp maubot.yaml dragonlet base-config.yaml ../LICENSE` in its `plugin` directory, as the release workflow does. In a clone where the tests have run, `git clean -fdX plugin` first, or the `.mbp` carries their `__pycache__`.
+To build the plugin from a clone instead, run `python3 plugin/build.py`, as the release workflow does. It needs only Python, and writes `page.dejima.darner-v<version>.mbp` to the current directory. It packages every `.py` file under `plugin/dragonlet`, so build from a clean clone.
+
+### Checking a release
+
+A release's `.mbp` is built reproducibly: the same source always gives the same bytes, and the release notes state its sha256. To check that what you downloaded is what the source builds, rebuild it from the release's tag and compare:
+
+```sh
+git clone --branch v<version> https://gitbox.branderson.io/dejima/darner.git
+python3 darner/plugin/build.py
+sha256sum page.dejima.darner-v<version>.mbp
+```
+
+The digest should match the release notes and the file you downloaded. A pre-release's notes give the `--version` to build it with.
 
 In maubot's web UI:
 
