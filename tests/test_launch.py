@@ -165,6 +165,14 @@ def test_status_reports_only_the_flags_it_passed_that_dejima_dropped(env, monkey
     assert ignored_flags(task) == ["--usage-path-file"]
     [entry] = status(args(env))
     assert entry["ignored"] == ["--usage-path-file"]
+    real_fdopen = os.fdopen
+    def failing(fd, *a, **k):
+        f = real_fdopen(fd, *a, **k)
+        f.read = lambda *_: (_ for _ in ()).throw(OSError(errno.EIO, "I/O error"))
+        return f
+    monkeypatch.setattr(os, "fdopen", failing)
+    assert ignored_flags(task) == []
+    monkeypatch.setattr(os, "fdopen", real_fdopen)
     (task / "ignored-args").unlink()
     (task / "ignored-args").symlink_to(env / "elsewhere")
     (env / "elsewhere").write_text("--usage-path-file\n")

@@ -188,10 +188,14 @@ def ignored_flags(task_dir: Path) -> list[str]:
         fd = os.open(task_dir / "ignored-args", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     except OSError:
         return []
-    with os.fdopen(fd, "rb") as f:
-        if not stat.S_ISREG(os.fstat(f.fileno()).st_mode):
-            return []
-        lines = f.read(MAX_IGNORED_READ).decode(errors="replace").splitlines()
+    # One task's unreadable file must not fail status for every task.
+    try:
+        with os.fdopen(fd, "rb") as f:
+            if not stat.S_ISREG(os.fstat(f.fileno()).st_mode):
+                return []
+            lines = f.read(MAX_IGNORED_READ).decode(errors="replace").splitlines()
+    except OSError:
+        return []
     try:
         argv = json.loads((task_dir / "argv.json").read_text())
         passed = {arg for arg in argv[1 : argv.index("--")] if arg.startswith("--")}
