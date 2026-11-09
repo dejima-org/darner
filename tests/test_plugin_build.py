@@ -35,12 +35,13 @@ def digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def test_the_same_source_builds_the_same_bytes_whatever_its_timestamps_or_caches(tmp_path):
+def test_the_same_source_builds_the_same_bytes_whatever_its_timestamps_or_strays(tmp_path):
     a, b = copy(tmp_path / "a"), copy(tmp_path / "b")
     for path in b.rglob("*"):
         os.utime(path, (1_000_000_000, 1_000_000_000))
     (b / "plugin" / "dragonlet" / "__pycache__").mkdir()
     (b / "plugin" / "dragonlet" / "__pycache__" / "parse.cpython-311.pyc").write_bytes(b"\0")
+    (b / "plugin" / "dragonlet" / "parse.py.orig").write_text("an editor's backup")
     assert digest(build(a)) == digest(build(b))
 
 

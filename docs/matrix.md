@@ -32,7 +32,7 @@ mbc auth -h "$MAUBOT_HOMESERVER" -u "$BOT_USER" --update-client
 
 Download the plugin, `page.dejima.darner-v<version>.mbp`, from the repository's latest release, then upload it in maubot's web UI under **Plugins**. `mbc upload <file>` does the same from the command line.
 
-To build the plugin from a clone instead, run `python3 plugin/build.py`, as the release workflow does. It needs only Python, and writes `page.dejima.darner-v<version>.mbp` to the current directory.
+To build the plugin from a clone instead, run `python3 plugin/build.py`, as the release workflow does. It needs only Python, and writes `page.dejima.darner-v<version>.mbp` to the current directory. It packages every `.py` file under `plugin/dragonlet`, so build from a clean clone.
 
 ### Checking a release
 

@@ -25,15 +25,14 @@ def members() -> list[tuple[str, Path | None]]:
     """(name in the archive, source file), with None for a directory entry."""
     found = [("maubot.yaml", PLUGIN / "maubot.yaml"), ("base-config.yaml", PLUGIN / "base-config.yaml"),
              ("LICENSE", PLUGIN.parent / "LICENSE"), ("dragonlet/", None)]
-    for path in (PLUGIN / "dragonlet").rglob("*"):
-        name = path.relative_to(PLUGIN).as_posix()
-        if "__pycache__" not in name.split("/"):
-            found.append((name + "/", None) if path.is_dir() else (name, path))
+    # Modules only, so a stray file in a working tree, such as an editor's backup, isn't packaged.
+    for path in (PLUGIN / "dragonlet").rglob("*.py"):
+        found.append((path.relative_to(PLUGIN).as_posix(), path))
     return sorted(found)
 
 
 def build(out_dir: Path, version: str | None = None) -> Path:
-    meta = (PLUGIN / "maubot.yaml").read_text()
+    meta = (PLUGIN / "maubot.yaml").read_bytes().decode("utf-8")
     if version:
         meta = re.sub(r"(?m)^version: .*$", f"version: {version}", meta)
     plugin_id = re.search(r"(?m)^id: *(\S+)$", meta)[1]
@@ -44,7 +43,7 @@ def build(out_dir: Path, version: str | None = None) -> Path:
             info = zipfile.ZipInfo(name, date_time=EPOCH)
             info.create_system = 3  # Unix, so the mode below is read as one
             info.external_attr = (0o40755 << 16) | 0x10 if source is None else 0o100644 << 16
-            data = b"" if source is None else meta.encode() if name == "maubot.yaml" else source.read_bytes()
+            data = b"" if source is None else meta.encode("utf-8") if name == "maubot.yaml" else source.read_bytes()
             z.writestr(info, data)
     return out
 

@@ -1,0 +1,3 @@
+# Checked out byte for byte everywhere, so a rebuild of the plugin matches its published digest (#88).
+plugin/** -text
+LICENSE -text
