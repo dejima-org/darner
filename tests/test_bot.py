@@ -1550,3 +1550,14 @@ async def test_an_output_notice_says_when_requests_werent_counted(maubot_plugin,
     api.events[-1]["data"] = {"usage": [{"model": "m", "requests": 5, "metered": 3, "input": 100, "output": 20}]}
     await maubot_plugin.poll_once()
     assert sent(maubot_test_bot)[0] == agent_notice(UNTRUSTED, "done", "Used 100 in, 20 out; 2 of 5 requests not counted since the last notice.")
+
+
+async def test_flags_dejima_dropped_are_announced_and_an_unknown_type_is_skipped(maubot_plugin, maubot_test_bot, api):
+    api.add(1, type="ignored", summary="", data=None)
+    api.events[-1]["data"] = {"flags": ["--usage-path-file"]}
+    api.add(2, type="from-a-newer-api", summary="", data=None)
+    await maubot_plugin.poll_once()
+    assert replies(maubot_test_bot) == [
+        "dn-7f3k2 started without --usage-path-file: the dejima host's dejima is older than this darner and doesn't know it,"
+        " so this session runs without it. Updating dejima there fixes that for new sessions."
+    ]

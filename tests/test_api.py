@@ -2082,3 +2082,18 @@ async def test_a_failed_usage_read_doesnt_erase_what_was_counted(started, tmp_pa
         monkeypatch.setenv("STUB_STATUS", str(path))
         await poll_once(app)
     assert app[STORE].usage(task_id) == used
+
+
+async def test_flags_dejima_dropped_are_reported_once(started, tmp_path, monkeypatch, caplog):
+    app, client, task_id, status, output = started
+    path = tmp_path / "status.json"
+    for _ in range(2):
+        path.write_text(json.dumps([{
+            "id": task_id, "state": "running", "ready": False,
+            "ignored": ["--usage-path-file", "<b>x</b>", "--A", 7],
+        }]))
+        monkeypatch.setenv("STUB_STATUS", str(path))
+        await poll_once(app)
+    events = await (await client.get(f"/v1/tasks/{task_id}/events", headers=AUTH)).json()
+    assert [e["data"] for e in events if e["type"] == "ignored"] == [{"flags": ["--usage-path-file"]}]
+    assert "ran without --usage-path-file" in caplog.text

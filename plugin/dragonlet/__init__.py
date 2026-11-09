@@ -595,6 +595,17 @@ class Dragonlet(Plugin):
         if e["type"] == "domains":
             await self._send(room, ref, _domains_notice(e["id"], e["data"]))
             return
+        if e["type"] == "ignored":
+            flags = (e.get("data") or {}).get("flags") or []
+            them = "it" if len(flags) == 1 else "them"
+            await self._notice(room, ref, (
+                f"{e['id']} started without {', '.join(flags)}: the dejima host's dejima is older than this darner and "
+                f"doesn't know {them}, so this session runs without {them}. Updating dejima there fixes that for new sessions."
+            ))
+            return
+        if e["type"] != "output":
+            # A type a newer API added, which this bot can't describe.
+            return
         data = None
         if e["size"]:
             path = f"/v1/tasks/{e['id']}/outputs/{e['seq']}.zip"
