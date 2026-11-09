@@ -1,7 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 Brad Anderson
 import asyncio
-import base64
 import hashlib
 import re
 from html.parser import HTMLParser
@@ -558,6 +557,12 @@ def test_agent_markdown_rules(markdown, html):
     ({"ntfy_url": "ntfy.example.com/darner"}, "ntfy_url"),
     ({"ntfy_url": "https://ntfy.example.com/darner\nX-Actions: x"}, "ntfy_url"),
     ({"ntfy_url": "https://ntfy.example.com/dar ner"}, "ntfy_url"),
+    # A credential is ntfy_token's, kept out of the URL and so out of logs.
+    ({"ntfy_url": "https://:tk_secret@ntfy.example.com/darner"}, "ntfy_url"),
+    ({"ntfy_url": "https://ntfy.example.com/darner?auth=tk_secret"}, "ntfy_url"),
+    ({"ntfy_url": "https://ntfy.example.com/darner", "ntfy_token": "tk_x\r\nX-Actions: x"}, "ntfy_token"),
+    ({"ntfy_url": "https://ntfy.example.com/darner", "ntfy_token": "tk x"}, "ntfy_token"),
+    ({"ntfy_token": "tk_secret"}, "ntfy_token is set without ntfy_url"),
 ])
 def test_a_config_that_wouldn_t_work_is_refused(change, message):
     config = {"api_url": "http://127.0.0.1:8080", "api_token": TOKEN, "public_origin": ORIGIN, **change}
@@ -950,8 +955,7 @@ async def test_new_output_help_and_domain_requests_are_pushed_to_ntfy_in_darner_
     ntfy.router.add_post("/darner", topic)
     server = await aiohttp_server(ntfy)
     monkeypatch.setattr("darner.web.NTFY_POLL", 0.05)
-    url = str(server.make_url("/darner")).replace("://", "://:tk_secret@")
-    await aiohttp_client(make_app(config_for(fake, ntfy_url=url)))
+    await aiohttp_client(make_app(config_for(fake, ntfy_url=str(server.make_url("/darner")), ntfy_token="tk_secret")))
     await asyncio.sleep(0.2)
     # What was there when it started isn't news.
     assert pushed == []
@@ -971,7 +975,7 @@ async def test_new_output_help_and_domain_requests_are_pushed_to_ntfy_in_darner_
     for headers, body in pushed:
         assert body == "Open it in darner-web."
         assert headers["Click"] == f"{ORIGIN}/sessions/dn-aaaaa"
-        assert headers["Authorization"] == "Basic " + base64.b64encode(b":tk_secret").decode()
+        assert headers["Authorization"] == "Bearer tk_secret"
         assert not {"X-Actions", "X-Attach", "X-Icon", "Actions", "Attach", "Icon"} & set(headers)
 
     # A failing topic is logged without its credential.
@@ -984,12 +988,6 @@ async def test_new_output_help_and_domain_requests_are_pushed_to_ntfy_in_darner_
 async def test_without_ntfy_url_nothing_reads_events_in_the_background(client, fake):
     await asyncio.sleep(0.1)
     assert not [c for c in fake.calls if c[1] == "/v1/events"]
-
-
-def test_an_ntfy_credential_is_left_out_of_what_s_logged():
-    from darner.web import _redacted
-    assert _redacted("https://:tk_secret@ntfy.example.com/darner") == "https://ntfy.example.com/darner"
-    assert _redacted("https://ntfy.example.com:8443/darner?auth=tk_secret") == "https://ntfy.example.com:8443/darner"
 
 
 async def test_a_bad_answer_or_a_database_that_started_over_doesn_t_stop_pushes(aiohttp_client, aiohttp_server, fake, monkeypatch):

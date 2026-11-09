@@ -49,6 +49,8 @@ DEFAULTS = {
     "drafts": True,
     # An ntfy topic to push to when a session has output, a help request or a domain request.
     "ntfy_url": None,
+    # Sent as a Bearer header, never in the URL.
+    "ntfy_token": None,
 }
 # Room for the API's longest text fields, 32,768 characters each, at JSON's
 # worst case of six bytes a character, with the rest of a request beside them.
@@ -76,9 +78,10 @@ HEADERS = {
     "Cross-Origin-Resource-Policy": "same-origin",
 }
 TASK_ID = "{id:dn-[a-z2-7]{5}}"
-# dejima's notify watcher's character set, which leaves no room for a header or
-# a second URL. A credential goes in the userinfo, as https://:<token>@host/topic.
-NTFY_URL = re.compile(r"https?://[A-Za-z0-9:/._~?=%@+-]+")
+# dejima's notify watcher's character set, less what a credential would need:
+# userinfo and ?auth=. The token is ntfy_token's alone, so the URL can be logged.
+NTFY_URL = re.compile(r"https?://[A-Za-z0-9:/._~%+-]+")
+NTFY_TOKEN = re.compile(r"[A-Za-z0-9._~+/=-]{1,256}")
 NTFY_POLL = 15
 # What's pushed: darner's own words, never the agent's, since the phone is outside the sandbox.
 NOTICES = {"output": "has output", "help": "needs help", "domains": "asks to reach more domains"}
@@ -128,7 +131,16 @@ def check_config(config: dict) -> dict:
     if full["ntfy_url"] is not None and not (
         isinstance(full["ntfy_url"], str) and NTFY_URL.fullmatch(full["ntfy_url"])
     ):
-        raise ValueError("ntfy_url must be an http:// or https:// ntfy topic URL, such as https://ntfy.example.com/darner")
+        raise ValueError(
+            "ntfy_url must be an http:// or https:// ntfy topic URL with no credential in it, such as"
+            " https://ntfy.example.com/darner; a token goes in ntfy_token"
+        )
+    if full["ntfy_token"] is not None and not (
+        isinstance(full["ntfy_token"], str) and NTFY_TOKEN.fullmatch(full["ntfy_token"])
+    ):
+        raise ValueError("ntfy_token must be an ntfy access token, such as tk_ followed by letters and digits")
+    if full["ntfy_token"] and not full["ntfy_url"]:
+        raise ValueError("ntfy_token is set without ntfy_url")
     if full["user_header"] is not None and not (isinstance(full["user_header"], str) and full["user_header"].strip()):
         raise ValueError("user_header must be a header name, such as X-authentik-username")
     return full
@@ -701,12 +713,6 @@ def _age(started) -> str:
     return f"{hours}h{minutes:02d}m" if hours < 24 else f"{hours // 24}d{hours % 24}h"
 
 
-def _redacted(url: str) -> str:
-    """The URL without a credential, which can be in its userinfo or its query, as ?auth=."""
-    parts = urlsplit(url)
-    return f"{parts.scheme}://{parts.netloc.rpartition('@')[2]}{parts.path}"
-
-
 async def notify(app: web.Application, event: dict) -> None:
     """Push one event to the ntfy topic: which session, what happened, and its page."""
     config, task_id = app[CONFIG], event.get("id")
@@ -716,15 +722,17 @@ async def notify(app: web.Application, event: dict) -> None:
     name = event.get("name")
     label = f"dn-{name}" if isinstance(name, str) and NOTIFY_NAME.fullmatch(name) else task_id
     headers = {"Title": f"darner: {label} {what}", "Click": f"{config['public_origin']}/sessions/{task_id}"}
+    if config["ntfy_token"]:
+        headers["Authorization"] = f"Bearer {config['ntfy_token']}"
     try:
         async with app[API].post(
             config["ntfy_url"], data="Open it in darner-web.", headers=headers, timeout=aiohttp.ClientTimeout(total=10),
             allow_redirects=False,  # nor take its credential elsewhere
         ) as resp:
             if resp.status >= 300:
-                log.warning("ntfy at %s answered %s for %s", _redacted(config["ntfy_url"]), resp.status, task_id)
+                log.warning("ntfy at %s answered %s for %s", config["ntfy_url"], resp.status, task_id)
     except (aiohttp.ClientError, TimeoutError) as e:
-        log.warning("couldn't push to ntfy at %s for %s: %s", _redacted(config["ntfy_url"]), task_id, type(e).__name__)
+        log.warning("couldn't push to ntfy at %s for %s: %s", config["ntfy_url"], task_id, type(e).__name__)
 
 
 async def notify_forever(app: web.Application) -> None:

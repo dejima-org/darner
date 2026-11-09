@@ -82,7 +82,19 @@ An ended session stays on its page, showing its output and zips, until someone p
 
 With `ntfy_url` set in `web.toml`, darner-web pushes to that [ntfy](https://ntfy.sh) topic when one of its sessions has output, a help request or a domain request. Each push names the session and links to its page, and says nothing else: no summary, question or domain, since the phone is outside the sandbox and nothing the agent wrote should reach it. It doesn't push for a session that seems to be waiting, which dejima's own notifications cover where remote access is on.
 
-The topic is darner-web's, separate from the one dejima's remote access pushes to. Someone with access to darner but not to dejima's terminals can subscribe to darner-web's alone, and someone with both can subscribe to either or both. Everyone subscribed gets every push for every session darner-web started, so scope who can read the topic as you scope who gets past the proxy. A topic that needs credentials takes them in the URL, as `https://:<token>@ntfy.example.com/darner` or `?auth=`; use `https`, and they're never logged. The agent chooses when it asks for help or domains, so it chooses when some pushes happen, though never what they say; the launcher's `--help-interval` spaces its help requests, and your ntfy server's rate limit the rest.
+The topic is darner-web's, separate from the one dejima's remote access pushes to. Someone with access to darner but not to dejima's terminals can subscribe to darner-web's alone, and someone with both can subscribe to either or both. Everyone subscribed gets every push for every session darner-web started, so scope who can read the topic as you scope who gets past the proxy.
+
+On a self-hosted ntfy with access control, give darner-web an account that isn't an admin and a token that can only write to its topic, and put the token in `ntfy_token`:
+
+```sh
+ntfy user add darner-web
+ntfy access darner-web darner write-only
+ntfy token add darner-web       # prints tk_..., for ntfy_token
+```
+
+It's sent as an `Authorization: Bearer` header, never in the URL, which darner-web refuses with a credential in it, so `ntfy_url` can be logged and the token never is. `web.toml` already holds the API token, so keep it from other accounts on the host, and don't move either into a compose `environment:` block, which `docker inspect` shows. Turning on `auth-default-access: deny-all` closes every topic on that server, dejima's included; [dejima-guard's README](https://gitbox.branderson.io/dejima/dejima-guard#ntfy-its-own-topic-and-a-token-that-can-only-write-to-it) says what to grant back first. Use `https`.
+
+The agent chooses when it asks for help or domains, so it chooses when some pushes happen, though never what they say; the launcher's `--help-interval` spaces its help requests, and your ntfy server's rate limit the rest.
 
 darner-web reads the API's events every 15 seconds for this. Events already there when it starts aren't pushed, including any that arrived while it was down or couldn't reach the API.
 
