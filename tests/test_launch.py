@@ -38,6 +38,8 @@ FAKE_DEJIMA = """#!/usr/bin/env python3
 import json, os, sys
 if sys.argv[-1] == "--print-config":
     sys.exit(sys.stdout.write(os.environ.get("FAKE_DEJIMA_CONFIG", "")) and 0)
+if sys.argv[-1] == "--help-full":
+    sys.exit(sys.stdout.write(os.environ.get("FAKE_DEJIMA_HELP", "")) and 0)
 open(os.environ["FAKE_DEJIMA_LOG"], "w").write(json.dumps(sys.argv[1:]))
 """
 
@@ -135,6 +137,19 @@ def test_no_grants_or_names_leaves_flags_out(env):
     assert written_argv(env, "dn-abc23") == [
         str(env / "bin" / "dejima"), "--isolated", "--no-pause", "--shared-path-file", shared, "--usage-path-file", used, "--", "p",
     ]
+
+
+@pytest.mark.parametrize(("help_text", "passed"), [
+    ("  --ignore-extra-args\n      An argument this version does not know is dropped.\n", True),
+    # An older dejima refuses the flag itself; a longer flag isn't it.
+    ("  --keep-records\n", False),
+    ("  --ignore-extra-args-x\n", False),
+])
+def test_ignore_extra_args_is_passed_only_to_a_dejima_that_lists_it(env, monkeypatch, help_text, passed):
+    monkeypatch.setenv("FAKE_DEJIMA_HELP", help_text)
+    launch(args(env), {"id": "dn-abc23", "prompt": "p"})
+    argv = written_argv(env, "dn-abc23")
+    assert ("--ignore-extra-args" in argv[: argv.index("--")]) is passed
 
 
 @pytest.mark.parametrize(

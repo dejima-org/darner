@@ -142,6 +142,11 @@ def dejima_argv(args: argparse.Namespace, job, task_dir: Path, dejima: str) -> l
         dejima, "--isolated", "--no-pause", "--shared-path-file", str(task_dir / "shared-path"),
         "--usage-path-file", str(task_dir / "usage-path"),
     ]
+    # A dejima that takes this drops any flag it doesn't know. Every flag that
+    # confines a session predates it, so only a feature can be dropped; a new
+    # confining flag must be checked for in --help-full, not left to be dropped.
+    if _ignores_extra_args(dejima):
+        argv.append("--ignore-extra-args")
     if args.keep_records:
         argv.append("--keep-records")
     for flag, value in (
@@ -159,6 +164,19 @@ def dejima_argv(args: argparse.Namespace, job, task_dir: Path, dejima: str) -> l
     if job.dependencies:
         argv += ["--dependencies", str(task_dir / "dependencies")]
     return argv + ["--", job.prompt]
+
+
+def _ignores_extra_args(dejima: str) -> bool:
+    """Whether this dejima takes --ignore-extra-args, dropping a flag it doesn't know
+    rather than refusing the launch (#99). An older one refuses that flag too, so it's
+    passed only when --help-full, which isn't budgeted as --help is, names it."""
+    try:
+        text = subprocess.run(
+            [dejima, "--help-full"], stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=30,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return re.search(r"(?<![\w-])--ignore-extra-args(?![\w-])", text) is not None
 
 
 def launch(args: argparse.Namespace, data: object) -> dict:
