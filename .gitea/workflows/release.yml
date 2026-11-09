@@ -13,10 +13,11 @@
 # pushed could ship a plugin no one reviewed. Only main and development, which
 # the forge must protect, publish anything (docs/release.md).
 #
-# A .mbp is a zip of maubot.yaml, the plugin's modules and its extra files,
-# which is all `mbc build` writes. The stdlib's zipfile CLI builds the same
-# archive without installing maubot, so the job needs nothing from PyPI and
-# runs on the confined tier. Nothing here needs a Docker daemon.
+# plugin/build.py builds the .mbp with the stdlib alone, so the job needs
+# nothing from PyPI and runs on the confined tier, and builds it reproducibly:
+# the notes state its sha256 and how to rebuild it from the tag, which is what
+# lets a mirror publish it without trusting where it was built (#88). Nothing
+# here needs a Docker daemon.
 name: release
 
 on:
@@ -86,14 +87,24 @@ jobs:
 
       - name: Build the plugin
         if: steps.version.outputs.release == 'true'
-        working-directory: plugin
         run: |
-          id="$(sed -n 's/^id: *//p' maubot.yaml)"
-          # A development build carries its own version, in this checkout only.
-          sed -i "s/^version: .*/version: $VERSION/" maubot.yaml
-          echo "MBP=$id-$TAG.mbp" >> "$GITHUB_ENV"
-          python3 -m zipfile -c "../$id-$TAG.mbp" maubot.yaml dragonlet base-config.yaml ../LICENSE
-          python3 -m zipfile -l "../$id-$TAG.mbp"
+          # A development build carries its own version, in the archive only.
+          if [ "$PRERELEASE" = true ]; then
+            mbp="$(python3 plugin/build.py --version "$VERSION")"
+            rebuild="python3 plugin/build.py --version $VERSION"
+          else
+            mbp="$(python3 plugin/build.py)"
+            rebuild="python3 plugin/build.py"
+          fi
+          python3 -m zipfile -l "$mbp"
+          digest="$(sha256sum "$mbp" | cut -d' ' -f1)"
+          echo "MBP=$mbp" >> "$GITHUB_ENV"
+          {
+            [ -s "$NOTES" ] && echo
+            echo "**$mbp** sha256: \`$digest\`"
+            echo
+            echo "To check it, rebuild it from \`$TAG\` with \`$rebuild\` and compare \`sha256sum $mbp\`; docs/matrix.md says how."
+          } >> "$NOTES"
 
       - name: Attach it to the release
         if: steps.version.outputs.release == 'true'

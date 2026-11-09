@@ -8,6 +8,7 @@ that's N/A or not tagged yet. Without it, these skip.
 import json
 import os
 import re
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -15,6 +16,7 @@ import pytest
 
 from darner.job import Job
 from darner.launch import _dejima_share, _forget_usage, dejima_argv, dejima_defaults, dejima_root, harness_options, parse_args, session_usage
+from tests.test_plugin_build import build, copy, digest
 
 SRC = Path(os.environ["DEJIMA_SRC"]) if os.environ.get("DEJIMA_SRC") else None
 pytestmark = pytest.mark.skipif(SRC is None, reason="DEJIMA_SRC is not set")
@@ -119,3 +121,17 @@ def test_dejima_usage_totals_a_record_as_the_launcher_does_and_forgets_it(home, 
     assert session_usage(task) == [json.loads(line) for line in out.splitlines()]
     _forget_usage(parse_args(["--dejima-usage", tool]), task)
     assert not record.exists()
+
+
+def test_the_mirror_s_rewrite_leaves_the_plugin_building_the_same_bytes(tmp_path):
+    # dejima's mirror rewrites forge links in any file carrying one, so a packaged
+    # file with one would make the mirrored source build a different .mbp (#88).
+    tree = tmp_path / "darner"
+    subprocess.run(["git", "clone", "-q", "--no-hardlinks", str(Path(__file__).resolve().parent.parent), str(tree)], check=True)
+    # The working tree under test, uncommitted changes included.
+    shutil.rmtree(tree / "plugin")
+    copy(tree)
+    before = digest(build(tree))
+    env = {**os.environ, "MIRROR_ORG": "example-org"}
+    subprocess.run([str(SRC / "mirror" / "github-mirror.sh"), "--transform", str(tree)], env=env, check=True, capture_output=True)
+    assert digest(build(tree)) == before
