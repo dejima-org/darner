@@ -90,6 +90,7 @@ On a self-hosted ntfy with access control, give darner-web an account that isn't
 ntfy user add darner-web
 ntfy access darner-web darner write-only
 ntfy token add darner-web       # prints tk_..., for ntfy_token
+ntfy access phone darner read-only   # the subscriber, once auth-default-access is deny-all
 ```
 
 It's sent as an `Authorization: Bearer` header, never in the URL, which darner-web refuses with a credential in it, so `ntfy_url` can be logged and the token never is. `web.toml` already holds the API token, so keep it from other accounts on the host, and don't move either into a compose `environment:` block, which `docker inspect` shows. Turning on `auth-default-access: deny-all` closes every topic on that server, dejima's included; [dejima-guard's README](https://gitbox.branderson.io/dejima/dejima-guard#ntfy-its-own-topic-and-a-token-that-can-only-write-to-it) says what to grant back first. Use `https`.
