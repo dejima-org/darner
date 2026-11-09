@@ -920,3 +920,14 @@ async def test_an_ended_session_says_what_it_used(client, fake):
     fake.events["dn-bbbbb"][1]["data"] = {"share_pruned": True, "usage": [], "usage_total": [{"model": "m", "requests": 9, "metered": 9, "output": 4500}]}
     _, html = await get(client, "/sessions/dn-bbbbb")
     assert '<span class="tokens" title="m: 9 requests, 4.5k out">It used 4.5k out.</span>' in html
+
+
+async def test_a_flag_dejima_dropped_is_shown_as_darner_s_own(client, fake):
+    fake.events["dn-aaaaa"].append(
+        {"seq": 7, "id": "dn-aaaaa", "type": "ignored", "summary": "", "size": 0, "data": {"flags": ["--usage-path-file"]}}
+    )
+    resp, html = await get(client, "/sessions/dn-aaaaa")
+    event = html.split('data-seq="7"', 1)[1].split("</details>", 1)[0]
+    assert 'Started without <code class="flag">--usage-path-file</code>' in event
+    assert "so this session runs without it." in event
+    assert "agent" not in event

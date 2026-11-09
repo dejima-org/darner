@@ -48,6 +48,7 @@ USAGE_COUNTS = ("input", "output", "cache_read", "cache_write")
 # Read from where the last read stopped, at most this much at a time, so a flooded record
 # neither freezes the totals nor costs a full parse every poll.
 MAX_USAGE_READ = 4 * 1024 * 1024
+MAX_IGNORED_READ = 64 * 1024
 MAX_COUNT = 10**12
 # Model names past this many are counted unnamed: a refused request's model is the one the
 # agent's request named, so it could otherwise name enough to swamp the real ones.
@@ -142,6 +143,11 @@ def dejima_argv(args: argparse.Namespace, job, task_dir: Path, dejima: str) -> l
         dejima, "--isolated", "--no-pause", "--shared-path-file", str(task_dir / "shared-path"),
         "--usage-path-file", str(task_dir / "usage-path"),
     ]
+    # A dejima that takes this drops a flag it doesn't know, rather than refusing
+    # the launch, and says which in ignored-args. It never drops a --no-, --drop-,
+    # --require- or --strict- flag, which is how its confining flags are spelled.
+    if _ignores_extra_args(dejima):
+        argv += ["--ignore-extra-args", "--ignored-args-file", str(task_dir / "ignored-args")]
     if args.keep_records:
         argv.append("--keep-records")
     for flag, value in (
@@ -159,6 +165,43 @@ def dejima_argv(args: argparse.Namespace, job, task_dir: Path, dejima: str) -> l
     if job.dependencies:
         argv += ["--dependencies", str(task_dir / "dependencies")]
     return argv + ["--", job.prompt]
+
+
+def _ignores_extra_args(dejima: str) -> bool:
+    """Whether this dejima takes --ignore-extra-args and --ignored-args-file (#99).
+    An older one refuses them too, so they're passed only when --help-full, which
+    isn't budgeted as --help is, names both."""
+    try:
+        text = subprocess.run(
+            [dejima, "--help-full"], stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=30,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return all(re.search(rf"(?<![\w-]){flag}(?![\w-])", text) for flag in ("--ignore-extra-args", "--ignored-args-file"))
+
+
+def ignored_flags(task_dir: Path) -> list[str]:
+    """The flags this task's dejima said it dropped. Only flags the launcher passed
+    are reported, so nothing else written there, and no value, such as a host path,
+    gets further."""
+    try:
+        fd = os.open(task_dir / "ignored-args", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError:
+        return []
+    # One task's unreadable file must not fail status for every task.
+    try:
+        with os.fdopen(fd, "rb") as f:
+            if not stat.S_ISREG(os.fstat(f.fileno()).st_mode):
+                return []
+            lines = f.read(MAX_IGNORED_READ).decode(errors="replace").splitlines()
+    except OSError:
+        return []
+    try:
+        argv = json.loads((task_dir / "argv.json").read_text())
+        passed = {arg for arg in argv[1 : argv.index("--")] if arg.startswith("--")}
+    except (OSError, ValueError, TypeError, AttributeError):
+        return []
+    return sorted(passed.intersection(lines))
 
 
 def launch(args: argparse.Namespace, data: object) -> dict:
@@ -851,6 +894,7 @@ def status(args: argparse.Namespace) -> list[dict]:
             "answerable": args.answers and state == "running",
             "run_id": session_run_id(task_dir) if state == "running" else None,
             "usage": session_usage(task_dir),
+            "ignored": ignored_flags(task_dir),
             "error": error,
         })
     return tasks

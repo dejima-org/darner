@@ -116,6 +116,7 @@ A frontend doesn't hold the dejima host to itself.
 | `help` | the agent's question, labelled. If `answerable`, let an allowed person answer it, with `POST /v1/tasks/<id>/answer` |
 | `domains` | each requested domain in `data.domains`, with its port, and whether it's internal or refused by policy; `data.rejected` counts the entries that weren't valid domains. Allow or deny request `data.request`, as it was shown |
 | `waiting` | the session's screen hasn't changed for `data.quiet` seconds; `summary` is the end of its screen, the agent's |
+| `ignored` | the dejima host's dejima is older than this darner and didn't know the flags in `data.flags`, so the session runs without what they do until dejima is updated there. The flags are ones darner passed, not the agent's |
 | `expired` | it was stopped for running longer than sessions may, after `data.age` seconds |
 | `ended` | the session has ended. Its `summary`, if any, is the API's own note, such as that its output couldn't be collected, so it needn't be labelled. `data.share_kept` means its `~/shared` is kept on the dejima host until it's cleared, so offer that, and `data.share_pruned` that it was removed, since the zip holds all of it. `data.usage_total` is what the session used in all |
 

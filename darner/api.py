@@ -44,6 +44,9 @@ def _audit(action: str, client: str, task_id: str, requester: str, **details) ->
     audit.info("%s %s by %r via %s%s", action, task_id, requester, client, extra)
 
 RUN_ID = re.compile(r"[0-9a-f]{16}")
+# Flags dejima dropped, as the launcher reported them: only ever ones it passed.
+IGNORED_FLAG = re.compile(r"--[a-z][a-z0-9-]{0,63}")
+MAX_IGNORED = 50
 
 EXAMPLE_TOKEN = "replace-with-a-long-random-token"
 MIN_TOKEN = 32
@@ -646,6 +649,18 @@ async def forget(app: web.Application, task_id: str, delivered: str | None = Non
     return "kept"
 
 
+def report_ignored(store: Store, task: dict) -> None:
+    """Say once that the dejima host's dejima dropped flags this darner passed:
+    the session runs without what they do, until dejima is updated there."""
+    flags = task.get("ignored")
+    if not isinstance(flags, list) or store.latest_event_time(task["id"], ("ignored",)) is not None:
+        return
+    flags = sorted({f for f in flags[:MAX_IGNORED] if isinstance(f, str) and IGNORED_FLAG.fullmatch(f)})
+    if flags:
+        log.warning("dejima on the dejima host is older than this darner: %s ran without %s", task["id"], ", ".join(flags))
+        store.add_event(task["id"], "ignored", data={"flags": flags})
+
+
 async def poll_once(app: web.Application) -> None:
     config, store = app[CONFIG], app[STORE]
     await purge(app)
@@ -688,6 +703,7 @@ async def poll_once(app: web.Application) -> None:
         # session never turns unmetered, so a read that failed doesn't erase what was counted.
         if (used := usage.clean(task.get("usage"))) is not None or store.usage(task["id"]) is None:
             store.set_usage(task["id"], used)
+        report_ignored(store, task)
         # One task's failure must not hold up the others.
         try:
             if task.get("help"):

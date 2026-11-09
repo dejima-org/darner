@@ -65,6 +65,7 @@ def test_dejima_takes_every_flag_the_launcher_passes(home, tmp_path):
     text = usage("dejima")
     flags = launcher_flags(tmp_path)
     assert {"--isolated", "--context-window", "--require-sealed", "--drop-domains"} <= flags
+    assert ("--ignore-extra-args" in flags) is documented("--ignore-extra-args", text)
     assert sorted(flag for flag in flags if not documented(flag, text)) == []
 
 

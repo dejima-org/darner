@@ -73,6 +73,7 @@ a { color: inherit; text-decoration-color: var(--accent); text-underline-offset:
 a:hover { color: var(--accent); }
 
 code, pre, .id { font-family: var(--font-mono); }
+code.flag { white-space: nowrap; }
 pre {
   margin: 0;
   font-size: 0.86rem;

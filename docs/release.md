@@ -6,7 +6,8 @@ Work lands on `development`, and every merge there publishes a pre-release. A re
 
 darner runs dejima on the dejima host and relies on these of its flags, tools and files:
 
-- `dejima`, in its `--help-full`: `--isolated`, `--no-pause`, `--shared-path-file`, `--usage-path-file`, `--keep-records`, `--identity`, `--harness`, `--backend`, `--model`, `--effort`, `--context-window`, `--domains`, `--internal-domain`, `--dependencies`, `--drop-domains`, `--require-sealed` and `--print-config`
+- `dejima`, in its `--help-full`: `--isolated`, `--no-pause`, `--shared-path-file`, `--usage-path-file`, `--keep-records`, `--identity`, `--harness`, `--backend`, `--model`, `--effort`, `--context-window`, `--domains`, `--internal-domain`, `--dependencies`, `--drop-domains`, `--require-sealed` and `--print-config`, and `--ignore-extra-args` with `--ignored-args-file`, passed when both are listed there, so a flag a newer darner passes is dropped and reported rather than refusing the launch
+- the file `--ignored-args-file` names: one dropped argument per line, written before the session starts; dejima never drops a `--no-`, `--drop-`, `--require-` or `--strict-` flag
 - `--print-config`'s `section.key=value` lines, for `core.harness` and `harness.<name>.{backend,model,effort,context_window}`
 - `dejima-allow`: `--container`, `--internal` and `--port`, and exit status 2 meaning granted but not answering on 443
 - `dejima-share`: `prune --isolated [share]` and `--yes`, as its `--help-full` lists them

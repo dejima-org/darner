@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 
 from darner.job import JobError
-from darner.launch import FETCH_REJECTED, forget, launch, main, parse_args, session_usage, status
+from darner.launch import FETCH_REJECTED, forget, ignored_flags, launch, main, parse_args, session_usage, status
 
 FAKE_TMUX = """#!/bin/sh
 python3 -c 'import json, sys; print(json.dumps(sys.argv[1:]))' "$@" >> "$FAKE_TMUX_LOG"
@@ -38,6 +38,8 @@ FAKE_DEJIMA = """#!/usr/bin/env python3
 import json, os, sys
 if sys.argv[-1] == "--print-config":
     sys.exit(sys.stdout.write(os.environ.get("FAKE_DEJIMA_CONFIG", "")) and 0)
+if sys.argv[-1] == "--help-full":
+    sys.exit(sys.stdout.write(os.environ.get("FAKE_DEJIMA_HELP", "")) and 0)
 open(os.environ["FAKE_DEJIMA_LOG"], "w").write(json.dumps(sys.argv[1:]))
 """
 
@@ -135,6 +137,46 @@ def test_no_grants_or_names_leaves_flags_out(env):
     assert written_argv(env, "dn-abc23") == [
         str(env / "bin" / "dejima"), "--isolated", "--no-pause", "--shared-path-file", shared, "--usage-path-file", used, "--", "p",
     ]
+
+
+@pytest.mark.parametrize(("help_text", "passed"), [
+    ("  --ignore-extra-args\n      An argument this version does not know is dropped.\n  --ignored-args-file <f>\n", True),
+    # An older dejima refuses the flags themselves; a longer flag isn't one.
+    ("  --keep-records\n", False),
+    ("  --ignore-extra-args\n", False),
+    ("  --ignore-extra-args-x\n  --ignored-args-file <f>\n", False),
+])
+def test_ignore_extra_args_is_passed_only_to_a_dejima_that_lists_it(env, monkeypatch, help_text, passed):
+    monkeypatch.setenv("FAKE_DEJIMA_HELP", help_text)
+    launch(args(env), {"id": "dn-abc23", "prompt": "p"})
+    argv = written_argv(env, "dn-abc23")
+    flags = argv[: argv.index("--")]
+    pair = ["--ignore-extra-args", "--ignored-args-file", str(env / "tasks" / "dn-abc23" / "ignored-args")]
+    assert (pair == flags[-3:]) is passed and ("--ignore-extra-args" in flags) is passed
+
+
+def test_status_reports_only_the_flags_it_passed_that_dejima_dropped(env, monkeypatch):
+    monkeypatch.setenv("FAKE_DEJIMA_HELP", "--ignore-extra-args --ignored-args-file")
+    launch(args(env), {"id": "dn-abc23", "prompt": "--made-up"})
+    task = env / "tasks" / "dn-abc23"
+    assert ignored_flags(task) == []
+    # A value is a host path, and anything else wasn't the launcher's, the prompt included.
+    (task / "ignored-args").write_text(f"--usage-path-file\n{task}/usage-path\n--made-up\n<b>x</b>\n--isolated x\n")
+    assert ignored_flags(task) == ["--usage-path-file"]
+    [entry] = status(args(env))
+    assert entry["ignored"] == ["--usage-path-file"]
+    real_fdopen = os.fdopen
+    def failing(fd, *a, **k):
+        f = real_fdopen(fd, *a, **k)
+        f.read = lambda *_: (_ for _ in ()).throw(OSError(errno.EIO, "I/O error"))
+        return f
+    monkeypatch.setattr(os, "fdopen", failing)
+    assert ignored_flags(task) == []
+    monkeypatch.setattr(os, "fdopen", real_fdopen)
+    (task / "ignored-args").unlink()
+    (task / "ignored-args").symlink_to(env / "elsewhere")
+    (env / "elsewhere").write_text("--usage-path-file\n")
+    assert ignored_flags(task) == []
 
 
 @pytest.mark.parametrize(
@@ -253,8 +295,8 @@ def test_status_states(env, share):
     code, out, _ = run(a, "status")
     assert code == 0
     assert json.loads(out) == [
-        {"id": "dn-abc23", "state": "exited", "ready": True, "unsignalled": False, "help": False, "domains": False, "answerable": False, "run_id": None, "usage": None, "error": None, "awaiting_answer": False, "result_pending": False, "quiet": None, "screen": "", "domain_request": None},
-        {"id": "dn-starx", "state": "starting", "ready": False, "unsignalled": False, "help": False, "domains": False, "answerable": False, "run_id": None, "usage": None, "error": None, "awaiting_answer": False, "result_pending": False, "quiet": None, "screen": "", "domain_request": None},
+        {"id": "dn-abc23", "state": "exited", "ready": True, "unsignalled": False, "help": False, "domains": False, "answerable": False, "run_id": None, "usage": None, "ignored": [], "error": None, "awaiting_answer": False, "result_pending": False, "quiet": None, "screen": "", "domain_request": None},
+        {"id": "dn-starx", "state": "starting", "ready": False, "unsignalled": False, "help": False, "domains": False, "answerable": False, "run_id": None, "usage": None, "ignored": [], "error": None, "awaiting_answer": False, "result_pending": False, "quiet": None, "screen": "", "domain_request": None},
     ]
 
 

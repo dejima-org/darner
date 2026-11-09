@@ -4,6 +4,9 @@
 {% macro used(e) -%}
 {% set u = e.data and e.data.get("usage") %}{% if u and u | tokens %} <span class="tokens" title="{{ u | tokens_by_model }}">{{ u | tokens }}</span>{% endif %}
 {%- endmacro %}
+{% macro flags(e) -%}
+{% for f in e.data.flags %}<code class="flag">{{ f }}</code>{{ ", " if not loop.last }}{% endfor %}
+{%- endmacro %}
 {% macro heading(e) -%}
 {% if e.type == "output" %}
 <h2>Output{% if e.signalled == false %}, collected without the agent's done signal{% endif %}{{ used(e) }} <span class="by">the agent's</span></h2>
@@ -15,6 +18,8 @@
 <h2>Asks to reach these domains</h2>
 {% elif e.type == "expired" %}
 <h2>Stopped after running for {{ e.data.age // 3600 }}h, longer than sessions may run</h2>
+{% elif e.type == "ignored" %}
+<h2>Started without {{ flags(e) }}</h2>
 {% elif e.type == "ended" %}
 <h2>Ended{% if e.summary %}: {{ e.summary }}{% endif %}{{ used(e) }}</h2>
 {% else %}
@@ -29,6 +34,8 @@
 <div class="body agent">{{ e.summary | agent }}</div>
 {% elif e.type == "waiting" %}
 {% if e.summary %}<pre class="agent">{{ e.summary }}</pre>{% endif %}
+{% elif e.type == "ignored" %}
+<div class="body"><p>The dejima host's dejima is older than this darner and doesn't know {{ flags(e) }}, so this session runs without {{ "it" if e.data.flags | length == 1 else "them" }}. Updating dejima there fixes that for new sessions.</p></div>
 {% elif e.type == "domains" %}
 <div class="body">
 <ul class="domains">
