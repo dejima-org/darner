@@ -58,7 +58,7 @@ def launcher_flags(tmp_path):
             dependencies=["apt:jq"], harness="cline", backend="anthropic", model="claude-opus-5-5", effort="high",
             context_window=200000, network=network,
         )
-        argv = dejima_argv(a, job, tmp_path, dejima)
+        argv, _ = dejima_argv(a, job, tmp_path, dejima)
         flags |= {arg for arg in argv[: argv.index("--")] if arg.startswith("--")}
     return flags
 

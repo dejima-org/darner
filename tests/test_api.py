@@ -783,7 +783,10 @@ async def test_sessions_list_what_each_waits_on(started, tmp_path, monkeypatch, 
     await poll_once(app)
     path.write_text(json.dumps([{
         "id": task_id, "state": "running", "answerable": True, "awaiting_answer": True, "domain_request": None,
-        "run_id": RUN,
+        "run_id": RUN, "ran_with": {
+            "harness": {"value": "cline", "from": "dejima"}, "model": {"value": "<b>", "from": "dejima"},
+            "effort": {"value": "high", "from": "elsewhere"}, "backend": "self-hosted", "network": {"value": "sealed", "from": "task"},
+        },
     }]))
     await poll_once(app)
     resp = await client.get("/v1/tasks", headers=AUTH)
@@ -796,6 +799,8 @@ async def test_sessions_list_what_each_waits_on(started, tmp_path, monkeypatch, 
     assert single == session
     # What the request asked for, never the prompt.
     assert session["started_with"] == {"domains": ["pypi.org"], "dependencies": ["pip:pytest"]}
+    # What the launcher says each agent setting ran with, keeping only well-formed entries.
+    assert session["ran_with"] == {"harness": {"value": "cline", "from": "dejima"}}
     [help_event] = await (await client.get(f"/v1/tasks/{task_id}/events", headers=AUTH)).json()
     assert help_event["created"] > 0
 

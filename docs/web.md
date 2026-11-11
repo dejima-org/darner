@@ -72,7 +72,7 @@ The nginx example uses `Host $http_host`, not `$host`, because darner-web checks
 
 darner-web sees and acts on only the sessions it started, as each frontend does: a session is followed up from the frontend that started it.
 
-A session's page leads with what it's waiting on you for, a domain request or a help request, or else its newest event, with the answer box below it, then what it was started with. Its history follows, newest first, each event folded until you open it.
+A session's page leads with what it's waiting on you for, a domain request or a help request, or else its newest event, with the answer box below it, then what it was started with. Its harness, backend, model, effort and context window are what the session runs with, each marked when it's the launcher's default or dejima's rather than the task's, and "the harness's own" when nothing sets it. Its history follows, newest first, each event folded until you open it.
 
 **Check now** has the API look at every session at once, rather than at its next `poll_interval`, for output or a request it hasn't seen yet. It can't find a signal the agent left somewhere other than `~/shared`. Checks are one every 15 seconds for darner-web, which shares one API token among its users.
 

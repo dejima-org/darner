@@ -122,10 +122,17 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     return p.parse_args(argv)
 
 
-def dejima_argv(args: argparse.Namespace, job, task_dir: Path, dejima: str) -> list[str]:
+# The agent settings a session's view says it ran with, harness first.
+RAN_WITH = ("harness", "backend", "model", "effort", "context_window")
+
+
+def dejima_argv(args: argparse.Namespace, job, task_dir: Path, dejima: str) -> tuple[list[str], dict]:
+    """dejima's argv for the job, and what the session runs with: each agent setting
+    and whether the task, this launcher or dejima's config set it."""
     harness = job.harness or args.harness
     # Left out of argv when neither names one, but checked as the harness dejima picks.
-    default_harness, defaults = launch_defaults(args, dejima)
+    dejima_harness, defaults = dejima_defaults(args, dejima)
+    default_harness, defaults = _with_flags(args, dejima_harness, defaults)
     used = harness or default_harness
     # Each default is the one for the harness actually used, so overriding
     # the harness never pairs it with another harness's setting.
@@ -139,6 +146,17 @@ def dejima_argv(args: argparse.Namespace, job, task_dir: Path, dejima: str) -> l
         harness_options(dejima_root(dejima)), used, backend or d.get("backend"), effort or d.get("effort"),
         int(context_window) if context_window else d.get("context_window"),
     )
+    ran_with = {}
+    # Left empty when dejima couldn't print its config, which always names a
+    # harness, since its defaults are then unknown.
+    if dejima_harness:
+        for key in RAN_WITH:
+            asked = getattr(job, key)
+            ours = args.harness if key == "harness" else dict(getattr(args, key)).get(used)
+            theirs = dejima_harness if key == "harness" else d.get(key)
+            if value := asked or ours or theirs:
+                source = "task" if asked else "launcher" if ours else "dejima"
+                ran_with[key] = {"value": int(value) if key == "context_window" else value, "from": source}
     argv = [
         dejima, "--isolated", "--no-pause", "--shared-path-file", str(task_dir / "shared-path"),
         "--usage-path-file", str(task_dir / "usage-path"),
@@ -164,7 +182,7 @@ def dejima_argv(args: argparse.Namespace, job, task_dir: Path, dejima: str) -> l
         argv += ["--internal-domain", name]
     if job.dependencies:
         argv += ["--dependencies", str(task_dir / "dependencies")]
-    return argv + ["--", job.prompt]
+    return argv + ["--", job.prompt], ran_with
 
 
 def _ignores_extra_args(dejima: str) -> bool:
@@ -213,7 +231,7 @@ def launch(args: argparse.Namespace, data: object) -> dict:
     if dejima is None:
         raise RuntimeError(f"{Path(args.dejima).name} not found on PATH; pass --dejima with its full path")
     task_dir = args.tasks_dir / job.id
-    argv = dejima_argv(args, job, task_dir, dejima)
+    argv, ran_with = dejima_argv(args, job, task_dir, dejima)
     args.tasks_dir.mkdir(parents=True, exist_ok=True)
     try:
         task_dir.mkdir(mode=0o700)
@@ -222,6 +240,7 @@ def launch(args: argparse.Namespace, data: object) -> dict:
     (task_dir / "domains").write_text("".join(f"{d}\n" for d in job.domains))
     (task_dir / "dependencies").write_text("".join(f"{d}\n" for d in job.dependencies))
     (task_dir / "argv.json").write_text(json.dumps(argv))
+    (task_dir / "ran-with.json").write_text(json.dumps(ran_with))
     try:
         _hold_files(job, task_dir)
         return _start_window(args, job, task_dir)
@@ -430,6 +449,14 @@ def _usage_record(task_dir: Path) -> str | None:
     if not os.path.isabs(path) or "\0" in path or not USAGE_RECORD.fullmatch(os.path.basename(path)):
         return None
     return path
+
+
+def _ran_with(task_dir: Path) -> dict:
+    """What the launch resolved each agent setting to; empty for a task launched before this was recorded."""
+    try:
+        return json.loads((task_dir / "ran-with.json").read_text())
+    except (OSError, ValueError):
+        return {}
 
 
 def session_usage(task_dir: Path) -> list[dict] | None:
@@ -895,6 +922,7 @@ def status(args: argparse.Namespace) -> list[dict]:
             "run_id": session_run_id(task_dir) if state == "running" else None,
             "usage": session_usage(task_dir),
             "ignored": ignored_flags(task_dir),
+            "ran_with": _ran_with(task_dir),
             "error": error,
         })
     return tasks
@@ -1568,7 +1596,10 @@ def dejima_defaults(args: argparse.Namespace, dejima: str) -> tuple[str | None, 
 def launch_defaults(args: argparse.Namespace, dejima: str) -> tuple[str | None, dict]:
     """The harness a launch gets when its job names none, and each harness's settings:
     dejima's own, with this launcher's flags in their place."""
-    default_harness, defaults = dejima_defaults(args, dejima)
+    return _with_flags(args, *dejima_defaults(args, dejima))
+
+
+def _with_flags(args: argparse.Namespace, default_harness: str | None, defaults: dict) -> tuple[str | None, dict]:
     for key in ("backend", "model", "effort", "context_window"):
         for harness, value in getattr(args, key):
             defaults.setdefault(harness, {})[key] = int(value) if key == "context_window" else value

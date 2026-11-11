@@ -23,10 +23,10 @@ from aiohttp import web
 
 from darner import archive, configsets, selftest, usage
 from darner.job import (
-    OUTPUT_INSTRUCTIONS, JobError, check_harness, compose_prompt, new_task_id, valid_context_window, valid_domain, valid_model,
-    valid_name, valid_task_id, validate_job,
+    OUTPUT_INSTRUCTIONS, JobError, check_harness, compose_prompt, new_task_id, valid_context_window, valid_domain, valid_effort,
+    valid_model, valid_name, valid_task_id, validate_job,
 )
-from darner.launch import FETCH_REJECTED
+from darner.launch import FETCH_REJECTED, RAN_WITH
 from darner.store import NameTaken, Store
 
 log = logging.getLogger("darner.api")
@@ -1070,6 +1070,23 @@ STARTED_WITH = (
 )
 
 
+_RAN_WITH_CHECKS = {
+    "harness": valid_name, "backend": valid_name, "model": valid_model, "effort": valid_effort,
+    "context_window": valid_context_window,
+}
+
+
+def _ran_with(settings: object) -> dict:
+    """The launcher's account of each agent setting and what set it, keeping only well-formed entries."""
+    if not isinstance(settings, dict):
+        return {}
+    return {
+        key: {"value": s["value"], "from": s["from"]} for key in RAN_WITH
+        if isinstance(s := settings.get(key), dict) and s.get("from") in ("task", "launcher", "dejima")
+        and _RAN_WITH_CHECKS[key](s.get("value"))
+    }
+
+
 async def _sessions(request: web.Request, task_id: str | None = None) -> list[dict]:
     """The client's open sessions, with what each is waiting on, asked of the dejima host now."""
     client, store, config = _client(request), request.app[STORE], request.app[CONFIG]
@@ -1101,6 +1118,7 @@ async def _sessions(request: web.Request, task_id: str | None = None) -> list[di
             "waiting": waiting,
             "usage": usage.clean(state["usage"]) if "usage" in state else store.usage(task["id"]),
             "started_with": {key: task["job"][key] for key in STARTED_WITH if task["job"].get(key)},
+            "ran_with": _ran_with(state.get("ran_with")),
         })
     return sessions
 

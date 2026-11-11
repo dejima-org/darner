@@ -776,6 +776,7 @@ def make_app(config: dict) -> web.Application:
     templates.filters["tokens"] = _tokens
     templates.filters["tokens_by_model"] = _tokens_by_model
     templates.globals["SETTING_LABELS"] = SETTING_LABELS
+    templates.globals["RAN_WITH"] = ("harness", "backend", "model", "effort", "context_window")
     app[TEMPLATES] = templates
 
     async def client(app: web.Application):

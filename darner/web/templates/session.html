@@ -88,13 +88,19 @@
 <p class="status" role="status" hidden data-text="dejima is stopping the sandbox, and darner is collecting any output it left. This page reloads when that's done."></p>
 <p class="alert" role="alert" hidden></p>
 </section>
-{% if session.started_with %}
+{% set ran = session.get("ran_with") %}
+{% if session.started_with or ran %}
 <section class="well started">
 <h2>Started with</h2>
 <dl>
-{% for key, label in SETTING_LABELS.items() if key in session.started_with %}
+{% for key, label in SETTING_LABELS.items() %}
+{% if ran and key in RAN_WITH %}
+{% set s = ran.get(key) %}
+<dt>{{ label }}</dt><dd>{% if s %}{{ s.value }}{% if s["from"] == "dejima" %} <span class="quiet">dejima's default</span>{% elif s["from"] == "launcher" %} <span class="quiet">the launcher's default</span>{% endif %}{% else %}<span class="quiet">the harness's own</span>{% endif %}</dd>
+{% elif key in session.started_with %}
 {% set value = session.started_with[key] %}
 <dt>{{ label }}</dt><dd>{% if value is string or value is number %}{{ value }}{% else %}{{ value | join(", ") }}{% endif %}</dd>
+{% endif %}
 {% endfor %}
 </dl>
 </section>
