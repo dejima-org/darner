@@ -131,7 +131,8 @@ def dejima_argv(args: argparse.Namespace, job, task_dir: Path, dejima: str) -> t
     and whether the task, this launcher or dejima's config set it."""
     harness = job.harness or args.harness
     # Left out of argv when neither names one, but checked as the harness dejima picks.
-    dejima_harness, defaults = dejima_defaults(args, dejima)
+    refused = set()
+    dejima_harness, defaults = dejima_defaults(args, dejima, refused)
     default_harness, defaults = _with_flags(args, dejima_harness, defaults)
     used = harness or default_harness
     # Each default is the one for the harness actually used, so overriding
@@ -147,16 +148,21 @@ def dejima_argv(args: argparse.Namespace, job, task_dir: Path, dejima: str) -> t
         int(context_window) if context_window else d.get("context_window"),
     )
     ran_with = {}
-    # Left empty when dejima couldn't print its config, which always names a
-    # harness, since its defaults are then unknown.
-    if dejima_harness:
-        for key in RAN_WITH:
-            asked = getattr(job, key)
-            ours = args.harness if key == "harness" else dict(getattr(args, key)).get(used)
-            theirs = dejima_harness if key == "harness" else d.get(key)
-            if value := asked or ours or theirs:
-                source = "task" if asked else "launcher" if ours else "dejima"
-                ran_with[key] = {"value": int(value) if key == "context_window" else value, "from": source}
+    for key in RAN_WITH:
+        asked = getattr(job, key)
+        ours = args.harness if key == "harness" else dict(getattr(args, key)).get(used)
+        theirs = dejima_harness if key == "harness" else d.get(key)
+        if value := asked or ours or theirs:
+            source = "task" if asked else "launcher" if ours else "dejima"
+            ran_with[key] = {"value": int(value) if key == "context_window" else value, "from": source}
+        elif (used, key) in refused:
+            # Set in dejima's config to a value darner doesn't read, which a
+            # page would otherwise call unset.
+            ran_with = {}
+            break
+    # Unknown when dejima couldn't print its config, which always names a harness.
+    if not dejima_harness:
+        ran_with = {}
     argv = [
         dejima, "--isolated", "--no-pause", "--shared-path-file", str(task_dir / "shared-path"),
         "--usage-path-file", str(task_dir / "usage-path"),
@@ -1569,11 +1575,12 @@ _SETTING = re.compile(r"harness\.([a-z0-9][a-z0-9_-]{0,63})\.(backend|model|effo
 _SETTING_CHECKS = {"backend": valid_name, "model": valid_model, "effort": valid_effort, "context_window": _context_window}
 
 
-def dejima_defaults(args: argparse.Namespace, dejima: str) -> tuple[str | None, dict]:
+def dejima_defaults(args: argparse.Namespace, dejima: str, refused: set | None = None) -> tuple[str | None, dict]:
     """dejima's own default harness and each harness's settings, from --print-config.
 
     Only those keys are read, since the rest of the config holds host paths.
-    Nothing, if this dejima can't say.
+    Nothing, if this dejima can't say. A setting set to a value darner doesn't
+    accept is left out, and added to `refused` as (harness, key).
     """
     argv = [dejima, *(["--identity", args.identity] if args.identity else []), "--print-config"]
     try:
@@ -1590,6 +1597,8 @@ def dejima_defaults(args: argparse.Namespace, dejima: str) -> tuple[str | None, 
             harness = value
         elif (m := _SETTING.fullmatch(key)) and _SETTING_CHECKS[m[2]](value):
             defaults.setdefault(m[1], {})[m[2]] = int(value) if m[2] == "context_window" else value
+        elif m and value and refused is not None:
+            refused.add((m[1], m[2]))
     return harness, defaults
 
 

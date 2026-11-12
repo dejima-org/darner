@@ -1547,6 +1547,14 @@ def test_a_launch_records_what_each_agent_setting_ran_with_and_what_set_it(env, 
     # Unnamed by the task, the harness is dejima's, and a setting nothing names is left out.
     launch(args(env), {"id": "dn-def45", "prompt": "p"})
     assert next(t for t in status(args(env)) if t["id"] == "dn-def45")["ran_with"] == {"harness": {"value": "claude-code", "from": "dejima"}}
+    # A setting dejima's config gives a value darner doesn't read is unknown, so nothing is said,
+    # unless the task or the launcher sets it instead.
+    monkeypatch.setenv("FAKE_DEJIMA_CONFIG", "core.harness=claude-code\nharness.claude-code.model=claude-sonnet-4@20250514\n")
+    launch(args(env), {"id": "dn-klm57", "prompt": "p"})
+    launch(args(env), {"id": "dn-nop23", "prompt": "p", "model": "claude-opus-5-5"})
+    ran = {t["id"]: t["ran_with"] for t in status(args(env))}
+    assert ran["dn-klm57"] == {}
+    assert ran["dn-nop23"] == {"harness": {"value": "claude-code", "from": "dejima"}, "model": {"value": "claude-opus-5-5", "from": "task"}}
     # Without dejima's config, its defaults are unknown, so nothing is said.
     monkeypatch.delenv("FAKE_DEJIMA_CONFIG")
     launch(args(env, "--harness", "cline"), {"id": "dn-ghj67", "prompt": "p", "model": "m"})

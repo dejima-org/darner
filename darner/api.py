@@ -1077,14 +1077,16 @@ _RAN_WITH_CHECKS = {
 
 
 def _ran_with(settings: object) -> dict:
-    """The launcher's account of each agent setting and what set it, keeping only well-formed entries."""
+    """The launcher's account of each agent setting and what set it. Empty if any
+    entry is malformed, since leaving one out would show that setting as unset."""
     if not isinstance(settings, dict):
         return {}
-    return {
+    kept = {
         key: {"value": s["value"], "from": s["from"]} for key in RAN_WITH
         if isinstance(s := settings.get(key), dict) and s.get("from") in ("task", "launcher", "dejima")
         and _RAN_WITH_CHECKS[key](s.get("value"))
     }
+    return kept if len(kept) == len(set(RAN_WITH) & set(settings)) else {}
 
 
 async def _sessions(request: web.Request, task_id: str | None = None) -> list[dict]:
