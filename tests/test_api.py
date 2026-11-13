@@ -783,7 +783,10 @@ async def test_sessions_list_what_each_waits_on(started, tmp_path, monkeypatch, 
     await poll_once(app)
     path.write_text(json.dumps([{
         "id": task_id, "state": "running", "answerable": True, "awaiting_answer": True, "domain_request": None,
-        "run_id": RUN,
+        "run_id": RUN, "ran_with": {
+            "harness": {"value": "cline", "from": "dejima"}, "model": {"value": "m", "from": "launcher"},
+            "network": {"value": "sealed", "from": "task"},
+        },
     }]))
     await poll_once(app)
     resp = await client.get("/v1/tasks", headers=AUTH)
@@ -796,8 +799,24 @@ async def test_sessions_list_what_each_waits_on(started, tmp_path, monkeypatch, 
     assert single == session
     # What the request asked for, never the prompt.
     assert session["started_with"] == {"domains": ["pypi.org"], "dependencies": ["pip:pytest"]}
+    # What the launcher says each agent setting ran with, and nothing it doesn't show.
+    assert session["ran_with"] == {"harness": {"value": "cline", "from": "dejima"}, "model": {"value": "m", "from": "launcher"}}
     [help_event] = await (await client.get(f"/v1/tasks/{task_id}/events", headers=AUTH)).json()
     assert help_event["created"] > 0
+
+
+@pytest.mark.parametrize("bad", [
+    {"model": {"value": "<b>", "from": "dejima"}}, {"effort": {"value": "high", "from": "elsewhere"}},
+    {"backend": "self-hosted"}, {"context_window": {"value": "30000", "from": "task"}},
+])
+async def test_a_session_s_ran_with_is_dropped_whole_if_any_entry_is_malformed(client, tmp_path, monkeypatch, bad):
+    # Dropping just the one would show that setting as unset.
+    task_id = (await (await client.post("/v1/tasks", json=request(), headers=AUTH)).json())["id"]
+    path = tmp_path / "status.json"
+    path.write_text(json.dumps([{"id": task_id, "state": "running", "ran_with": {"harness": {"value": "cline", "from": "task"}, **bad}}]))
+    monkeypatch.setenv("STUB_STATUS", str(path))
+    session = await (await client.get(f"/v1/tasks/{task_id}", headers=AUTH)).json()
+    assert session["ran_with"] == {}
 
 
 async def test_a_session_says_the_config_sets_and_blurbs_it_was_started_with(client, config):

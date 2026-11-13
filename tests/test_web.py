@@ -309,6 +309,21 @@ async def test_a_session_page_says_what_it_was_started_with(client):
     assert "&lt;i&gt;cline&lt;/i&gt;" in started and "<i>" not in started
 
 
+async def test_a_session_page_says_what_each_agent_setting_ran_with_and_what_set_it(client, fake):
+    fake.sessions[0]["ran_with"] = {
+        "harness": {"value": "cline", "from": "task"}, "backend": {"value": "<b>anthropic</b>", "from": "dejima"},
+        "model": {"value": "claude-opus-5-5", "from": "launcher"}, "context_window": {"value": 30000, "from": "task"},
+    }
+    resp, html = await get(client, "/sessions/dn-aaaaa")
+    started = html.split('<section class="well started">', 1)[1].split("</section>", 1)[0]
+    assert "<dt>Harness</dt><dd>cline</dd>" in started and "<dt>Context window</dt><dd>30000</dd>" in started
+    assert '<dt>Backend</dt><dd>&lt;b&gt;anthropic&lt;/b&gt; <span class="quiet">dejima\'s default</span></dd>' in started
+    assert '<dt>Model</dt><dd>claude-opus-5-5 <span class="quiet">the launcher\'s default</span></dd>' in started
+    assert '<dt>Effort</dt><dd><span class="quiet">the harness\'s own</span></dd>' in started
+    # The rest is still what the task asked for.
+    assert "<dt>Config sets</dt><dd>recipes</dd>" in started and "<dt>Domains</dt><dd>pypi.org</dd>" in started
+
+
 async def test_the_selftest_check_catches_unsafe_html():
     with pytest.raises(AssertionError):
         assert_selftest_shown_safely(f"<p>{SELFTEST}</p>")
