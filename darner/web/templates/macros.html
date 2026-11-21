@@ -3,6 +3,6 @@
 {% endfor %}{% endmacro %}
 
 {% macro keep_box(id) -%}
-<label class="keep"><input type="checkbox" name="keep" value="1" data-nodraft aria-describedby="{{ id }}-keep-note"> Keep a copy here</label>
+<label class="keep"><input type="checkbox" name="keep" value="1" autocomplete="off" data-nodraft aria-describedby="{{ id }}-keep-note"> Keep a copy here</label>
 <p class="quiet" id="{{ id }}-keep-note">Its first 8 KiB is kept in darner's database, shown on the session's page to everyone who can use darner-web, until you delete it or the session is cleared. Leave it unticked for anything secret.</p>
 {%- endmacro %}

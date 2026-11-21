@@ -171,12 +171,15 @@ class Store:
             self.db.execute("DELETE FROM kept WHERE task_id = ?", (task_id,))
             self.db.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
 
-    def keep(self, task_id: str, kind: str, requester: str, text: str, truncated: bool) -> None:
-        """Keep what a user sent, as they asked, until it or the session is deleted."""
-        self.db.execute(
-            "INSERT INTO kept (task_id, kind, requester, text, truncated, created) VALUES (?, ?, ?, ?, ?, ?)",
-            (task_id, kind, requester, text, int(truncated), time.time()),
-        )
+    def keep(self, client: str, task_id: str, kind: str, requester: str, text: str, truncated: bool) -> bool:
+        """Keep what a user sent, as they asked, until it or the session is deleted. Whether
+        the client's session is still there to keep it: one cleared meanwhile keeps nothing,
+        or a later task given its id could read it."""
+        return self.db.execute(
+            "INSERT INTO kept (task_id, kind, requester, text, truncated, created)"
+            " SELECT ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM tasks WHERE id = ? AND client = ?)",
+            (task_id, kind, requester, text, int(truncated), time.time(), task_id, client),
+        ).rowcount > 0
 
     def kept(self, client: str, task_id: str) -> list[dict]:
         rows = self.db.execute(

@@ -12,6 +12,7 @@ import os
 import re
 import shutil
 import signal
+import sqlite3
 import sys
 import tempfile
 import time
@@ -210,6 +211,16 @@ def _kept_text(text: str) -> tuple[str, bool]:
     """Text cut to MAX_KEPT bytes at a character boundary, and whether it was cut."""
     data = text.encode(errors="replace")
     return data[:MAX_KEPT].decode(errors="ignore"), len(data) > MAX_KEPT
+
+
+def _store_kept(store: Store, client: str, task_id: str, kind: str, requester: str, text: str) -> None:
+    """Keep what was sent, once it has been. Not keeping it doesn't fail a request that did
+    what it was for, since resending would type it twice; the log says why."""
+    try:
+        if not store.keep(client, task_id, kind, requester, *_kept_text(text)):
+            log.warning("didn't keep a %s for %s, which was deleted meanwhile", kind, task_id)
+    except sqlite3.Error:
+        log.exception("keeping a %s for %s failed", kind, task_id)
 
 
 def _list(d: dict, key: str) -> list:
@@ -957,10 +968,10 @@ async def create_task(request: web.Request) -> web.Response:
         return web.json_response({"error": f"launch failed: {e}"}, status=502)
     store.mark(job["id"], "launched", target=target)
     if keep:
-        store.keep(job["id"], "task", requester, *_kept_text(body["task"]))
+        _store_kept(store, client, job["id"], "task", requester, body["task"])
     _audit(
         "start", client, job["id"], requester, domains=job["domains"], internal=job["internal_domains"],
-        dependencies=job["dependencies"], files=[f["name"] for f in job["files"]], kept=keep,
+        dependencies=job["dependencies"], files=[f["name"] for f in job["files"]], **({"kept": True} if keep else {}),
     )
     run_id = result.get("run_id")
     if isinstance(run_id, str) and RUN_ID.fullmatch(run_id):
@@ -1079,8 +1090,8 @@ async def _type_into(request: web.Request, command: str) -> web.Response:
     if code:
         return web.json_response({"error": err or f"launcher exited {code}"}, status=409)
     if keep:
-        request.app[STORE].keep(task_id, command, requester, *_kept_text(text))
-    _audit(command, client, task_id, requester, length=len(text), kept=keep)
+        _store_kept(request.app[STORE], client, task_id, command, requester, text)
+    _audit(command, client, task_id, requester, length=len(text), **({"kept": True} if keep else {}))
     return web.Response(status=204)
 
 

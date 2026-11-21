@@ -2197,3 +2197,15 @@ async def test_the_catalog_says_whether_the_api_keeps_input(keeping):
 
 def test_deleted_rows_are_overwritten(tmp_path):
     assert Store(str(tmp_path / "db")).db.execute("PRAGMA secure_delete").fetchone() == (1,)
+
+
+def test_a_session_deleted_meanwhile_keeps_nothing_for_a_task_later_given_its_id(tmp_path):
+    store = Store(str(tmp_path / "db"))
+    source = {"kind": "web", "ref": "1" * 32}
+    store.claim("dn-abc23", "web", source, "@a:example.org", "{}")
+    store.delete("dn-abc23")
+    assert not store.keep("web", "dn-abc23", "message", "@a:example.org", "secret", False)
+    store.claim("dn-abc23", "maubot", {**source, "kind": "matrix"}, "@b:example.org", "{}")
+    assert store.kept("maubot", "dn-abc23") == []
+    # Nor for another client's session.
+    assert not store.keep("web", "dn-abc23", "message", "@a:example.org", "secret", False)

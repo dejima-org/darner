@@ -159,7 +159,7 @@ class FakeApi:
             return web.json_response({"path": "~/shared/uploads/" + request.query["name"], "size": len(self.uploaded), "told": False})
 
         async def catalog(request):
-            return await record(request, {**CATALOG, "keep_input": bool(self.kept and self.kept["keep_input"])})
+            return await record(request, CATALOG if self.kept is None else {**CATALOG, "keep_input": self.kept["keep_input"]})
 
         async def kept(request):
             if self.kept is None or request.match_info["id"] not in self.events:
@@ -1079,7 +1079,8 @@ async def test_kept_input_is_shown_in_the_history_as_text_with_a_way_to_delete_i
     assert resp.status == 200 and posted(fake) == [("/v1/tasks/dn-aaaaa/kept/7/delete", {"requester": "web"})]
 
 
-async def test_a_session_page_works_with_an_api_older_than_kept_input(client, fake):
+async def test_pages_work_with_an_api_older_than_kept_input(client, fake):
     fake.kept = None
-    resp, html = await get(client, "/sessions/dn-aaaaa")
-    assert resp.status == 200 and 'name="keep"' not in html
+    for path in ("/sessions/dn-aaaaa", "/new"):
+        resp, html = await get(client, path)
+        assert resp.status == 200 and 'name="keep"' not in html

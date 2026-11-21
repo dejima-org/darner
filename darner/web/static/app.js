@@ -134,14 +134,16 @@ for (const form of document.querySelectorAll("form[data-action]")) {
     if (note) note.hidden = true;
     const done = button.dataset.busy ? busy(button) : () => {};
     const json = { "Content-Type": "application/json" };
-    const sent = await send(form.dataset.action, { headers: json, body: JSON.stringify(fields(form)) }, form);
+    const data = fields(form);
+    const sent = await send(form.dataset.action, { headers: json, body: JSON.stringify(data) }, form);
     if (sent) {
       form.reset();
       forget();
     }
-    if (sent === true && !note) location.reload();
+    // A kept message shows on the reloaded page.
+    if (sent === true && (!note || data.keep)) location.reload();
     else if (sent !== "moved") {
-      // A message isn't kept, so a reload wouldn't show it was sent: it's said beside Send instead.
+      // A message that isn't kept wouldn't show after a reload: it's said beside Send instead.
       if (note) note.hidden = !sent;
       done();
       button.disabled = false;
