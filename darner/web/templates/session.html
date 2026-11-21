@@ -82,11 +82,11 @@
 <label for="message">{% if session.waiting.answer is not none %}Answer its help request{% else %}Send it a message{% endif %}</label>
 {% if kept.keep_input %}
 <textarea id="message" name="text" rows="3" required{% if drafts %} aria-describedby="message-note"{% endif %}></textarea>
-{% if drafts %}<p class="quiet" id="message-note">Until you send it, what you've typed here is kept in this tab.</p>{% endif %}
-{{ keep_box("Keep this message on the session's page") }}
+{% if drafts %}<p class="quiet" id="message-note">Until you send it, what you've typed here is saved in this tab.</p>{% endif %}
+{{ keep_box("message-keep", "Keep this message on the session's page") }}
 {% else %}
 <textarea id="message" name="text" rows="3" required aria-describedby="message-note"></textarea>
-<p class="quiet" id="message-note">What you send is typed into the session and not kept, so it won't appear here: keep a copy if you'll want it later.{% if drafts %} Until you send it, what you've typed here is kept in this tab.{% endif %}</p>
+<p class="quiet" id="message-note">What you send is typed into the session and not kept, so it won't appear here: keep a copy if you'll want it later.{% if drafts %} Until you send it, what you've typed here is saved in this tab.{% endif %}</p>
 {% endif %}
 <button type="submit">Send</button> <span class="quiet sent" role="status" hidden>Sent.</span>
 </form>

@@ -8,11 +8,11 @@
 <label for="task">Task</label>
 {% if catalog.get("keep_input") %}
 <textarea id="task" name="task" rows="4" required{% if drafts %} aria-describedby="task-note"{% endif %}></textarea>
-{% if drafts %}<p class="quiet" id="task-note">Until you start it, what you've typed here is kept in this tab.</p>{% endif %}
-{{ keep_box("Keep this task on the session's page") }}
+{% if drafts %}<p class="quiet" id="task-note">Until you start it, what you've typed here is saved in this tab.</p>{% endif %}
+{{ keep_box("task-keep", "Keep this task on the session's page") }}
 {% else %}
 <textarea id="task" name="task" rows="4" required aria-describedby="task-note"></textarea>
-<p class="quiet" id="task-note">The task is given to the agent and not kept, so keep a copy if you'll want it later.{% if drafts %} Until you start it, what you've typed here is kept in this tab.{% endif %}</p>
+<p class="quiet" id="task-note">The task is given to the agent and not kept, so keep a copy if you'll want it later.{% if drafts %} Until you start it, what you've typed here is saved in this tab.{% endif %}</p>
 {% endif %}
 <label for="name">Name <span class="quiet">optional: lowercase letters, digits and hyphens, unique among open sessions</span></label>
 <input id="name" name="name" maxlength="35" pattern="(dn-)?[a-z0-9][a-z0-9\-]{0,31}" autocomplete="off" placeholder="its id, such as dn-k3x7q">
