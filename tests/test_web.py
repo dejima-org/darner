@@ -1046,12 +1046,22 @@ async def test_the_keep_box_shows_only_when_the_api_keeps_input(client, fake):
         _, html = await get(client, path)
         assert 'name="keep"' not in html and "not kept" in html
     fake.kept = {"keep_input": True, "kept": []}
-    for path in ("/new", "/sessions/dn-aaaaa"):
+    for path, label in (
+        ("/new", "Keep this task on the session's page"), ("/sessions/dn-aaaaa", "Keep this answer on the session's page"),
+    ):
         _, html = await get(client, path)
         box = html.split('<label class="keep">', 1)[1].split("</label>", 1)[0]
-        # Unticked, and never brought back ticked from a draft.
-        assert 'type="checkbox" name="keep"' in box and "checked" not in box and "data-nodraft" in box
-        assert "unless you tick Keep" in html
+        # Unticked, and never brought back ticked from a draft or by the browser.
+        assert 'type="checkbox" name="keep"' in box and "checked" not in box and "data-nodraft" in box and 'autocomplete="off"' in box
+        assert label.replace("'", "&#39;") in box or label in box
+        # One note under the box, saying who can read it first, and "keep" means only the box.
+        note_id = "task-note" if path == "/new" else "message-note"
+        note = html.split(f'<p class="quiet" id="{note_id}">', 1)[1].split("</p>", 1)[0]
+        assert note.startswith("Everyone who can use darner-web") and "Unticked" in note
+        assert html.count(f'id="{note_id}"') == 1 and "keep a copy" not in note
+    fake.sessions[0]["waiting"] = {"answer": None, "domains": None}
+    _, html = await get(client, "/sessions/dn-aaaaa")
+    assert "Keep this message on the session" in html
 
 
 @pytest.mark.parametrize("keep, sent", [(["1"], True), (None, False), ("1", False), (["1", "1"], False)])

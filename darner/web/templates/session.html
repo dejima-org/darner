@@ -81,8 +81,11 @@
 <form method="post" data-action="/sessions/{{ task_id }}/message" data-draft="message:{{ session.id }}:{{ session.started }}">
 <label for="message">{% if session.waiting.answer is not none %}Answer its help request{% else %}Send it a message{% endif %}</label>
 <textarea id="message" name="text" rows="3" required aria-describedby="message-note"></textarea>
-{% if kept.keep_input %}{{ keep_box("message") }}{% endif %}
-<p class="quiet" id="message-note">What you send is typed into the session and{% if kept.keep_input %}, unless you tick Keep,{% endif %} not kept or shown here: keep a copy if you'll want it later.{% if drafts %} Until you send it, what you've typed here is kept in this tab.{% endif %}</p>
+{% if kept.keep_input %}
+{% call keep_box("message-note", "Keep this " ~ ("answer" if session.waiting.answer is not none else "message") ~ " on the session's page") %}Unticked, it's typed into the session and not kept or shown here, so save it yourself if you'll want it later.{% if drafts %} Until you send it, what you've typed here is kept in this tab.{% endif %}{% endcall %}
+{% else %}
+<p class="quiet" id="message-note">What you send is typed into the session and not kept, so it won't appear here: keep a copy if you'll want it later.{% if drafts %} Until you send it, what you've typed here is kept in this tab.{% endif %}</p>
+{% endif %}
 <button type="submit">Send</button> <span class="quiet sent" role="status" hidden>Sent.</span>
 </form>
 <form method="post" data-upload="/sessions/{{ task_id }}/files">
