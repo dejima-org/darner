@@ -249,7 +249,8 @@ nav .new { padding: 0.5rem 0.9rem; font-size: 0.95rem; }
 .event pre.kept { padding: 1rem 1.1rem; margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 /* The user's own text: the accent marks what the agent wrote. */
 .event.kept h2 .by { color: var(--fg-dim); }
-label.keep { display: inline-flex; gap: 0.4rem; align-items: center; margin-top: 0.5rem; }
+.choice.keep { margin-top: 0.5rem; }
+.choice.keep > label { flex-wrap: wrap; }
 .event .agent p:last-child { margin-bottom: 0.6rem; }
 .event .agent pre { background: none; }
 /* A table the agent wrote scrolls on its own rather than widening the page. */
@@ -309,6 +310,8 @@ legend { padding: 0 0.4rem; margin: 0; color: var(--fg-dim); }
    couldn't close it there. */
 @media (hover: hover) { .choice:hover > .peek { display: block; } }
 .choice.open > .peek { display: block; }
+/* And from the keyboard, focusing the box: :focus-visible, so a tap on a phone doesn't open it. */
+.choice:has(> label input:focus-visible) > .peek { display: block; }
 /* Opened by pointing, it lets the pointer through, so moving down reaches the names it covers.
    Opened with View, it takes the pointer, to scroll it or follow its link. */
 .peek { pointer-events: none; }

@@ -398,9 +398,9 @@ async def test_drafts_can_be_turned_off(aiohttp_client, fake):
     for path in ("/new", "/sessions/dn-aaaaa"):
         _, html = await get(on, path)
         assert re.search(r"<body[^>]* data-drafts>", html), path
-        assert "kept in this tab" in html, path
+        assert "saved in this tab" in html, path
         _, html = await get(off, path)
-        assert "data-drafts" not in html and "kept in this tab" not in html, path
+        assert "data-drafts" not in html and "saved in this tab" not in html, path
 
 
 async def test_a_config_set_that_wont_load_is_listed_without_a_description(client, fake):
@@ -1050,15 +1050,17 @@ async def test_the_keep_box_shows_only_when_the_api_keeps_input(client, fake):
         ("/new", "Keep this task on the session's page"), ("/sessions/dn-aaaaa", "Keep this message on the session's page"),
     ):
         _, html = await get(client, path)
-        box = html.split('<label class="keep">', 1)[1].split("</label>", 1)[0]
+        box = html.split('<div class="choice keep">', 1)[1].split("</div></div>", 1)[0]
         # Unticked, and never brought back ticked from a draft or by the browser.
         assert 'type="checkbox" name="keep"' in box and "checked" not in box and "data-nodraft" in box and 'autocomplete="off"' in box
         assert label.replace("'", "&#39;") in box or label in box
-        # One note under the box, saying who can read it first, and "keep" means only the box.
+        # Who can read it stays visible; the rest is in the popover, which describes the box.
+        keep_id = "task-keep" if path == "/new" else "message-keep"
+        assert "Everyone who can use darner-web can read it there." in box.split("</label>", 1)[0]
+        assert f'aria-describedby="{keep_id}"' in box and f'<div class="peek"><p id="{keep_id}">' in box
         note_id = "task-note" if path == "/new" else "message-note"
         note = html.split(f'<p class="quiet" id="{note_id}">', 1)[1].split("</p>", 1)[0]
-        assert note.startswith("Everyone who can use darner-web") and "Unticked" in note
-        assert html.count(f'id="{note_id}"') == 1 and "keep a copy" not in note
+        assert note.startswith("Until you") and note.endswith("saved in this tab.")
 
 
 @pytest.mark.parametrize("keep, sent", [(["1"], True), (None, False), ("1", False), (["1", "1"], False)])
