@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "macros.html" import keep_box %}
 {% set title = "dn-" ~ session.name if session and session.name else task_id %}
 {% block title %}{{ title }} · darner{% endblock %}
 {% macro used(e) -%}
@@ -20,6 +21,8 @@
 <h2>Stopped after running for {{ e.data.age // 3600 }}h, longer than sessions may run</h2>
 {% elif e.type == "ignored" %}
 <h2>Started without {{ flags(e) }}</h2>
+{% elif e.type == "kept" %}
+<h2>{{ {"task": "Task", "message": "Message", "answer": "Answer"}.get(e.kind, "Sent") }} from {{ e.requester }}{% if e.truncated %}, its first 8 KiB{% endif %} <span class="by">kept</span></h2>
 {% elif e.type == "ended" %}
 <h2>Ended{% if e.summary %}: {{ e.summary }}{% endif %}{{ used(e) }}</h2>
 {% else %}
@@ -34,6 +37,9 @@
 <div class="body agent">{{ e.summary | agent }}</div>
 {% elif e.type == "waiting" %}
 {% if e.summary %}<pre class="agent">{{ e.summary }}</pre>{% endif %}
+{% elif e.type == "kept" %}
+<pre class="kept">{{ e.text }}</pre>
+<div class="footer"><button type="button" class="quiet" data-post="/sessions/{{ task_id }}/kept/{{ e.seq }}/delete" data-confirm="Delete this kept copy? It's removed from darner's database.">Delete</button></div>
 {% elif e.type == "ignored" %}
 <div class="body"><p>The dejima host's dejima is older than this darner and doesn't know {{ flags(e) }}, so this session runs without {{ "it" if e.data.flags | length == 1 else "them" }}. Updating dejima there fixes that for new sessions.</p></div>
 {% elif e.type == "domains" %}
@@ -75,7 +81,8 @@
 <form method="post" data-action="/sessions/{{ task_id }}/message" data-draft="message:{{ session.id }}:{{ session.started }}">
 <label for="message">{% if session.waiting.answer is not none %}Answer its help request{% else %}Send it a message{% endif %}</label>
 <textarea id="message" name="text" rows="3" required aria-describedby="message-note"></textarea>
-<p class="quiet" id="message-note">What you send is typed into the session and not kept, so it won't appear here: keep a copy if you'll want it later.{% if drafts %} Until you send it, what you've typed here is kept in this tab.{% endif %}</p>
+{% if kept.keep_input %}{{ keep_box("message") }}{% endif %}
+<p class="quiet" id="message-note">What you send is typed into the session and{% if kept.keep_input %}, unless you tick Keep,{% endif %} not kept, so it won't appear here: keep a copy if you'll want it later.{% if drafts %} Until you send it, what you've typed here is kept in this tab.{% endif %}</p>
 <button type="submit">Send</button> <span class="quiet sent" role="status" hidden>Sent.</span>
 </form>
 <form method="post" data-upload="/sessions/{{ task_id }}/files">
@@ -117,7 +124,7 @@
 <div class="history-head"><h2>History</h2><button type="button" class="quiet" data-expand="#history">Expand all</button></div>
 <ol class="timeline" id="history">
 {% for e in history %}
-<li><details class="event {{ e.type }}" data-seq="{{ e.seq }}"><summary>{{ heading(e) }}{% if e.get("created") %}<span class="when">{{ e.created | age }} ago</span>{% endif %}</summary>{{ body(e) }}</details></li>
+<li><details class="event {{ e.type }}" data-seq="{{ "kept-" if e.type == "kept" }}{{ e.seq }}"><summary>{{ heading(e) }}{% if e.get("created") %}<span class="when">{{ e.created | age }} ago</span>{% endif %}</summary>{{ body(e) }}</details></li>
 {% endfor %}
 </ol>
 </section>

@@ -1,3 +1,8 @@
 {# A config set's keywords, one a line, as a task naming it applies them. #}
 {% macro settings(described) %}{% for key, value in described.items() if key != "description" %}{{ key }}: {% if value is string %}{{ value }}{% else %}{{ value | join(", ") }}{% endif %}
 {% endfor %}{% endmacro %}
+
+{% macro keep_box(id) -%}
+<label class="keep"><input type="checkbox" name="keep" value="1" data-nodraft aria-describedby="{{ id }}-keep-note"> Keep a copy here</label>
+<p class="quiet" id="{{ id }}-keep-note">Its first 8 KiB is kept in darner's database, shown on the session's page to everyone who can use darner-web, until you delete it or the session is cleared. Leave it unticked for anything secret.</p>
+{%- endmacro %}

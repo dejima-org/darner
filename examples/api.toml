@@ -14,6 +14,10 @@ blurbs_dir = "/etc/darner/blurbs"
 # Keep an ended session's output this long for a frontend that hasn't collected it.
 # output_retention = 604800
 # waiting_screen = true
+# Let a frontend keep what a user sends when they tick its Keep box: the first
+# 8 KiB of a task or message, in this database, until it's deleted or the session
+# is cleared. Off, nothing a user sends is kept past the session.
+# keep_input = false
 # Blurbs added to every task, such as how the network reaches internal services.
 # default_blurbs = ["network"]
 results_dir = "/var/lib/darner/results"

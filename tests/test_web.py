@@ -64,6 +64,8 @@ class FakeApi:
         self.create_status = 201
         self.upload_delay = 0
         self.check_status = 200
+        # None answers as an API older than kept input does.
+        self.kept = {"keep_input": False, "kept": []}
 
     def app(self):
         async def record(request, result, status=200):
@@ -157,7 +159,12 @@ class FakeApi:
             return web.json_response({"path": "~/shared/uploads/" + request.query["name"], "size": len(self.uploaded), "told": False})
 
         async def catalog(request):
-            return await record(request, CATALOG)
+            return await record(request, {**CATALOG, "keep_input": bool(self.kept and self.kept["keep_input"])})
+
+        async def kept(request):
+            if self.kept is None or request.match_info["id"] not in self.events:
+                raise web.HTTPNotFound()
+            return await record(request, self.kept)
 
         async def preview(request):
             body = await request.json()
@@ -194,6 +201,8 @@ class FakeApi:
         app.router.add_post("/v1/tasks/{id}/message", no_content)
         app.router.add_post("/v1/tasks/{id}/stop", no_content)
         app.router.add_post("/v1/tasks/{id}/clear", clear)
+        app.router.add_get("/v1/tasks/{id}/kept", kept)
+        app.router.add_post("/v1/tasks/{id}/kept/{seq}/delete", no_content)
 
         async def check(request):
             if self.check_status != 200:
@@ -1030,3 +1039,47 @@ async def test_a_bad_answer_or_a_database_that_started_over_doesn_t_stop_pushes(
             break
         await asyncio.sleep(0.05)
     assert pushed == ["darner: dn-aaaaa has output"]
+
+
+async def test_the_keep_box_shows_only_when_the_api_keeps_input(client, fake):
+    for path in ("/new", "/sessions/dn-aaaaa"):
+        _, html = await get(client, path)
+        assert 'name="keep"' not in html and "not kept" in html
+    fake.kept = {"keep_input": True, "kept": []}
+    for path in ("/new", "/sessions/dn-aaaaa"):
+        _, html = await get(client, path)
+        box = html.split('<label class="keep">', 1)[1].split("</label>", 1)[0]
+        # Unticked, and never brought back ticked from a draft.
+        assert 'type="checkbox" name="keep"' in box and "checked" not in box and "data-nodraft" in box
+        assert "unless you tick Keep" in html
+
+
+@pytest.mark.parametrize("keep, sent", [(["1"], True), (None, False), ("1", False), (["1", "1"], False)])
+async def test_a_ticked_keep_box_asks_the_api_to_keep_what_s_sent(client, fake, keep, sent):
+    extra = {} if keep is None else {"keep": keep}
+    assert (await client.post("/sessions/dn-aaaaa/message", headers=POST, json={"text": "use postgres", **extra})).status == 200
+    assert (await client.post("/tasks", headers=POST, json={"task": "add this recipe", "ref": "a" * 32, **extra})).status == 200
+    [(_, message), (_, task)] = posted(fake)
+    assert message.get("keep", False) is sent and task.get("keep", False) is sent
+
+
+async def test_kept_input_is_shown_in_the_history_as_text_with_a_way_to_delete_it(client, fake):
+    fake.kept = {"keep_input": True, "kept": [
+        {"seq": 7, "kind": "message", "requester": "<b>alice</b>", "text": "<script>x</script>\n**not markdown**", "truncated": True, "created": 1},
+    ]}
+    _, html = await get(client, "/sessions/dn-aaaaa")
+    history = html.split('<section class="history">', 1)[1]
+    item = history.split('data-seq="kept-7"', 1)[1].split("</details>", 1)[0]
+    assert "Message from &lt;b&gt;alice&lt;/b&gt;, its first 8 KiB" in item
+    assert '<pre class="kept">&lt;script&gt;x&lt;/script&gt;\n**not markdown**</pre>' in item
+    assert 'data-post="/sessions/dn-aaaaa/kept/7/delete"' in item
+    # Never what the page leads with.
+    assert "kept-7" not in html.split('<section class="latest"', 1)[1].split("</section>", 1)[0]
+    resp = await client.post("/sessions/dn-aaaaa/kept/7/delete", headers=POST, json={})
+    assert resp.status == 200 and posted(fake) == [("/v1/tasks/dn-aaaaa/kept/7/delete", {"requester": "web"})]
+
+
+async def test_a_session_page_works_with_an_api_older_than_kept_input(client, fake):
+    fake.kept = None
+    resp, html = await get(client, "/sessions/dn-aaaaa")
+    assert resp.status == 200 and 'name="keep"' not in html

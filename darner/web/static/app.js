@@ -114,7 +114,8 @@ function keepDraft(form) {
   const saved = JSON.parse(sessionStorage.getItem(key) ?? "null");
   if (saved) {
     for (const el of form.elements) {
-      if (!el.name || !(el.name in saved)) continue;
+      // Keep starts unticked on every page, whatever an unsent draft had.
+      if (!el.name || !(el.name in saved) || "nodraft" in el.dataset) continue;
       if (el.type === "checkbox") el.checked = saved[el.name].includes(el.value);
       else el.value = saved[el.name];
     }

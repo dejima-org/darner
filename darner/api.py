@@ -44,6 +44,8 @@ def _audit(action: str, client: str, task_id: str, requester: str, **details) ->
     audit.info("%s %s by %r via %s%s", action, task_id, requester, client, extra)
 
 RUN_ID = re.compile(r"[0-9a-f]{16}")
+# What's kept of a task or message a user asked to keep, in UTF-8 bytes.
+MAX_KEPT = 8 * 1024
 # Flags dejima dropped, as the launcher reported them: only ever ones it passed.
 IGNORED_FLAG = re.compile(r"--[a-z][a-z0-9-]{0,63}")
 MAX_IGNORED = 50
@@ -70,6 +72,7 @@ DEFAULTS = {
     "policy": {},
     "limits": {},
     "catalog": {},
+    "keep_input": False,
 }
 
 
@@ -101,7 +104,7 @@ def session_link(config: dict, run_id: str | None) -> str | None:
 
 REQUEST_KEYS = {
     "task", "context", "blurbs", "configs", "grants", "harness", "backend", "model", "effort", "context_window", "network",
-    "requester", "source", "name",
+    "requester", "source", "name", "keep",
 }
 # A session's name, which stands in for its id as dn-<name>. One shaped like an id can't be one.
 SESSION_NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,31}")
@@ -191,6 +194,22 @@ def _text(body: dict, key: str, required: bool = True) -> str:
     if not isinstance(value, str) or (required and not value.strip()) or len(value) > MAX_TEXT:
         raise RequestError(400, f"{key} must be {'non-empty ' if required else ''}text of at most {MAX_TEXT} characters")
     return value
+
+
+def _keep(config: dict, body: dict) -> bool:
+    """Whether the request asks to keep what it sends, which only an API with keep_input may."""
+    keep = body.get("keep", False)
+    if not isinstance(keep, bool):
+        raise RequestError(400, "keep must be true or false")
+    if keep and not config["keep_input"]:
+        raise RequestError(400, "this API doesn't keep what's sent: its keep_input setting is off")
+    return keep
+
+
+def _kept_text(text: str) -> tuple[str, bool]:
+    """Text cut to MAX_KEPT bytes at a character boundary, and whether it was cut."""
+    data = text.encode(errors="replace")
+    return data[:MAX_KEPT].decode(errors="ignore"), len(data) > MAX_KEPT
 
 
 def _list(d: dict, key: str) -> list:
@@ -907,6 +926,7 @@ async def create_task(request: web.Request) -> web.Response:
     try:
         job, source, requester, _, blurbs = _build(config, body)
         name = _session_name(body)
+        keep = _keep(config, body)
         await check_job_harness(request.app, job)
     except RequestError as e:
         return web.json_response({"error": str(e)}, status=e.status)
@@ -936,9 +956,11 @@ async def create_task(request: web.Request) -> web.Response:
         store.delete(job["id"])
         return web.json_response({"error": f"launch failed: {e}"}, status=502)
     store.mark(job["id"], "launched", target=target)
+    if keep:
+        store.keep(job["id"], "task", requester, *_kept_text(body["task"]))
     _audit(
         "start", client, job["id"], requester, domains=job["domains"], internal=job["internal_domains"],
-        dependencies=job["dependencies"], files=[f["name"] for f in job["files"]],
+        dependencies=job["dependencies"], files=[f["name"] for f in job["files"]], kept=keep,
     )
     run_id = result.get("run_id")
     if isinstance(run_id, str) and RUN_ID.fullmatch(run_id):
@@ -1040,10 +1062,11 @@ async def _type_into(request: web.Request, command: str) -> web.Response:
         body = await request.json()
     except ValueError:
         return web.json_response({"error": "body must be JSON"}, status=400)
-    if not isinstance(body, dict) or set(body) != {"text", "requester"}:
-        return web.json_response({"error": "body must have text and requester"}, status=400)
+    if not isinstance(body, dict) or not {"text", "requester"} <= set(body) <= {"text", "requester", "keep"}:
+        return web.json_response({"error": "body must have text and requester, and may have keep"}, status=400)
     try:
         text, requester = _text(body, "text"), _requester(body.get("requester"))
+        keep = _keep(request.app[CONFIG], body)
     except RequestError as e:
         return web.json_response({"error": str(e)}, status=e.status)
     payload = json.dumps({"text": text, "requester": requester}).encode()
@@ -1055,7 +1078,31 @@ async def _type_into(request: web.Request, command: str) -> web.Response:
         return web.json_response({"error": f"{command} failed: {e}"}, status=502)
     if code:
         return web.json_response({"error": err or f"launcher exited {code}"}, status=409)
-    _audit(command, client, task_id, requester, length=len(text))
+    if keep:
+        request.app[STORE].keep(task_id, command, requester, *_kept_text(text))
+    _audit(command, client, task_id, requester, length=len(text), kept=keep)
+    return web.Response(status=204)
+
+
+async def list_kept(request: web.Request) -> web.Response:
+    """What users asked to keep of what they sent a session, oldest first, and whether this API keeps any."""
+    client, store = _client(request), request.app[STORE]
+    task_id = _task_id(request)
+    if store.task_status(client, task_id) is None:
+        raise _not_found(f"no session {task_id}")
+    return web.json_response({"keep_input": request.app[CONFIG]["keep_input"], "kept": store.kept(client, task_id)})
+
+
+async def delete_kept(request: web.Request) -> web.Response:
+    client, task_id, seq = _client(request), _task_id(request), int(request.match_info["seq"])
+    try:
+        body = await request.json() if request.can_read_body else {}
+        requester = _requester(body.get("requester"))
+    except (ValueError, RequestError, AttributeError):
+        return web.json_response({"error": "body must have requester"}, status=400)
+    if not request.app[STORE].forget_kept(client, task_id, seq):
+        raise _not_found("no such kept input")
+    _audit("delete-kept", client, task_id, requester, seq=seq)
     return web.Response(status=204)
 
 
@@ -1313,7 +1360,7 @@ async def get_catalog(request: web.Request) -> web.Response:
         found = await fetch_catalog(request.app)
     except RuntimeError as e:
         return web.json_response({"error": f"catalog failed: {e}"}, status=502)
-    return web.json_response(describe_catalog(found, request.app[CONFIG]["catalog"]))
+    return web.json_response({**describe_catalog(found, request.app[CONFIG]["catalog"]), "keep_input": request.app[CONFIG]["keep_input"]})
 
 
 def describe_catalog(found: dict, catalog: dict) -> dict:
@@ -1391,6 +1438,8 @@ def make_app(config: dict, poll: bool = True) -> web.Application:
     config["catalog"] = check_catalog_config(config.get("catalog", {}))
     if config.get("remote_access_url") and not re.match(r"https?://", config["remote_access_url"]):
         raise ValueError("remote_access_url must start with http:// or https://")
+    if not isinstance(config["keep_input"], bool):
+        raise ValueError("keep_input must be true or false")
     app = web.Application(client_max_size=256 * 1024, middlewares=[_json_errors])
     app[CONFIG] = config
     app[STORE] = Store(config["db_path"])
@@ -1424,6 +1473,8 @@ def make_app(config: dict, poll: bool = True) -> web.Application:
     app.router.add_post(r"/v1/tasks/{id:dn-[a-z0-9][a-z0-9-]{0,31}}/message", message_task)
     app.router.add_post(r"/v1/tasks/{id:dn-[a-z0-9][a-z0-9-]{0,31}}/files", upload_file)
     app.router.add_post(r"/v1/tasks/{id:dn-[a-z0-9][a-z0-9-]{0,31}}/check", check_task)
+    app.router.add_get(r"/v1/tasks/{id:dn-[a-z0-9][a-z0-9-]{0,31}}/kept", list_kept)
+    app.router.add_post(r"/v1/tasks/{id:dn-[a-z0-9][a-z0-9-]{0,31}}/kept/{seq:\d{1,9}}/delete", delete_kept)
     app.router.add_get("/v1/tasks", list_sessions)
     app.router.add_get(r"/v1/tasks/{id:dn-[a-z0-9][a-z0-9-]{0,31}}", get_session)
     app.router.add_get(r"/v1/tasks/{id:dn-[a-z0-9][a-z0-9-]{0,31}}/events", task_events)
