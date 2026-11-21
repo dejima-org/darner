@@ -1050,15 +1050,15 @@ async def test_the_keep_box_shows_only_when_the_api_keeps_input(client, fake):
         ("/new", "Keep this task on the session's page"), ("/sessions/dn-aaaaa", "Keep this message on the session's page"),
     ):
         _, html = await get(client, path)
-        box = html.split('<label class="keep">', 1)[1].split("</label>", 1)[0]
+        box = html.split('<div class="choice keep">', 1)[1].split("</div></div>", 1)[0]
         # Unticked, and never brought back ticked from a draft or by the browser.
         assert 'type="checkbox" name="keep"' in box and "checked" not in box and "data-nodraft" in box and 'autocomplete="off"' in box
         assert label.replace("'", "&#39;") in box or label in box
-        # One note under the box, saying who can read it first, and "keep" means only the box.
+        # Who can read it is in the box's popover; the field's note is only the tab's draft.
+        assert '<div class="peek"><p>Everyone who can use darner-web' in box
         note_id = "task-note" if path == "/new" else "message-note"
         note = html.split(f'<p class="quiet" id="{note_id}">', 1)[1].split("</p>", 1)[0]
-        assert note.startswith("Everyone who can use darner-web") and "Unticked" in note
-        assert html.count(f'id="{note_id}"') == 1 and "keep a copy" not in note
+        assert note.startswith("Until you") and note.endswith("kept in this tab.")
 
 
 @pytest.mark.parametrize("keep, sent", [(["1"], True), (None, False), ("1", False), (["1", "1"], False)])

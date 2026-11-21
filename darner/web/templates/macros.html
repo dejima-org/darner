@@ -2,8 +2,9 @@
 {% macro settings(described) %}{% for key, value in described.items() if key != "description" %}{{ key }}: {% if value is string %}{{ value }}{% else %}{{ value | join(", ") }}{% endif %}
 {% endfor %}{% endmacro %}
 
-{# The Keep box and the field's one note, which is the caller's: what happens unticked. #}
-{% macro keep_box(id, label) -%}
-<label class="keep"><input type="checkbox" name="keep" value="1" autocomplete="off" data-nodraft aria-describedby="{{ id }}"> {{ label }}</label>
-<p class="quiet" id="{{ id }}">Everyone who can use darner-web can read it there, until you delete it or the session is cleared. Leave this unticked for passwords, tokens or anything else secret. Only the first 8 KiB is kept. {{ caller() }}</p>
+{# The Keep box, with what keeping means in a popover like a config set's. #}
+{% macro keep_box(label) -%}
+<div class="choice keep"><label><input type="checkbox" name="keep" value="1" autocomplete="off" data-nodraft> {{ label }}</label>
+<button type="button" class="view quiet" aria-expanded="false" aria-label="View what keeping it means">view</button>
+<div class="peek"><p>Everyone who can use darner-web can read it there, until you delete it or the session is cleared. Leave this unticked for passwords, tokens or anything else secret. Only the first 8 KiB is kept.</p></div></div>
 {%- endmacro %}
