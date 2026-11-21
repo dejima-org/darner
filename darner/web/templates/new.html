@@ -8,7 +8,7 @@
 <label for="task">Task</label>
 <textarea id="task" name="task" rows="4" required aria-describedby="task-note"></textarea>
 {% if catalog.get("keep_input") %}
-{% call keep_box("task-note", "Keep this task on the session's page") %}Unticked, it's given to the agent and not kept, so save it yourself if you'll want it later.{% if drafts %} Until you start it, what you've typed here is kept in this tab.{% endif %}{% endcall %}
+{% call keep_box("task-note", "Keep this task on the session's page") %}Unticked, it isn't kept, so save it yourself if you'll want it later.{% if drafts %} Until you start it, what you've typed here is kept in this tab.{% endif %}{% endcall %}
 {% else %}
 <p class="quiet" id="task-note">The task is given to the agent and not kept, so keep a copy if you'll want it later.{% if drafts %} Until you start it, what you've typed here is kept in this tab.{% endif %}</p>
 {% endif %}
