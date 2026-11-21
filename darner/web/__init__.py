@@ -275,7 +275,14 @@ async def _session_data(request: web.Request, task_id: str) -> dict:
         if e.status != 404:
             raise
         session = None
-    return {"session": session, "events": events}
+    try:
+        kept = await api(request, "GET", f"/v1/tasks/{task_id}/kept")
+    except ApiError as e:
+        # An API older than kept input.
+        if e.status != 404:
+            raise
+        kept = {"keep_input": False, "kept": []}
+    return {"session": session, "events": events, "kept": kept}
 
 
 async def sessions_page(request: web.Request) -> web.Response:
@@ -292,6 +299,10 @@ async def session_page(request: web.Request) -> web.Response:
             return page(request, "gone.html", status=404, task_id=task_id)
         raise
     latest, history = _latest(data["session"], data["events"])
+    # What users kept of what they sent, among the events, newest first. Never the latest.
+    history = sorted(
+        history + [{**k, "type": "kept"} for k in data["kept"]["kept"]], key=lambda e: e.get("created") or 0, reverse=True,
+    )
     # What became of its ~/shared, as its latest ended event says, so the page can say where its files are.
     ended = [e.get("data") or {} for e in data["events"] if e["type"] == "ended" and e.get("data")]
     share = ended and ("kept" if ended[-1].get("share_kept") else "pruned" if ended[-1].get("share_pruned") else None)
@@ -465,10 +476,24 @@ async def _act(request: web.Request, method: str, path: str, location: str | Non
 async def send_message(request: web.Request) -> web.Response:
     """Type a message into the session, which also answers a help request it's waiting on."""
     task_id = request.match_info["id"]
-    text = (await _body(request)).get("text")
+    body = await _body(request)
+    text = body.get("text")
     if not isinstance(text, str) or not text.strip():
         return web.json_response({"error": "Write a message first."}, status=400)
-    return await _act(request, "POST", f"/v1/tasks/{task_id}/message", json={"text": text, "requester": _user(request)})
+    message = {"text": text, "requester": _user(request)}
+    if _keep(body):
+        message["keep"] = True
+    return await _act(request, "POST", f"/v1/tasks/{task_id}/message", json=message)
+
+
+def _keep(body: dict) -> bool:
+    """Whether the form's Keep box was ticked."""
+    return body.get("keep") == ["1"]
+
+
+async def delete_kept(request: web.Request) -> web.Response:
+    task_id, seq = request.match_info["id"], request.match_info["seq"]
+    return await _act(request, "POST", f"/v1/tasks/{task_id}/kept/{seq}/delete", json={"requester": _user(request)})
 
 
 async def check_session(request: web.Request) -> web.Response:
@@ -616,6 +641,8 @@ async def start_task(request: web.Request) -> web.Response:
     if not isinstance(ref, str) or not re.fullmatch(r"[0-9a-f]{32}", ref):
         return web.json_response({"error": "Reload the page and try again."}, status=400)
     request_body = _task_request(request, body, ref)
+    if _keep(body):
+        request_body["keep"] = True
     timeout = aiohttp.ClientTimeout(total=request.app[CONFIG]["launch_timeout"])
     try:
         status, result = await api(request, "POST", "/v1/tasks", with_status=True, json=request_body, timeout=timeout)
@@ -815,6 +842,7 @@ def make_app(config: dict) -> web.Application:
     app.router.add_post(f"/sessions/{TASK_ID}/check", check_session)
     app.router.add_post(f"/sessions/{TASK_ID}/clear", clear_session)
     app.router.add_post(f"/sessions/{TASK_ID}/files", upload_file)
+    app.router.add_post(f"/sessions/{TASK_ID}/kept/{{seq:\\d{{1,9}}}}/delete", delete_kept)
     app.router.add_post(f"/sessions/{TASK_ID}/domains/{{n:\\d{{1,9}}}}/{{verb:allow|deny}}", decide_domains)
     app.router.add_static("/static", HERE / "static")
     return app

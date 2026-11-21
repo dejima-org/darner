@@ -246,6 +246,10 @@ nav .new { padding: 0.5rem 0.9rem; font-size: 0.95rem; }
 .event .body { padding: 1rem 1.1rem 0.4rem; }
 .event .agent { background: var(--bg-well); }
 .event .agent pre, .event pre.agent { padding: 1rem 1.1rem; }
+.event pre.kept { padding: 1rem 1.1rem; margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+/* The user's own text: the accent marks what the agent wrote. */
+.event.kept h2 .by { color: var(--fg-dim); }
+label.keep { display: inline-flex; gap: 0.4rem; align-items: center; margin-top: 0.5rem; }
 .event .agent p:last-child { margin-bottom: 0.6rem; }
 .event .agent pre { background: none; }
 /* A table the agent wrote scrolls on its own rather than widening the page. */

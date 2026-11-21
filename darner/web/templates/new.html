@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "macros.html" import settings %}
+{% from "macros.html" import settings, keep_box %}
 {% block title %}New task · darner{% endblock %}
 {% block main %}
 <h1>New task</h1>
@@ -7,7 +7,11 @@
 <input type="hidden" name="ref" value="{{ ref }}">
 <label for="task">Task</label>
 <textarea id="task" name="task" rows="4" required aria-describedby="task-note"></textarea>
+{% if catalog.get("keep_input") %}
+{% call keep_box("task-note", "Keep this task on the session's page") %}Unticked, it isn't kept, so save it yourself if you'll want it later.{% if drafts %} Until you start it, what you've typed here is kept in this tab.{% endif %}{% endcall %}
+{% else %}
 <p class="quiet" id="task-note">The task is given to the agent and not kept, so keep a copy if you'll want it later.{% if drafts %} Until you start it, what you've typed here is kept in this tab.{% endif %}</p>
+{% endif %}
 <label for="name">Name <span class="quiet">optional: lowercase letters, digits and hyphens, unique among open sessions</span></label>
 <input id="name" name="name" maxlength="35" pattern="(dn-)?[a-z0-9][a-z0-9\-]{0,31}" autocomplete="off" placeholder="its id, such as dn-k3x7q">
 {% if configs %}

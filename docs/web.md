@@ -2,7 +2,7 @@
 
 [← darner README](../README.md)
 
-A browser frontend for darner. It shows its sessions at a glance, each one's events so far, the full text of blurbs and config sets, and the self-test. It starts tasks with [every setting](tasks.md), showing before Start what the task will launch: its config sets combined, its agent settings and where each comes from, the defaults included, and each blurb in full. It can send a session a message or answer its help request, upload a file into its `~/shared/uploads`, allow or deny its domain requests, stop it, and clear it once it has ended. What you send a session isn't kept, by darner-web or the API, so its page doesn't show it. Until it's sent, a task or message you've typed is kept in that browser tab's `sessionStorage`, so reading a blurb or leaving the page doesn't lose it; it's forgotten once sent. Browsers write `sessionStorage` to disk and bring it back with a reopened tab or a restored session, so on a shared computer the next person can see an unsent draft. `drafts = false` in `web.toml` keeps no drafts. It runs as its own container with its own API token.
+A browser frontend for darner. It shows its sessions at a glance, each one's events so far, the full text of blurbs and config sets, and the self-test. It starts tasks with [every setting](tasks.md), showing before Start what the task will launch: its config sets combined, its agent settings and where each comes from, the defaults included, and each blurb in full. It can send a session a message or answer its help request, upload a file into its `~/shared/uploads`, allow or deny its domain requests, stop it, and clear it once it has ended. What you send a session isn't kept, by darner-web or the API, so its page doesn't show it, unless the API has [`keep_input`](#kept-input) on and you tick Keep. Until it's sent, a task or message you've typed is kept in that browser tab's `sessionStorage`, so reading a blurb or leaving the page doesn't lose it; it's forgotten once sent. Browsers write `sessionStorage` to disk and bring it back with a reopened tab or a restored session, so on a shared computer the next person can see an unsent draft. `drafts = false` in `web.toml` keeps no drafts. It runs as its own container with its own API token.
 
 **It has no login of its own.** Like dejima's [remote access](https://gitbox.branderson.io/dejima/dejima/src/branch/main/docs/remote-access.md), whatever proxy you put in front of it is the whole gate. Don't open it to the public internet.
 
@@ -101,7 +101,13 @@ darner-web reads the API's events every 15 seconds for this. Events already ther
 
 ## What it keeps
 
-Nothing. It has no database and writes no files: every page is read from the API when it's asked for, and with notifications on it remembers only the newest event it has seen. The API keeps an ended session's output for this frontend until it's cleared, or for `output_retention` at most, and deletes everything else about a session when it ends.
+Nothing. It has no database and writes no files: every page is read from the API when it's asked for, and with notifications on it remembers only the newest event it has seen. The API keeps an ended session's output for this frontend until it's cleared, or for `output_retention` at most, and deletes everything else about a session when it ends, except [kept input](#kept-input).
+
+## Kept input
+
+With `keep_input = true` in the API's config, the new-task form and a session's message form each have a **Keep a copy here** box, unticked every time a page loads. Tick it and the API keeps the first 8 KiB of the task or message, with who sent it, and the session's history shows it as plain text, marked kept, with a Delete button. It's kept until you delete it or the session is cleared or purged after `output_retention`, so it outlasts the session's end, unlike its prompt.
+
+What's kept is readable by everyone who can use darner-web, which shares one API token, by whoever holds that token, and by anyone who can read the API's database or its backups. So leave Keep unticked for anything secret, such as a token or password. SQLite's `secure_delete` overwrites a deleted row in the database file, but not a backup, the copy SQLite's rollback journal briefly holds, which the filesystem may keep in free space, or space freed before this release; `sqlite3 darner.db VACUUM` with the API stopped rewrites the file. Without `keep_input`, the API refuses to keep anything and the box isn't shown.
 
 ## Setting it up
 

@@ -2116,3 +2116,96 @@ async def test_flags_dejima_dropped_are_reported_once(started, tmp_path, monkeyp
     events = await (await client.get(f"/v1/tasks/{task_id}/events", headers=AUTH)).json()
     assert [e["data"] for e in events if e["type"] == "ignored"] == [{"flags": ["--usage-path-file"]}]
     assert "ran without --usage-path-file" in caplog.text
+
+
+async def test_nothing_sent_is_kept_unless_the_api_keeps_input(started):
+    app, client, task_id, *_ = started
+    resp = await client.post("/v1/tasks", json=request(keep=True, source={"kind": "web", "ref": "1" * 32}), headers=AUTH)
+    assert resp.status == 400 and "keep_input" in (await resp.json())["error"]
+    body = {"text": "the password is hunter2", "requester": "@u:example.org", "keep": True}
+    resp = await client.post(f"/v1/tasks/{task_id}/message", json=body, headers=AUTH)
+    assert resp.status == 400 and "keep_input" in (await resp.json())["error"]
+    assert await (await client.get(f"/v1/tasks/{task_id}/kept", headers=AUTH)).json() == {"keep_input": False, "kept": []}
+
+
+@pytest.fixture
+async def keeping(aiohttp_client, config, tmp_path, monkeypatch):
+    config["keep_input"] = True
+    app = make_app(config, poll=False)
+    client = await aiohttp_client(app)
+    task_id = (await (await client.post("/v1/tasks", json=request(keep=True), headers=AUTH)).json())["id"]
+    return app, client, task_id
+
+
+async def test_kept_input_is_listed_cut_to_its_limit_and_kept_until_the_session_is_cleared(keeping, tmp_path, monkeypatch):
+    app, client, task_id = keeping
+    # Cut at a character boundary: the last é would straddle the limit.
+    long = "x" * (8 * 1024 - 1) + "é"
+    for text, keep in (("Also check the logs.", True), ("not this one", False), (long, True)):
+        body = {"text": text, "requester": "@alice:example.org", **({"keep": True} if keep else {})}
+        assert (await client.post(f"/v1/tasks/{task_id}/message", json=body, headers=AUTH)).status == 204
+    kept = await (await client.get(f"/v1/tasks/{task_id}/kept", headers=AUTH)).json()
+    assert kept["keep_input"] is True
+    assert [(k["kind"], k["requester"], k["text"], k["truncated"]) for k in kept["kept"]] == [
+        ("task", "@u:example.org", "Investigate these logs", False),
+        ("message", "@alice:example.org", "Also check the logs.", False),
+        ("message", "@alice:example.org", "x" * (8 * 1024 - 1), True),
+    ]
+    # Never an event, which other frontends and notifications read.
+    assert all(e["type"] != "kept" for e in await (await client.get("/v1/events", headers=AUTH)).json())
+    # It outlasts the session's end, which deletes the prompt, until the session is cleared.
+    path = tmp_path / "status.json"
+    path.write_text(json.dumps([{"id": task_id, "state": "exited", "ready": False}]))
+    monkeypatch.setenv("STUB_STATUS", str(path))
+    await poll_once(app)
+    assert len((await (await client.get(f"/v1/tasks/{task_id}/kept", headers=AUTH)).json())["kept"]) == 3
+    assert (await client.post(f"/v1/tasks/{task_id}/clear", json={"requester": "@a:example.org"}, headers=AUTH)).status == 204
+    assert app[STORE].db.execute("SELECT count(*) FROM kept").fetchone() == (0,)
+
+
+async def test_kept_input_can_be_deleted_by_its_frontend_alone(keeping, config):
+    app, client, task_id = keeping
+    [kept] = (await (await client.get(f"/v1/tasks/{task_id}/kept", headers=AUTH)).json())["kept"]
+    config["tokens"]["other"] = "0ther-0123456789abcdef0123456789abcdef"
+    other = {"Authorization": "Bearer 0ther-0123456789abcdef0123456789abcdef"}
+    assert (await client.get(f"/v1/tasks/{task_id}/kept", headers=other)).status == 404
+    delete = f"/v1/tasks/{task_id}/kept/{kept['seq']}/delete"
+    assert (await client.post(delete, json={"requester": "@b:example.org"}, headers=other)).status == 404
+    assert (await client.post(delete, json={}, headers=AUTH)).status == 400
+    assert (await client.post(delete, json={"requester": "@a:example.org"}, headers=AUTH)).status == 204
+    assert (await (await client.get(f"/v1/tasks/{task_id}/kept", headers=AUTH)).json())["kept"] == []
+    assert (await client.post(delete, json={"requester": "@a:example.org"}, headers=AUTH)).status == 404
+
+
+@pytest.mark.parametrize("keep", ["yes", 1, None])
+async def test_keep_must_be_true_or_false(keeping, keep):
+    app, client, task_id = keeping
+    body = {"text": "hi", "requester": "@a:example.org", "keep": keep}
+    assert (await client.post(f"/v1/tasks/{task_id}/message", json=body, headers=AUTH)).status == 400
+
+
+async def test_keep_input_must_be_a_boolean(config):
+    config["keep_input"] = "false"
+    with pytest.raises(ValueError, match="keep_input must be true or false"):
+        make_app(config, poll=False)
+
+
+async def test_the_catalog_says_whether_the_api_keeps_input(keeping):
+    app, client, _ = keeping
+    assert (await (await client.get("/v1/catalog", headers=AUTH)).json())["keep_input"] is True
+
+
+def test_deleted_rows_are_overwritten(tmp_path):
+    assert Store(str(tmp_path / "db")).db.execute("PRAGMA secure_delete").fetchone() == (1,)
+
+
+def test_a_session_deleted_meanwhile_keeps_nothing_for_a_task_later_given_its_id(tmp_path):
+    store = Store(str(tmp_path / "db"))
+    source = {"kind": "web", "ref": "1" * 32}
+    store.claim("dn-abc23", "web", source, "@a:example.org", "{}")
+    store.delete("dn-abc23")
+    assert not store.keep("web", "dn-abc23", "message", "@a:example.org", "secret", False)
+    store.claim("dn-abc23", "maubot", {**source, "kind": "matrix"}, "@b:example.org", "{}")
+    assert store.kept("maubot", "dn-abc23") == []
+    # Nor for another client's session.
+    assert not store.keep("web", "dn-abc23", "message", "@a:example.org", "secret", False)

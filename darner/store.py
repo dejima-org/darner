@@ -36,6 +36,15 @@ CREATE TABLE IF NOT EXISTS events (
     acked INTEGER NOT NULL DEFAULT 0,
     created REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS kept (
+    seq INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id TEXT NOT NULL REFERENCES tasks(id),
+    kind TEXT NOT NULL,
+    requester TEXT NOT NULL,
+    text TEXT NOT NULL,
+    truncated INTEGER NOT NULL DEFAULT 0,
+    created REAL NOT NULL
+);
 """
 
 
@@ -77,6 +86,9 @@ class NameTaken(Exception):
 class Store:
     def __init__(self, path: str):
         self.db = sqlite3.connect(path, isolation_level=None)
+        # Deleted rows are overwritten, not left in free pages: kept input and
+        # prompts can hold secrets, and deleting them should remove them.
+        self.db.execute("PRAGMA secure_delete = ON")
         self.db.executescript(SCHEMA)
         # Columns added since the first release, for databases created before them.
         for table, column, definition in (
@@ -156,7 +168,36 @@ class Store:
         with self.db:
             self.db.execute("BEGIN IMMEDIATE")
             self.db.execute("DELETE FROM events WHERE task_id = ?", (task_id,))
+            self.db.execute("DELETE FROM kept WHERE task_id = ?", (task_id,))
             self.db.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
+
+    def keep(self, client: str, task_id: str, kind: str, requester: str, text: str, truncated: bool) -> bool:
+        """Keep what a user sent, as they asked, until it or the session is deleted. Whether
+        the client's session is still there to keep it: one cleared meanwhile keeps nothing,
+        or a later task given its id could read it."""
+        return self.db.execute(
+            "INSERT INTO kept (task_id, kind, requester, text, truncated, created)"
+            " SELECT ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM tasks WHERE id = ? AND client = ?)",
+            (task_id, kind, requester, text, int(truncated), time.time(), task_id, client),
+        ).rowcount > 0
+
+    def kept(self, client: str, task_id: str) -> list[dict]:
+        rows = self.db.execute(
+            "SELECT k.seq, k.kind, k.requester, k.text, k.truncated, k.created FROM kept k JOIN tasks t ON t.id = k.task_id"
+            " WHERE t.client = ? AND k.task_id = ? ORDER BY k.seq",
+            (client, task_id),
+        )
+        return [
+            {"seq": seq, "kind": kind, "requester": requester, "text": text, "truncated": bool(truncated), "created": created}
+            for seq, kind, requester, text, truncated, created in rows
+        ]
+
+    def forget_kept(self, client: str, task_id: str, seq: int) -> bool:
+        """Delete one kept input. Whether the client's session had it."""
+        return self.db.execute(
+            "DELETE FROM kept WHERE seq = ? AND task_id = ? AND task_id IN (SELECT id FROM tasks WHERE client = ?)",
+            (seq, task_id, client),
+        ).rowcount > 0
 
     def last_stored_zip(self, task_id: str) -> str | None:
         """The sent hash of the task's latest output's zip, if it was stored rather than rejected."""
