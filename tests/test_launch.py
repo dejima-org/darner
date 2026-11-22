@@ -2069,6 +2069,8 @@ def test_usage_rechecks_every_count_and_model(metered):
         '{"model": "m", "input": -5, "output": 1.5, "cache_read": "7", "cache_write": 1000000000000, "status": 200}\n'
         '{"model": "m", "output": true}\n'
         'not json\n[1, 2]\n'
+        # Too deeply nested to parse is skipped like any other bad line.
+        + "[" * 100000 + "\n"
     )
     assert session_usage(task) == [
         {"model": "m", "requests": 2, "metered": 0},
@@ -2116,7 +2118,7 @@ def test_status_reports_usage_and_forget_has_dejima_usage_delete_it(metered, env
     assert (log.read_text() if log.exists() else "") == ("" if keep_records else "--forget 0123456789abcdef\n")
 
 
-def test_a_failed_usage_read_keeps_the_last_totals_and_status_working(metered, env, monkeypatch):
+def test_a_failed_usage_read_keeps_the_last_totals_and_status_working(metered, env, monkeypatch, capsys):
     task, record = metered
     record.write_text('{"model": "m", "input": 4}\n')
     first = session_usage(task)
@@ -2130,6 +2132,7 @@ def test_a_failed_usage_read_keeps_the_last_totals_and_status_working(metered, e
     assert session_usage(task) == first
     [entry] = status(args(env))
     assert entry["usage"] == first
+    assert "couldn't read dn-abc23's usage (OSError)" in capsys.readouterr().err
 
 
 def test_usage_is_read_on_from_where_it_stopped(metered):

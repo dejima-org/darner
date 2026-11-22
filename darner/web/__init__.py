@@ -141,6 +141,8 @@ def check_config(config: dict) -> dict:
         raise ValueError("ntfy_token must be an ntfy access token, such as tk_ followed by letters and digits")
     if full["ntfy_token"] and not full["ntfy_url"]:
         raise ValueError("ntfy_token is set without ntfy_url")
+    if full["ntfy_token"] and not full["ntfy_url"].startswith("https://"):
+        raise ValueError("ntfy_token needs an https:// ntfy_url, so the token isn't sent in the clear")
     if full["user_header"] is not None and not (isinstance(full["user_header"], str) and full["user_header"].strip()):
         raise ValueError("user_header must be a header name, such as X-authentik-username")
     return full

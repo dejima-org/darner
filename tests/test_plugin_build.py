@@ -9,6 +9,8 @@ import sys
 import zipfile
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parent.parent
 # Where a link would be rewritten on the way to the mirror, so the mirrored source would build other bytes.
 FORGE = "gitbox.branderson.io/dejima/"
@@ -69,3 +71,12 @@ def test_a_pre_release_version_is_given_in_the_archive_only(tmp_path):
 def test_no_packaged_file_carries_a_forge_link(tmp_path):
     with zipfile.ZipFile(build(copy(tmp_path))) as z:
         assert [n for n in z.namelist() if FORGE.encode() in z.read(n)] == []
+
+
+def test_a_symlinked_member_is_refused(tmp_path):
+    tree = copy(tmp_path / "tree")
+    (tmp_path / "elsewhere.py").write_text("not the plugin's")
+    (tree / "plugin" / "dragonlet" / "x.py").symlink_to(tmp_path / "elsewhere.py")
+    with pytest.raises(subprocess.CalledProcessError) as e:
+        build(tree)
+    assert "symlink" in e.value.stderr

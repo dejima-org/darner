@@ -482,8 +482,10 @@ def session_usage(task_dir: Path) -> list[dict] | None:
     try:
         with _domains_lock(task_dir, "usage.lock"):
             return _read_usage(task_dir, path)
-    except OSError:
+    except Exception as e:
         # One task's failure mustn't fail status for every task: its last totals stand.
+        # The API's poll logs a successful status's stderr, so the failure is still seen.
+        print(f"darner-launch: couldn't read {task_dir.name}'s usage ({type(e).__name__})", file=sys.stderr)
         return _saved_usage(task_dir)
 
 
@@ -538,7 +540,7 @@ def _usage_sum(task_dir: Path, st: os.stat_result) -> dict:
 def _add_usage(totals: dict, line: bytes) -> None:
     try:
         entry = json.loads(line)
-    except ValueError:
+    except (ValueError, RecursionError):
         return
     if not isinstance(entry, dict):
         return
