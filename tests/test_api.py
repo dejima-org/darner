@@ -22,6 +22,7 @@ if command == ["status"]:
     if os.environ.get("STUB_STATUS_COUNT"):
         open(os.environ["STUB_STATUS_COUNT"], "a").write("status\\n")
     sys.stdout.write(open(os.environ["STUB_STATUS"]).read())
+    sys.stderr.write(os.environ.get("STUB_STATUS_STDERR", ""))
 elif command[:1] == ["catalog"]:
     open(os.environ["STUB_LOG"], "a").write(json.dumps(command) + "\\n")
     sys.stdout.write(os.environ["STUB_CATALOG"])
@@ -665,6 +666,17 @@ async def test_share_error_is_logged_once(started, tmp_path, monkeypatch, caplog
         await poll_once(app)
     warnings = [r.getMessage() for r in caplog.records if "can't read" in r.getMessage()]
     assert warnings == [f"can't read {task_id}'s ~/shared, so its output can't be collected: shared path '/x' is not under /y"]
+
+
+async def test_a_successful_status_s_stderr_is_logged(started, tmp_path, monkeypatch, caplog):
+    app, client, task_id, *_ = started
+    path = tmp_path / "status.json"
+    path.write_text(json.dumps([{"id": task_id, "state": "running", "ready": False}]))
+    monkeypatch.setenv("STUB_STATUS", str(path))
+    monkeypatch.setenv("STUB_STATUS_STDERR", f"darner-launch: couldn't read {task_id}'s usage (OSError)\n")
+    with caplog.at_level("WARNING", logger="darner.api"):
+        await poll_once(app)
+    assert f"status: couldn't read {task_id}'s usage (OSError)" in caplog.text
 
 
 async def test_stop_reaches_launcher(started, tmp_path):

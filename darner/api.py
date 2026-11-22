@@ -703,6 +703,8 @@ async def poll_once(app: web.Application) -> None:
     if code:
         log.warning("status failed: %s", err or f"exit {code}")
         return
+    if err:
+        log.warning("status: %s", err)
     listed = json.loads(out)
     app[FORGOTTEN].update(ended - {task["id"] for task in listed})
     # A task the launcher no longer lists can never report ending, such as one
