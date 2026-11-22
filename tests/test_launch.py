@@ -2069,6 +2069,8 @@ def test_usage_rechecks_every_count_and_model(metered):
         '{"model": "m", "input": -5, "output": 1.5, "cache_read": "7", "cache_write": 1000000000000, "status": 200}\n'
         '{"model": "m", "output": true}\n'
         'not json\n[1, 2]\n'
+        # Too deeply nested to parse is skipped like any other bad line.
+        + "[" * 100000 + "\n"
     )
     assert session_usage(task) == [
         {"model": "m", "requests": 2, "metered": 0},

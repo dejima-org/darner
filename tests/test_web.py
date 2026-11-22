@@ -11,6 +11,7 @@ from aiohttp import web
 
 from darner.archive import clean_text
 from darner.selftest import PAYLOAD
+import darner.web
 from darner.web import HEADERS, check_config, make_app
 from darner.web.render import render
 
@@ -587,6 +588,7 @@ def test_agent_markdown_rules(markdown, html):
     ({"ntfy_url": "https://ntfy.example.com/darner", "ntfy_token": "tk_x\r\nX-Actions: x"}, "ntfy_token"),
     ({"ntfy_url": "https://ntfy.example.com/darner", "ntfy_token": "tk x"}, "ntfy_token"),
     ({"ntfy_token": "tk_secret"}, "ntfy_token is set without ntfy_url"),
+    ({"ntfy_url": "http://ntfy.example.com/darner", "ntfy_token": "tk_secret"}, "https://"),
 ])
 def test_a_config_that_wouldn_t_work_is_refused(change, message):
     config = {"api_url": "http://127.0.0.1:8080", "api_token": TOKEN, "public_origin": ORIGIN, **change}
@@ -979,7 +981,10 @@ async def test_new_output_help_and_domain_requests_are_pushed_to_ntfy_in_darner_
     ntfy.router.add_post("/darner", topic)
     server = await aiohttp_server(ntfy)
     monkeypatch.setattr("darner.web.NTFY_POLL", 0.05)
-    await aiohttp_client(make_app(config_for(fake, ntfy_url=str(server.make_url("/darner")), ntfy_token="tk_secret")))
+    app = make_app(config_for(fake, ntfy_url="https://ntfy.example.com/darner", ntfy_token="tk_secret"))
+    # A token is refused over http://, so this plain-HTTP topic goes in after the check.
+    app[darner.web.CONFIG]["ntfy_url"] = str(server.make_url("/darner"))
+    await aiohttp_client(app)
     await asyncio.sleep(0.2)
     # What was there when it started isn't news.
     assert pushed == []

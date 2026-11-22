@@ -28,6 +28,10 @@ def members() -> list[tuple[str, Path | None]]:
     # Modules only, so a stray file in a working tree, such as an editor's backup, isn't packaged.
     for path in (PLUGIN / "dragonlet").rglob("*.py"):
         found.append((path.relative_to(PLUGIN).as_posix(), path))
+    for _, path in found:
+        # A symlinked member would package whatever it points to, and still rebuild the same.
+        if path is not None and path.resolve() != path:
+            raise SystemExit(f"{path} is or is under a symlink")
     return sorted(found)
 
 

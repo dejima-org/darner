@@ -84,7 +84,7 @@ With `ntfy_url` set in `web.toml`, darner-web pushes to that [ntfy](https://ntfy
 
 The topic is darner-web's, separate from the one dejima's remote access pushes to. Someone with access to darner but not to dejima's terminals can subscribe to darner-web's alone, and someone with both can subscribe to either or both. Everyone subscribed gets every push for every session darner-web started, so scope who can read the topic as you scope who gets past the proxy.
 
-On a self-hosted ntfy with access control, give darner-web an account that isn't an admin and a token that can only write to its topic, and put the token in `ntfy_token`:
+On a self-hosted ntfy with access control, give darner-web an account that isn't an admin and a token that can only write to its topic, and put the token in `ntfy_token`. darner-web refuses a token with an `http://` `ntfy_url`, which would send it in the clear:
 
 ```sh
 ntfy user add darner-web
@@ -105,9 +105,9 @@ Nothing. It has no database and writes no files: every page is read from the API
 
 ## Kept input
 
-With `keep_input = true` in the API's config, the new-task form and a session's message form each have a box to keep the task or message on the session's page, unticked every time a page loads. Tick it and the API keeps the first 8 KiB of the task or message, with who sent it, and the session's history shows it as plain text, marked kept, with a Delete button. It's kept until you delete it or the session is cleared or purged after `output_retention`, so it outlasts the session's end, unlike its prompt.
+With `keep_input = true` in the API's config, the new-task form and a session's message form each have a box to keep the task or message on the session's page, unticked every time a page loads. Tick it and the API keeps the first 8 KiB of the task or message, with who sent it, and the session's history shows it as plain text, marked kept, with a Delete button. It's kept until you delete it or the session is cleared or purged after `output_retention`, so unless that's 0 it outlasts the session's end, unlike its prompt.
 
-What's kept is readable by everyone who can use darner-web, which shares one API token, by whoever holds that token, and by anyone who can read the API's database or its backups. So leave Keep unticked for anything secret, such as a token or password. SQLite's `secure_delete` overwrites a deleted row in the database file, but not a backup, the copy SQLite's rollback journal briefly holds, which the filesystem may keep in free space, or space freed before this release; `sqlite3 darner.db VACUUM` with the API stopped rewrites the file. Without `keep_input`, the API refuses to keep anything and the box isn't shown.
+What's kept can be read and deleted by everyone who can use darner-web, which shares one API token, and by whoever holds that token. Anyone who can read the API's database or its backups can read it too. So leave Keep unticked for anything secret, such as a token or password. SQLite's `secure_delete` overwrites a deleted row in the database file, but not a backup, the copy SQLite's rollback journal briefly holds, which the filesystem may keep in free space, or space freed before this release; `sqlite3 darner.db VACUUM` with the API stopped rewrites the file. Without `keep_input`, the API refuses to keep anything and the box isn't shown.
 
 ## Setting it up
 

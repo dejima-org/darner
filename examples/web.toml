@@ -41,5 +41,5 @@ public_origin = "https://darner.example.com"
 # ntfy_url = "https://ntfy.example.com/darner"
 
 # A token that can only write to that topic, sent as a Bearer header. Never put
-# it in ntfy_url, which is refused with a credential in it.
+# it in ntfy_url, which is refused with a credential in it, and ntfy_url must be https://.
 # ntfy_token = "tk_replace-with-a-write-only-token"
