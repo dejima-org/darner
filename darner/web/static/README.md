@@ -1,6 +1,6 @@
 # static
 
-`darner-wordmark-darkmode.png` is a copy of `assets/`'s, and `favicon.png` is darner's. Like those in `assets/`, **they are trademarks and are not covered by this repository's GPL licence**; see `assets/README.md`.
+`darner-wordmark-darkmode.png` is a copy of `assets/`'s, `dejima-wordmark-darkmode.png` is dejima's, shown with `wordmark = "dejima"` in `web.toml`, and `favicon.png` is darner's. Like those in `assets/`, **they are trademarks and are not covered by this repository's GPL licence**; see `assets/README.md`.
 
 The fonts in `fonts/` are Jost, IBM Plex Serif and JetBrains Mono, each under the SIL Open Font License with its licence beside it. They're the files from the npm packages `@fontsource/jost`, `@fontsource/ibm-plex-serif` and `@fontsource/jetbrains-mono`, version 5.3.0.
 
