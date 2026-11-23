@@ -8,25 +8,26 @@
 {% macro flags(e) -%}
 {% for f in e.data.flags %}<code class="flag">{{ f }}</code>{{ ", " if not loop.last }}{% endfor %}
 {%- endmacro %}
-{% macro heading(e) -%}
+{% macro ago(t) %}<span class="when" data-at="{{ t }}">{{ t | age }} ago</span>{% endmacro %}
+{% macro heading(e, tail="") -%}
 {% if e.type == "output" %}
-<h2>Output{% if e.signalled == false %}, collected without the agent's done signal{% endif %}{{ used(e) }} <span class="by">the agent's</span></h2>
+<h2>Output{% if e.signalled == false %}, collected without the agent's done signal{% endif %}{{ used(e) }} <span class="by">the agent's</span>{{ tail }}</h2>
 {% elif e.type == "help" %}
-<h2>Help request{{ used(e) }} <span class="by">the agent's</span></h2>
+<h2>Help request{{ used(e) }} <span class="by">the agent's</span>{{ tail }}</h2>
 {% elif e.type == "waiting" %}
-<h2>Seems to be waiting: its screen hasn't changed for {{ e.data.quiet // 60 }}m{{ used(e) }}{% if e.summary %} <span class="by">the end of its screen, the agent's</span>{% endif %}</h2>
+<h2>Seems to be waiting: its screen hasn't changed for {{ e.data.quiet // 60 }}m{{ used(e) }}{% if e.summary %} <span class="by">the end of its screen, the agent's</span>{% endif %}{{ tail }}</h2>
 {% elif e.type == "domains" %}
-<h2>Asks to reach these domains</h2>
+<h2>Asks to reach these domains{{ tail }}</h2>
 {% elif e.type == "expired" %}
-<h2>Stopped after running for {{ e.data.age // 3600 }}h, longer than sessions may run</h2>
+<h2>Stopped after running for {{ e.data.age // 3600 }}h, longer than sessions may run{{ tail }}</h2>
 {% elif e.type == "ignored" %}
-<h2>Started without {{ flags(e) }}</h2>
+<h2>Started without {{ flags(e) }}{{ tail }}</h2>
 {% elif e.type == "kept" %}
-<h2>{{ {"task": "Task", "message": "Message", "answer": "Answer"}.get(e.kind, "Sent") }} from {{ e.requester }}{% if e.truncated %}, its first 8 KiB{% endif %} <span class="by">kept</span></h2>
+<h2>{{ {"task": "Task", "message": "Message", "answer": "Answer"}.get(e.kind, "Sent") }} from {{ e.requester }}{% if e.truncated %}, its first 8 KiB{% endif %} <span class="by">kept</span>{{ tail }}</h2>
 {% elif e.type == "ended" %}
-<h2>Ended{% if e.summary %}: {{ e.summary }}{% endif %}{{ used(e) }}</h2>
+<h2>Ended{% if e.summary %}: {{ e.summary }}{% endif %}{{ used(e) }}{{ tail }}</h2>
 {% else %}
-<h2>{{ e.type }}</h2>
+<h2>{{ e.type }}{{ tail }}</h2>
 {% endif %}
 {%- endmacro %}
 {% macro body(e) -%}
@@ -62,16 +63,17 @@
 {% block main %}
 <h1 class="id">{{ title }}</h1>
 {% if session %}
-<p class="summary">{% if session.name %}<span class="id">{{ task_id }}</span>. {% endif %}Started by <strong>{{ session.requester }}</strong>, {{ session.started | age }} ago. <span class="state {{ session.state }}">{{ session.state }}</span>
+<p class="summary">{% if session.name %}<span class="id">{{ task_id }}</span>. {% endif %}Started by <strong>{{ session.requester }}</strong>, <span data-at="{{ session.started }}">{{ session.started | age }} ago</span>. <span class="state {{ session.state }}">{{ session.state }}</span>
 {% if session.link %} · <a href="{{ session.link }}" rel="noopener noreferrer">Open it in remote access</a>{% endif %}
-{% set u = session.get("usage") %}{% if u is not none %}<br><span class="tokens" title="{{ u | tokens_by_model }}">Used so far: {{ u | tokens or "nothing yet" }}.</span>{% elif session.state != "starting" %}<br><span class="tokens">Token usage isn't metered for this session.</span>{% endif %}</p>
+{% set u = session.get("usage") %}{% if u is not none %}<br><span class="tokens">Used so far: <span data-live="usage:{{ session.id }}" data-empty="nothing yet" title="{{ u | tokens_by_model }}">{{ u | tokens or "nothing yet" }}</span>.</span>{% elif session.state != "starting" %}<br><span class="tokens">Token usage isn't metered for this session.</span>{% endif %}</p>
 {% else %}
 <p class="summary">Ended. Its output is kept here until it's cleared.{% if share == "pruned" %} Its ~/shared on the dejima host was removed, since everything in it is in the zip.{% elif share == "kept" %} Its ~/shared is kept on the dejima host too, since it holds files the zip doesn't.{% endif %}{% if total and total | tokens %} <span class="tokens" title="{{ total | tokens_by_model }}">It used {{ total | tokens }}.</span>{% endif %}</p>
 {% endif %}
 <p class="untrusted">Everything marked as the agent's was written by the agent. Treat it as untrusted.</p>
-<section class="latest" aria-label="Latest">
+<section class="latest" aria-label="Latest"{% if latest %} data-seq="{{ latest.seq }}"{% endif %}>
 {% if latest %}
-<div class="event {{ latest.type }}">{{ heading(latest) }}{{ body(latest) }}</div>
+{% set tail %}<span class="stamp"><span class="label new" hidden>new</span>{% if latest.get("created") %} {{ ago(latest.created) }}{% endif %}</span>{% endset %}
+<div class="event {{ latest.type }}">{{ heading(latest, tail) }}{{ body(latest) }}</div>
 {% else %}
 <p class="quiet">Nothing yet.</p>
 {% endif %}
@@ -129,7 +131,7 @@
 <div class="history-head"><h2>History</h2><button type="button" class="quiet" data-expand="#history">Expand all</button></div>
 <ol class="timeline" id="history">
 {% for e in history %}
-<li><details class="event {{ e.type }}" data-seq="{{ "kept-" if e.type == "kept" }}{{ e.seq }}"><summary>{{ heading(e) }}{% if e.get("created") %}<span class="when">{{ e.created | age }} ago</span>{% endif %}</summary>{{ body(e) }}</details></li>
+<li><details class="event {{ e.type }}" data-seq="{{ "kept-" if e.type == "kept" }}{{ e.seq }}"><summary>{{ heading(e) }}{% if e.get("created") %}{{ ago(e.created) }}{% endif %}</summary>{{ body(e) }}</details></li>
 {% endfor %}
 </ol>
 </section>

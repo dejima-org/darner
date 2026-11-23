@@ -23,7 +23,7 @@
   --fg: var(--gb-fg1);
   --fg-dim: var(--gb-fg4);
   --fg-faint: var(--gb-gray);
-  /* One accent, the wordmark's orange, for anything you can act on. Aqua means
+  /* One accent, the wordmark's orange, for anything you can act on or haven't seen yet. Aqua means
      kept or allowed, red means refused or ended by force, yellow means waiting
      on someone; none of them is decoration. */
   --accent: var(--gb-orange);
@@ -204,6 +204,13 @@ nav .new { padding: 0.5rem 0.9rem; font-size: 0.95rem; }
 .panel > .row:first-child { margin-top: 0; }
 
 .latest { margin: 1.5rem 0; }
+.latest .stamp { margin-left: auto; white-space: nowrap; }
+.latest .by + .stamp { margin-left: 0; }
+/* The latest event arrived while the page was open. */
+.latest.fresh .event { border-color: var(--accent); animation: arrived 1.2s ease-out; }
+.latest .label.new { color: var(--accent); border-color: var(--accent); }
+@keyframes arrived { from { box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 45%, transparent); } }
+@media (prefers-reduced-motion: reduce) { .latest.fresh .event { animation: none; } }
 .started { margin: 1.5rem 0; }
 .started h2 { margin: 0 0 0.75rem; font-size: 1.05rem; }
 .started dl, .preview dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 0.35rem 1.25rem; margin: 0; }
