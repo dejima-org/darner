@@ -979,7 +979,7 @@ async def test_the_latest_event_says_how_long_ago_it_came_as_the_history_does(cl
     latest = html.split('<section class="latest"', 1)[1].split("</section>", 1)[0]
     # The help request it's waiting on leads the page.
     assert latest.startswith(' aria-label="Latest" data-seq="2">')
-    assert '<span class="stamp"><span class="label new" hidden>new</span> <span class="when" data-at="880">2m ago</span></span></h2>' in latest
+    assert '<span class="stamp"><span class="label new">new</span> <span class="when" data-at="880">2m ago</span></span></h2>' in latest
     assert '<span class="when" data-at="760">4m ago</span>' in html.split('<section class="history">', 1)[1]
     assert '<body data-now="1000"' in html
 

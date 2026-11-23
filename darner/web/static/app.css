@@ -208,7 +208,8 @@ nav .new { padding: 0.5rem 0.9rem; font-size: 0.95rem; }
 .latest .by + .stamp { margin-left: 0; }
 /* The latest event arrived while the page was open. */
 .latest.fresh .event { border-color: var(--accent); animation: arrived 1.2s ease-out; }
-.latest .label.new { color: var(--accent); border-color: var(--accent); }
+.latest .label.new { display: none; color: var(--accent); border-color: var(--accent); }
+.latest.fresh .label.new { display: inline-block; }
 @keyframes arrived { from { box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 45%, transparent); } }
 @media (prefers-reduced-motion: reduce) { .latest.fresh .event { animation: none; } }
 .started { margin: 1.5rem 0; }

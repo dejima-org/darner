@@ -26,7 +26,7 @@ await page.goto(url, { waitUntil: "networkidle" });
 const seen = () => page.evaluate(() => {
   const latest = document.querySelector(".latest");
   return {
-    seq: latest.dataset.seq, fresh: latest.classList.contains("fresh"), new: !latest.querySelector(".new").hidden,
+    seq: latest.dataset.seq, fresh: latest.classList.contains("fresh"), new: getComputedStyle(latest.querySelector(".new")).display !== "none",
     when: latest.querySelector(".when").textContent, used: document.querySelector("[data-live]").textContent,
     same_page: window.__same === true,
   };

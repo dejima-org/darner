@@ -72,7 +72,7 @@
 <p class="untrusted">Everything marked as the agent's was written by the agent. Treat it as untrusted.</p>
 <section class="latest" aria-label="Latest"{% if latest %} data-seq="{{ latest.seq }}"{% endif %}>
 {% if latest %}
-{% set tail %}<span class="stamp"><span class="label new" hidden>new</span>{% if latest.get("created") %} {{ ago(latest.created) }}{% endif %}</span>{% endset %}
+{% set tail %}<span class="stamp"><span class="label new">new</span>{% if latest.get("created") %} {{ ago(latest.created) }}{% endif %}</span>{% endset %}
 <div class="event {{ latest.type }}">{{ heading(latest, tail) }}{{ body(latest) }}</div>
 {% else %}
 <p class="quiet">Nothing yet.</p>

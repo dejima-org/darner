@@ -113,7 +113,6 @@ try {
     const fresh = Boolean(stayed && before && ((stayed.news && seq > before.seq) || (seq === before.seq && before.fresh)));
     sessionStorage.setItem(key, JSON.stringify({ seq, fresh }));
     latest.classList.toggle("fresh", fresh);
-    latest.querySelector(".new").hidden = !fresh;
   }
 } catch {
   // Without storage, nothing is marked new.
