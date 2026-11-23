@@ -37,7 +37,10 @@ esac
 FAKE_DEJIMA = """#!/usr/bin/env python3
 import json, os, sys
 if sys.argv[-1] == "--print-config":
-    sys.exit(sys.stdout.write(os.environ.get("FAKE_DEJIMA_CONFIG", "")) and 0)
+    # As dejima does, the section of the harness --harness names, if one is set for it.
+    asked = sys.argv[sys.argv.index("--harness") + 1] if "--harness" in sys.argv else None
+    config = os.environ.get(f"FAKE_DEJIMA_CONFIG_{asked}", os.environ.get("FAKE_DEJIMA_CONFIG", ""))
+    sys.exit(1 if config == "fail" else sys.stdout.write(config) and 0)
 if sys.argv[-1] == "--help-full":
     sys.exit(sys.stdout.write(os.environ.get("FAKE_DEJIMA_HELP", "")) and 0)
 open(os.environ["FAKE_DEJIMA_LOG"], "w").write(json.dumps(sys.argv[1:]))
@@ -1505,6 +1508,26 @@ END
     # Only the settings a task can override, never the rest of the config, which holds host paths.
     assert catalog["defaults"] == {"cline": {"backend": "self-hosted", "model": "llama3:8b", "context_window": 120000}}
     assert (env / "print-config-args").read_text().split() == ["--identity", "darner", "--print-config"]
+
+
+def test_each_harness_s_defaults_are_dejima_s_for_that_harness(env, monkeypatch):
+    # dejima prints only the section of the harness it would run.
+    monkeypatch.setenv("FAKE_DEJIMA_CONFIG", "core.harness=claude-code\nharness.claude-code.model=claude-opus-5-5\n")
+    monkeypatch.setenv("FAKE_DEJIMA_CONFIG_cline", "core.harness=cline\nharness.cline.backend=self-hosted\nharness.cline.model=qwen3.5-4b\n")
+    code, out, _ = run(args(env), "--dejima", str(env / "bin" / "dejima"), "catalog")
+    catalog = json.loads(out)
+    assert catalog["default_harness"] == "claude-code"
+    assert catalog["defaults"] == {"claude-code": {"model": "claude-opus-5-5"}, "cline": {"backend": "self-hosted", "model": "qwen3.5-4b"}}
+    launch(args(env), {"id": "dn-abc23", "prompt": "p", "harness": "cline"})
+    [task] = status(args(env))
+    assert task["ran_with"] == {
+        "harness": {"value": "cline", "from": "task"}, "backend": {"value": "self-hosted", "from": "dejima"},
+        "model": {"value": "qwen3.5-4b", "from": "dejima"},
+    }
+    # A harness whose settings dejima couldn't print has them unknown, not unset.
+    monkeypatch.setenv("FAKE_DEJIMA_CONFIG_cline", "fail")
+    launch(args(env), {"id": "dn-def45", "prompt": "p", "harness": "cline"})
+    assert next(t for t in status(args(env)) if t["id"] == "dn-def45")["ran_with"] == {}
 
 
 def test_catalog_still_answers_when_dejima_can_t_print_its_config(env):
