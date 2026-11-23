@@ -1,6 +1,6 @@
 # assets
 
-The dejima wordmark, in the two versions the README needs: `-darkmode` for a
+The darner wordmark, in the two versions the README needs: `-darkmode` for a
 page that renders dark, `-lightmode` for one that renders light. The suffix
 names the mode a file is for, not the colour of its ink, so `-darkmode` is the
 pale one.
@@ -18,4 +18,6 @@ https://gitbox.branderson.io/dejima/dejima/src/branch/main/ATTRIBUTION.md
 The link is absolute so that a fork resolves it to the canonical terms rather
 than to its own copy.
 
-darner's own logo, by the same artist, is still to come. It will live here too, with its terms stated beside it.
+`dejima-badge.svg` is dejima's, for the README's "Developed in dejima" badge.
+
+darner's marks are human-made, by the same artist as dejima's.

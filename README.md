@@ -7,7 +7,7 @@
      -darkmode is the pale wordmark that belongs on a dark page. GitHub does
      follow its own theme setting through <picture>, so the GitHub mirror
      replaces the tag below with one that falls back to
-     dejima-wordmark-lightmode.png; see dejima's mirror/github-mirror.sh.
+     darner-wordmark-lightmode.png; see dejima's mirror/github-mirror.sh.
      Every &nbsp; here is spacing, and it has to be a character rather than CSS
      or a presentation attribute. Gitea's sanitizer strips `style` from the tag
      and from any wrapper, `hspace`/`vspace` survive sanitizing only to be
@@ -18,14 +18,11 @@
      inline and indents the image by one space. -->
 &nbsp;
 
-&nbsp;<img src="assets/dejima-wordmark-darkmode.png" alt="dejima" height="72">
+&nbsp;<img src="assets/darner-wordmark-darkmode.png" alt="darner" height="72">
 
 ---
 
 &nbsp;
-
-<!-- darner's own logo goes here, from assets/, once it's drawn: see assets/README.md. -->
-# darner
 
 **Send a task from a chat room or a browser. darner runs it in a dejima sandbox and brings the work back.**
 
@@ -114,4 +111,4 @@ darner-web takes the same settings as a form, and shows what will launch before 
 
 GPL-3.0-or-later. See [LICENSE](LICENSE).
 
-The dejima wordmark and logo are not code and are not covered by that licence. They are trademarks; who holds them and what may be done with them is stated once for the organisation, at [dejima's ATTRIBUTION.md](https://gitbox.branderson.io/dejima/dejima/src/branch/main/ATTRIBUTION.md).
+The darner and dejima wordmarks and logos are not code and are not covered by that licence. They are trademarks; who holds them and what may be done with them is stated once for the organisation, at [dejima's ATTRIBUTION.md](https://gitbox.branderson.io/dejima/dejima/src/branch/main/ATTRIBUTION.md).
