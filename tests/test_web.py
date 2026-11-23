@@ -393,6 +393,14 @@ async def test_a_message_draft_is_kept_for_one_session_only(client):
     assert re.search(r'data-draft="message:dn-aaaaa:\d+(\.\d+)?"', html)
 
 
+async def test_the_header_shows_darner_s_wordmark_unless_set_to_dejima_s(aiohttp_client, fake):
+    for overrides, name in (({}, "darner"), ({"wordmark": "dejima"}, "dejima")):
+        client = await aiohttp_client(make_app(config_for(fake, **overrides)))
+        _, html = await get(client, "/")
+        assert f'<img src="/static/{name}-wordmark-darkmode.png" alt="{name}"' in html
+        assert (await client.get(f"/static/{name}-wordmark-darkmode.png", headers=HOST)).status == 200
+
+
 async def test_drafts_can_be_turned_off(aiohttp_client, fake):
     on = await aiohttp_client(make_app(config_for(fake)))
     off = await aiohttp_client(make_app(config_for(fake, drafts=False)))
@@ -576,6 +584,7 @@ def test_agent_markdown_rules(markdown, html):
     ({"public_origin": "https://user@darner.example.com"}, "public_origin"),
     ({"launch_timeout": "300"}, "launch_timeout must be a positive number"),
     ({"drafts": "no"}, "drafts must be true or false"),
+    ({"wordmark": "Darner"}, "wordmark must be"),
     ({"max_upload": 0}, "max_upload must be a positive number"),
     ({"max_download": True}, "max_download must be a positive number"),
     ({"public_origin": "https://darner.example.com:notaport"}, "public_origin"),

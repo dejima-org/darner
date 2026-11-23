@@ -51,6 +51,8 @@ DEFAULTS = {
     "ntfy_url": None,
     # Sent as a Bearer header, never in the URL.
     "ntfy_token": None,
+    # The header's wordmark: darner's, or dejima's for a deployment that keeps it.
+    "wordmark": "darner",
 }
 # Room for the API's longest text fields, 32,768 characters each, at JSON's
 # worst case of six bytes a character, with the rest of a request beside them.
@@ -128,6 +130,8 @@ def check_config(config: dict) -> dict:
             raise ValueError(f"{key} must be a positive number")
     if type(full["drafts"]) is not bool:
         raise ValueError("drafts must be true or false")
+    if full["wordmark"] not in ("darner", "dejima"):
+        raise ValueError('wordmark must be "darner" or "dejima"')
     if full["ntfy_url"] is not None and not (
         isinstance(full["ntfy_url"], str) and NTFY_URL.fullmatch(full["ntfy_url"])
     ):
@@ -253,7 +257,9 @@ async def api(request: web.Request, method: str, path: str, with_status: bool = 
 
 
 def page(request: web.Request, template: str, state: str | None = None, status: int = 200, **context) -> web.Response:
-    html = request.app[TEMPLATES].get_template(template).render(state=state, drafts=request.app[CONFIG]["drafts"], **context)
+    html = request.app[TEMPLATES].get_template(template).render(
+        state=state, drafts=request.app[CONFIG]["drafts"], wordmark=request.app[CONFIG]["wordmark"], **context
+    )
     return web.Response(text=html, status=status, content_type="text/html")
 
 

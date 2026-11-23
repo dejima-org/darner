@@ -35,6 +35,9 @@ public_origin = "https://darner.example.com"
 # keeps no drafts.
 # drafts = true
 
+# The wordmark in each page's header: "darner", or "dejima" for dejima's.
+# wordmark = "darner"
+
 # An ntfy topic to push to when a session darner-web started has output, a help
 # request or a domain request. A push names the session and links to its page,
 # never what the agent wrote. Unset, nothing is pushed (docs/web.md).
