@@ -86,6 +86,10 @@ def test_print_config_gives_the_defaults_the_launcher_reads(home):
     harness, defaults = dejima_defaults(parse_args([]), str(SRC / "bin" / "dejima"))
     assert harness == "claude-code"
     assert defaults["claude-code"] == {"backend": "anthropic", "model": "claude-opus-5-5", "effort": "high"}
+    # A harness other than the default's is printed only when asked for.
+    (home / ".config" / "dejima" / "config").open("a").write("\n[harness.cline]\nbackend = self-hosted\nmodel = qwen3.5-4b\n")
+    harness, defaults = dejima_defaults(parse_args([]), str(SRC / "bin" / "dejima"), harnesses=["cline"])
+    assert harness == "claude-code" and defaults["cline"] == {"backend": "self-hosted", "model": "qwen3.5-4b"}
 
 
 def test_manifests_say_what_each_harness_can_be_set_to():

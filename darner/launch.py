@@ -29,6 +29,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from collections.abc import Iterable
 from pathlib import Path
 
 from darner import archive
@@ -132,7 +133,7 @@ def dejima_argv(args: argparse.Namespace, job, task_dir: Path, dejima: str) -> t
     harness = job.harness or args.harness
     # Left out of argv when neither names one, but checked as the harness dejima picks.
     refused = set()
-    dejima_harness, defaults = dejima_defaults(args, dejima, refused)
+    dejima_harness, defaults = dejima_defaults(args, dejima, refused, [harness] if harness else [])
     default_harness, defaults = _with_flags(args, dejima_harness, defaults)
     used = harness or default_harness
     # Each default is the one for the harness actually used, so overriding
@@ -1577,37 +1578,61 @@ _SETTING = re.compile(r"harness\.([a-z0-9][a-z0-9_-]{0,63})\.(backend|model|effo
 _SETTING_CHECKS = {"backend": valid_name, "model": valid_model, "effort": valid_effort, "context_window": _context_window}
 
 
-def dejima_defaults(args: argparse.Namespace, dejima: str, refused: set | None = None) -> tuple[str | None, dict]:
-    """dejima's own default harness and each harness's settings, from --print-config.
+def dejima_defaults(
+    args: argparse.Namespace, dejima: str, refused: set | None = None, harnesses: Iterable[str] = (),
+) -> tuple[str | None, dict]:
+    """dejima's own default harness and the settings of it and each of `harnesses`, from --print-config.
 
-    Only those keys are read, since the rest of the config holds host paths.
-    Nothing, if this dejima can't say. A setting set to a value darner doesn't
-    accept is left out, and added to `refused` as (harness, key).
+    dejima prints only the section of the harness it would run, so each other
+    harness is asked for with --harness. Only those keys are read, since the
+    rest of the config holds host paths. Nothing, if this dejima can't say. A
+    setting set to a value darner doesn't accept is left out, and added to
+    `refused` as (harness, key).
     """
-    argv = [dejima, *(["--identity", args.identity] if args.identity else []), "--print-config"]
-    try:
-        out = subprocess.run(argv, capture_output=True, text=True, timeout=30, check=True).stdout
-    except (OSError, subprocess.SubprocessError) as e:
-        # Only the API's log sees this, as a successful command's stderr.
-        reason = f"exit {e.returncode}" if isinstance(e, subprocess.CalledProcessError) else type(e).__name__
-        print(f"darner-launch: dejima --print-config failed ({reason}), so dejima's defaults are unknown", file=sys.stderr)
+    if (out := _print_config(args, dejima)) is None:
         return None, {}
     harness, defaults = None, {}
     for line in out.splitlines():
-        key, _, value = line.partition("=")
-        if key == "core.harness" and valid_name(value):
+        if line.startswith("core.harness=") and valid_name(value := line.partition("=")[2]):
             harness = value
-        elif (m := _SETTING.fullmatch(key)) and _SETTING_CHECKS[m[2]](value):
-            defaults.setdefault(m[1], {})[m[2]] = int(value) if m[2] == "context_window" else value
-        elif m and value and refused is not None:
-            refused.add((m[1], m[2]))
+    _read_settings(out, harness, defaults, refused)
+    for other in sorted(set(harnesses) - {harness}):
+        if (out := _print_config(args, dejima, other)) is not None:
+            _read_settings(out, other, defaults, refused)
+        elif refused is not None:
+            # Unknown, as a value darner can't read is, so a page doesn't call them unset.
+            refused.update((other, key) for key in _SETTING_CHECKS)
     return harness, defaults
+
+
+def _print_config(args: argparse.Namespace, dejima: str, harness: str | None = None) -> str | None:
+    argv = [dejima, *(["--identity", args.identity] if args.identity else []),
+            *(["--harness", harness] if harness else []), "--print-config"]
+    try:
+        return subprocess.run(argv, capture_output=True, text=True, timeout=30, check=True).stdout
+    except (OSError, subprocess.SubprocessError) as e:
+        # Only the API's log sees this, as a successful command's stderr.
+        reason = f"exit {e.returncode}" if isinstance(e, subprocess.CalledProcessError) else type(e).__name__
+        asked = f" --harness {harness}" if harness else ""
+        print(f"darner-launch: dejima{asked} --print-config failed ({reason}), so dejima's defaults are unknown", file=sys.stderr)
+        return None
+
+
+def _read_settings(out: str, harness: str | None, defaults: dict, refused: set | None) -> None:
+    for line in out.splitlines():
+        key, _, value = line.partition("=")
+        if not (m := _SETTING.fullmatch(key)) or m[1] != harness:
+            continue
+        if _SETTING_CHECKS[m[2]](value):
+            defaults.setdefault(harness, {})[m[2]] = int(value) if m[2] == "context_window" else value
+        elif value and refused is not None:
+            refused.add((harness, m[2]))
 
 
 def launch_defaults(args: argparse.Namespace, dejima: str) -> tuple[str | None, dict]:
     """The harness a launch gets when its job names none, and each harness's settings:
     dejima's own, with this launcher's flags in their place."""
-    return _with_flags(args, *dejima_defaults(args, dejima))
+    return _with_flags(args, *dejima_defaults(args, dejima, harnesses=_names(dejima_root(dejima), "harness")))
 
 
 def _with_flags(args: argparse.Namespace, default_harness: str | None, defaults: dict) -> tuple[str | None, dict]:

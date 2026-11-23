@@ -8,7 +8,7 @@ darner runs dejima on the dejima host and relies on these of its flags, tools an
 
 - `dejima`, in its `--help-full`: `--isolated`, `--no-pause`, `--shared-path-file`, `--usage-path-file`, `--keep-records`, `--identity`, `--harness`, `--backend`, `--model`, `--effort`, `--context-window`, `--domains`, `--internal-domain`, `--dependencies`, `--drop-domains`, `--require-sealed` and `--print-config`, and `--ignore-extra-args` with `--ignored-args-file`, passed when both are listed there, so a flag a newer darner passes is dropped and reported rather than refusing the launch
 - the file `--ignored-args-file` names: one dropped argument per line, written before the session starts; dejima never drops a `--no-`, `--drop-`, `--require-` or `--strict-` flag
-- `--print-config`'s `section.key=value` lines, for `core.harness` and `harness.<name>.{backend,model,effort,context_window}`
+- `--print-config`'s `section.key=value` lines, for `core.harness` and `harness.<name>.{backend,model,effort,context_window}`, printing only the section of the harness it would run, which `--harness` names
 - `dejima-allow`: `--container`, `--internal` and `--port`, and exit status 2 meaning granted but not answering on 443
 - `dejima-share`: `prune --isolated [share]` and `--yes`, as its `--help-full` lists them
 - `dejima-usage`: `--forget <run id>`, and `--total <run id>`, whose sums the launcher's own must match
