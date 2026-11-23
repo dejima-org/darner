@@ -50,6 +50,8 @@
 /* --- base -------------------------------------------------------------- */
 
 *, *::before, *::after { box-sizing: border-box; }
+/* Hidden stays hidden, whatever display a class gives it. */
+[hidden] { display: none !important; }
 
 body {
   margin: 0;
