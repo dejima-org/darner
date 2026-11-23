@@ -65,7 +65,7 @@ if (state && version) {
       const response = await fetch(state, { cache: "no-store", headers: { [REQUEST_HEADER]: "1" } });
       if (!response.ok) return;
       const body = await response.json();
-      if (body.version !== version) reload();
+      if (body.version !== version) reload(true);
       else setLive(body.live ?? {});
     } catch {
       // Unreachable for now; the next check tries again.
@@ -85,27 +85,38 @@ setInterval(() => {
   for (const el of document.querySelectorAll("[data-at]")) el.textContent = `${age(Number(el.dataset.at))} ago`;
 }, 15000);
 
-// Reloads this page, as the page itself, so the latest event can tell news from a visit.
+// Reloads this page as the page itself, with news if the poll found something,
+// so the latest event can tell news from a visit or your own action.
 const STAYED = `stayed:${location.pathname}`;
-function reload() {
-  sessionStorage.setItem(STAYED, "1");
+function reload(news = false) {
+  try {
+    sessionStorage.setItem(STAYED, JSON.stringify({ news, at: Date.now() }));
+  } catch {
+    // Without storage it still reloads; nothing is marked new.
+  }
   location.reload();
 }
 
-// The latest event is new if the page reloaded to show it, and stays new through
-// its other reloads, until the page is left or reloaded by hand. Only a later event
-// is new: answering a request leads the page with an older one.
-const stayed = sessionStorage.getItem(STAYED) !== null;
-sessionStorage.removeItem(STAYED);
+// The latest event is new if the poll reloaded the page to show it, and stays new
+// through the page's other reloads, until it's left or reloaded by hand. Only a
+// later event is new: answering a request leads the page with an older one.
 const latest = document.querySelector(".latest[data-seq]");
-if (latest) {
-  const key = `latest:${location.pathname}`;
-  const seq = Number(latest.dataset.seq);
-  const before = JSON.parse(sessionStorage.getItem(key) ?? "null");
-  const fresh = Boolean(stayed && before && (seq > before.seq || (seq === before.seq && before.fresh)));
-  sessionStorage.setItem(key, JSON.stringify({ seq, fresh }));
-  latest.classList.toggle("fresh", fresh);
-  latest.querySelector(".new").hidden = !fresh;
+try {
+  const flag = JSON.parse(sessionStorage.getItem(STAYED) ?? "null");
+  sessionStorage.removeItem(STAYED);
+  // One left by a reload that never happened doesn't make a later visit a reload.
+  const stayed = flag && Math.abs(Date.now() - flag.at) < 30000 ? flag : null;
+  if (latest) {
+    const key = `latest:${location.pathname}`;
+    const seq = Number(latest.dataset.seq);
+    const before = JSON.parse(sessionStorage.getItem(key) ?? "null");
+    const fresh = Boolean(stayed && before && ((stayed.news && seq > before.seq) || (seq === before.seq && before.fresh)));
+    sessionStorage.setItem(key, JSON.stringify({ seq, fresh }));
+    latest.classList.toggle("fresh", fresh);
+    latest.querySelector(".new").hidden = !fresh;
+  }
+} catch {
+  // Without storage, nothing is marked new.
 }
 
 for (const button of document.querySelectorAll("button[data-post]")) {

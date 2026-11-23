@@ -64,6 +64,18 @@ result.again = await seen();
 await page.reload({ waitUntil: "networkidle" });
 result.by_hand = await seen();
 
+// Nor a later event the page's own reload shows, after an action of yours.
+await step("own");
+await Promise.all([page.waitForEvent("load"), page.evaluate(() => reload())]);
+result.own = await seen();
+
+// Nor a visit after a reload that never happened.
+await page.evaluate((path) => sessionStorage.setItem(`stayed:${path}`, JSON.stringify({ news: true, at: Date.now() - 60000 })),
+  new URL(url).pathname);
+await step("stale");
+await page.goto(url, { waitUntil: "networkidle" });
+result.stale = await seen();
+
 await browser.close();
 console.log(JSON.stringify(result));
 process.exit(0);

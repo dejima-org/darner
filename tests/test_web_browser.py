@@ -214,6 +214,8 @@ async def test_a_page_reloads_for_news_and_marks_it_new_but_not_for_usage(aiohtt
         "usage": lambda: session.update(usage=[{"model": "m", "requests": 4, "metered": 4, "input": 2000, "output": 300}]),
         "output": lambda: api.events["dn-aaaaa"].append(output(9)),
         "again": lambda: api.events["dn-aaaaa"].append(output(10)),
+        "own": lambda: api.events["dn-aaaaa"].append(output(11)),
+        "stale": lambda: api.events["dn-aaaaa"].append(output(12)),
     }
     try:
         script = Path(__file__).parent / "browser" / "live.mjs"
@@ -239,4 +241,6 @@ async def test_a_page_reloads_for_news_and_marks_it_new_but_not_for_usage(aiohtt
     assert result["returned"] == {**result["output"], "fresh": False, "new": False}
     assert result["again"] == {**result["output"], "seq": "10"}
     assert result["by_hand"] == {**result["again"], "fresh": False, "new": False}
+    assert result["own"] == {**result["by_hand"], "seq": "11"}
+    assert result["stale"] == {**result["by_hand"], "seq": "12"}
     assert result["errors"] == []
