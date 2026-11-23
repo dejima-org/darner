@@ -2,8 +2,8 @@
 // Copyright (C) 2026 Brad Anderson
 //
 // No HTML is inserted from here: a page reloads when what it shows has
-// changed, and errors are set as text. That keeps every HTML sink out of
-// reach, which the CSP's Trusted Types rule then enforces.
+// changed, and errors, usage and ages are set as text. That keeps every
+// HTML sink out of reach, which the CSP's Trusted Types rule then enforces.
 "use strict";
 
 const REQUEST_HEADER = "X-Darner-Request";
@@ -45,17 +45,78 @@ async function send(url, init, near) {
   return false;
 }
 
+// Usage changes as an agent works, so it's set in place: a reload spins the tab's
+// icon, which should mean news.
+function setLive(live) {
+  for (const el of document.querySelectorAll("[data-live]")) {
+    const value = live[el.dataset.live];
+    if (!value) continue;
+    el.textContent = value[0] || el.dataset.empty || "";
+    el.title = value[1];
+    el.hidden = !el.textContent;
+  }
+}
+
 const { state, version } = document.body.dataset;
 if (state && version) {
   setInterval(async () => {
     if (typing() || document.hidden) return;
     try {
       const response = await fetch(state, { cache: "no-store", headers: { [REQUEST_HEADER]: "1" } });
-      if (response.ok && (await response.json()).version !== version) location.reload();
+      if (!response.ok) return;
+      const body = await response.json();
+      if (body.version !== version) reload(true);
+      else setLive(body.live ?? {});
     } catch {
       // Unreachable for now; the next check tries again.
     }
   }, 5000);
+}
+
+// How long ago, as the server says it, by the server's clock.
+const skew = Number(document.body.dataset.now) - Date.now() / 1000;
+function age(at) {
+  const minutes = Math.max(0, Math.floor((Date.now() / 1000 + skew - at) / 60));
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  return hours < 24 ? `${hours}h${String(minutes % 60).padStart(2, "0")}m` : `${Math.floor(hours / 24)}d${hours % 24}h`;
+}
+setInterval(() => {
+  for (const el of document.querySelectorAll("[data-at]")) el.textContent = `${age(Number(el.dataset.at))} ago`;
+}, 15000);
+
+// Reloads this page as the page itself, with news if the poll found something,
+// so the latest event can tell news from a visit or your own action.
+const STAYED = `stayed:${location.pathname}`;
+function reload(news = false) {
+  try {
+    sessionStorage.setItem(STAYED, JSON.stringify({ news, at: Date.now() }));
+  } catch {
+    // Without storage it still reloads; nothing is marked new.
+  }
+  location.reload();
+}
+
+// The latest event is new if the poll reloaded the page to show it, and stays new
+// through the page's other reloads, until it's left or reloaded by hand. Only a
+// later event is new: answering a request leads the page with an older one.
+const latest = document.querySelector(".latest[data-seq]");
+try {
+  const flag = JSON.parse(sessionStorage.getItem(STAYED) ?? "null");
+  sessionStorage.removeItem(STAYED);
+  // One left by a reload that never happened doesn't make a later visit a reload.
+  const stayed = flag && Math.abs(Date.now() - flag.at) < 30000 ? flag : null;
+  if (latest) {
+    const key = `latest:${location.pathname}`;
+    const seq = Number(latest.dataset.seq);
+    const before = JSON.parse(sessionStorage.getItem(key) ?? "null");
+    const fresh = Boolean(stayed && before && ((stayed.news && seq > before.seq) || (seq === before.seq && before.fresh)));
+    sessionStorage.setItem(key, JSON.stringify({ seq, fresh }));
+    latest.classList.toggle("fresh", fresh);
+    latest.querySelector(".new").hidden = !fresh;
+  }
+} catch {
+  // Without storage, nothing is marked new.
 }
 
 for (const button of document.querySelectorAll("button[data-post]")) {
@@ -65,7 +126,7 @@ for (const button of document.querySelectorAll("button[data-post]")) {
     const done = button.dataset.busy ? busy(button) : () => {};
     const json = { "Content-Type": "application/json" };
     const sent = await send(button.dataset.post, { headers: json, body: "{}" }, button);
-    if (sent === true) location.reload();
+    if (sent === true) reload();
     else if (!sent) {
       done();
       button.disabled = false;
@@ -141,7 +202,7 @@ for (const form of document.querySelectorAll("form[data-action]")) {
       forget();
     }
     // A kept message shows on the reloaded page.
-    if (sent === true && (!note || data.keep)) location.reload();
+    if (sent === true && (!note || data.keep)) reload();
     else if (sent !== "moved") {
       // A message that isn't kept wouldn't show after a reload: it's said beside Send instead.
       if (note) note.hidden = !sent;

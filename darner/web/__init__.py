@@ -258,13 +258,25 @@ async def api(request: web.Request, method: str, path: str, with_status: bool = 
 
 def page(request: web.Request, template: str, state: str | None = None, status: int = 200, **context) -> web.Response:
     html = request.app[TEMPLATES].get_template(template).render(
-        state=state, drafts=request.app[CONFIG]["drafts"], wordmark=request.app[CONFIG]["wordmark"], **context
+        state=state, drafts=request.app[CONFIG]["drafts"], wordmark=request.app[CONFIG]["wordmark"], now=int(time.time()),
+        **context,
     )
     return web.Response(text=html, status=status, content_type="text/html")
 
 
 def _version(data) -> str:
-    return hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()[:16]
+    """What a page shows, less the usage its script updates in place: a reload for that would look like news."""
+    def still(session):
+        return session and {**session, "usage": session.get("usage") is not None}
+
+    shown = {**data, "session": still(data["session"])} if "session" in data else {**data, "sessions": [still(s) for s in data["sessions"]]}
+    return hashlib.sha256(json.dumps(shown, sort_keys=True).encode()).hexdigest()[:16]
+
+
+def _live(data) -> dict:
+    """Each session's usage as its page shows it, text and title, by the data-live key of the element."""
+    sessions = [data["session"]] if data.get("session") else data.get("sessions", [])
+    return {f"usage:{s['id']}": [_tokens(u), _tokens_by_model(u)] if (u := s.get("usage")) else ["", ""] for s in sessions}
 
 
 async def _sessions_data(request: web.Request) -> dict:
@@ -349,7 +361,7 @@ async def state(request: web.Request) -> web.Response:
         data = await (_session_data(request, task_id) if task_id else _sessions_data(request))
     except ApiError as e:
         return web.json_response({"version": None, "error": str(e)}, status=_status(e))
-    return web.json_response({"version": _version(data)})
+    return web.json_response({"version": _version(data), "live": _live(data)})
 
 
 async def download(request: web.Request) -> web.StreamResponse:

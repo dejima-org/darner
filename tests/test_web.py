@@ -949,9 +949,39 @@ async def test_usage_is_shown_on_events_and_the_session(client, fake):
     fake.events["dn-aaaaa"][1]["data"] = {"usage": [{"model": "<i>m</i>", "requests": 1, "metered": 1, "input": 500, "output": 40}]}
     _, html = await get(client, "/sessions/dn-aaaaa")
     assert '<span class="tokens" title="&lt;i&gt;m&lt;/i&gt;: 1 request, 500 fresh in, 40 out">500 in, 40 out</span>' in html
-    assert "Used so far: 2k in, 300 out." in html
+    title = "&lt;i&gt;m&lt;/i&gt;: 4 requests, 2k fresh in, 300 out"
+    assert f'Used so far: <span data-live="usage:dn-aaaaa" data-empty="nothing yet" title="{title}">2k in, 300 out</span>.' in html
     _, html = await get(client, "/")
-    assert '<p class="meta tokens" title="&lt;i&gt;m&lt;/i&gt;: 4 requests, 2k fresh in, 300 out">2k in, 300 out</p>' in html
+    assert f'<p class="meta tokens" data-live="usage:dn-aaaaa" title="{title}">2k in, 300 out</p>' in html
+
+
+async def test_usage_is_updated_in_place_rather_than_reloading_the_page(client, fake):
+    async def states():
+        return [await (await client.get(path, headers=HOST)).json() for path in ("/state/", "/state/sessions/dn-aaaaa")]
+
+    fake.sessions[0]["usage"] = []
+    first = await states()
+    assert [s["live"] for s in first] == [{"usage:dn-aaaaa": ["", ""]}] * 2
+    fake.sessions[0]["usage"] = [{"model": "m", "requests": 4, "metered": 4, "input": 2000, "output": 300}]
+    used = await states()
+    assert [s["live"] for s in used] == [{"usage:dn-aaaaa": ["2k in, 300 out", "m: 4 requests, 2k fresh in, 300 out"]}] * 2
+    assert [s["version"] for s in used] == [s["version"] for s in first]
+    # Whether it's metered at all is said in words, so that change reloads the page.
+    fake.sessions[0]["usage"] = None
+    assert [s["version"] for s in await states()][1] != first[1]["version"]
+
+
+async def test_the_latest_event_says_how_long_ago_it_came_as_the_history_does(client, fake, monkeypatch):
+    monkeypatch.setattr("darner.web.time.time", lambda: 1000)
+    for e in fake.events["dn-aaaaa"]:
+        e["created"] = 1000 - 60 * e["seq"]
+    _, html = await get(client, "/sessions/dn-aaaaa")
+    latest = html.split('<section class="latest"', 1)[1].split("</section>", 1)[0]
+    # The help request it's waiting on leads the page.
+    assert latest.startswith(' aria-label="Latest" data-seq="2">')
+    assert '<span class="stamp"><span class="label new" hidden>new</span> <span class="when" data-at="880">2m ago</span></span></h2>' in latest
+    assert '<span class="when" data-at="760">4m ago</span>' in html.split('<section class="history">', 1)[1]
+    assert '<body data-now="1000"' in html
 
 
 async def test_an_unmetered_session_says_so_once_it_has_started(client, fake):

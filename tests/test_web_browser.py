@@ -11,6 +11,7 @@ import json
 import shutil
 import socket
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -190,3 +191,56 @@ async def test_agent_chosen_addresses_are_seen_whole_on_a_phone(aiohttp_server):
     # Positive controls: each address's start is found and inside its pane and the screen, so a missing one can't pass.
     assert result["found"] == {"github.com.example": True, "ghij.evil.example/x": True, "pypi.org.files": True, "opq.evil.example": True}
     assert not result["scrolls_sideways"] and result["header_lines"] == 1
+
+
+async def test_a_page_reloads_for_news_and_marks_it_new_but_not_for_usage(aiohttp_server):
+    api = FakeApi()
+    session = api.sessions[0]
+    session.update(waiting={"answer": None, "domains": None}, usage=[])
+    started = int(time.time())
+
+    def output(seq):
+        return {"seq": seq, "id": "dn-aaaaa", "type": "output", "summary": "done", "size": 0, "signalled": True, "data": None, "created": time.time()}
+
+    for e in api.events["dn-aaaaa"]:
+        e["created"] = started - 120
+    api.server = await aiohttp_server(api.app())
+    port = _free_port()
+    origin = f"http://127.0.0.1:{port}"
+    config = {"api_url": str(api.server.make_url("/")), "api_token": TOKEN, "public_origin": origin}
+    server = TestServer(make_app(config), host="127.0.0.1", port=port)
+    await server.start_server()
+    changes = {
+        "usage": lambda: session.update(usage=[{"model": "m", "requests": 4, "metered": 4, "input": 2000, "output": 300}]),
+        "output": lambda: api.events["dn-aaaaa"].append(output(9)),
+        "again": lambda: api.events["dn-aaaaa"].append(output(10)),
+        "own": lambda: api.events["dn-aaaaa"].append(output(11)),
+        "stale": lambda: api.events["dn-aaaaa"].append(output(12)),
+    }
+    try:
+        script = Path(__file__).parent / "browser" / "live.mjs"
+        proc = await asyncio.create_subprocess_exec(
+            "node", str(script), f"{origin}/sessions/dn-aaaaa", stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        while (line := (await proc.stdout.readline()).decode().strip()) in changes:
+            changes[line]()
+            proc.stdin.write(b"\n")
+            await proc.stdin.drain()
+        err = await proc.stderr.read()
+        assert await proc.wait() == 0, err.decode()
+        result = json.loads(line)
+    finally:
+        await server.close()
+    assert result["loaded"] == {"seq": "4", "fresh": False, "new": False, "when": "2m ago", "used": "nothing yet", "same_page": True}
+    # Usage and ages change in place: the page isn't reloaded for them.
+    assert result["used"] == {**result["loaded"], "used": "2k in, 300 out"}
+    assert result["minute_later"] == {**result["used"], "when": "3m ago"}
+    # A new event reloads the page, which marks it new.
+    assert result["output"] == {"seq": "9", "fresh": True, "new": True, "when": "0m ago", "used": "2k in, 300 out", "same_page": False}
+    assert result["reloaded"] == result["output"]
+    assert result["returned"] == {**result["output"], "fresh": False, "new": False}
+    assert result["again"] == {**result["output"], "seq": "10"}
+    assert result["by_hand"] == {**result["again"], "fresh": False, "new": False}
+    assert result["own"] == {**result["by_hand"], "seq": "11"}
+    assert result["stale"] == {**result["by_hand"], "seq": "12"}
+    assert result["errors"] == []
