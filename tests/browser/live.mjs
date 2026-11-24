@@ -23,6 +23,7 @@ const result = { errors: [] };
 page.on("pageerror", (e) => result.errors.push(e.message));
 await page.clock.install();
 await page.goto(url, { waitUntil: "networkidle" });
+result.empty = await page.textContent(".latest");
 const seen = () => page.evaluate(() => {
   const latest = document.querySelector(".latest");
   return {
@@ -31,6 +32,14 @@ const seen = () => page.evaluate(() => {
     same_page: window.__same === true,
   };
 });
+// A session's first event is new: nothing came before it.
+await step("first");
+const first = page.waitForEvent("load");
+await page.clock.runFor(5000);
+await first;
+result.first = await seen();
+await page.goto(new URL("/", url).href, { waitUntil: "networkidle" });
+await page.goto(url, { waitUntil: "networkidle" });
 await page.evaluate(() => { window.__same = true; });
 result.loaded = await seen();
 
