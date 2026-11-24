@@ -33,7 +33,7 @@ These set where darner comes from and where it is installed. The defaults work a
 
 | variable | default | what goes there |
 |---|---|---|
-| `DARNER_REPO` | `https://gitbox.branderson.io/dejima/darner.git` | where darner is cloned from |
+| `DARNER_REPO` | `https://github.com/dejima-org/darner.git` | where darner is cloned from |
 | `LAUNCHER_SRC` | `~/src/darner` | the launcher's clone, on the dejima host |
 | `DARNER_DIR` | `/opt/darner` | on the API host: the clone and virtualenv under systemd, or the whole deployment directory under Docker Compose |
 | `DARNER_CONFIG` | `/etc/darner` | systemd only: `api.toml` and the blurbs |
@@ -46,7 +46,7 @@ Under systemd, the service user `darner` must be able to read `DARNER_DIR` and `
 On the dejima host, as `DEJIMA_USER`:
 
 ```sh
-DARNER_REPO=https://gitbox.branderson.io/dejima/darner.git
+DARNER_REPO=https://github.com/dejima-org/darner.git
 LAUNCHER_SRC=~/src/darner
 
 git clone "$DARNER_REPO" "$LAUNCHER_SRC"
@@ -87,7 +87,7 @@ The API runs either as a systemd service or in Docker Compose. Steps 2, 3 and 5 
 **With systemd:** create a service user and install into a virtualenv:
 
 ```sh
-DARNER_REPO=https://gitbox.branderson.io/dejima/darner.git
+DARNER_REPO=https://github.com/dejima-org/darner.git
 DARNER_DIR=/opt/darner
 DARNER_STATE=/var/lib/darner
 
@@ -101,7 +101,7 @@ sudo "$DARNER_DIR/venv/bin/pip" install --no-deps --no-build-isolation --editabl
 **With Docker Compose:** lay out a deployment directory around a clone, and build the image. The container runs as uid 10001, so its data directory belongs to that uid:
 
 ```sh
-DARNER_REPO=https://gitbox.branderson.io/dejima/darner.git
+DARNER_REPO=https://github.com/dejima-org/darner.git
 DARNER_DIR=/opt/darner
 
 sudo install -d -o "$USER" "$DARNER_DIR" && cd "$DARNER_DIR"

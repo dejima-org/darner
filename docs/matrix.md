@@ -39,7 +39,7 @@ To build the plugin from a clone instead, run `python3 plugin/build.py`, as the 
 A release's `.mbp` is built reproducibly: the same source always gives the same bytes, and the release notes state its sha256. To check that what you downloaded is what the source builds, rebuild it from the release's tag and compare:
 
 ```sh
-git clone --branch v<version> https://gitbox.branderson.io/dejima/darner.git
+git clone --branch v<version> https://github.com/dejima-org/darner.git
 python3 darner/plugin/build.py
 sha256sum page.dejima.darner-v<version>.mbp
 ```

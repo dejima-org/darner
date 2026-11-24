@@ -4,7 +4,7 @@
 
 A browser frontend for darner. It shows its sessions at a glance, each one's events so far, the full text of blurbs and config sets, and the self-test. It starts tasks with [every setting](tasks.md), showing before Start what the task will launch: its config sets combined, its agent settings and where each comes from, the defaults included, and each blurb in full. It can send a session a message or answer its help request, upload a file into its `~/shared/uploads`, allow or deny its domain requests, stop it, and clear it once it has ended. What you send a session isn't kept, by darner-web or the API, so its page doesn't show it, unless the API has [`keep_input`](#kept-input) on and you tick Keep. Until it's sent, a task or message you've typed is kept in that browser tab's `sessionStorage`, so reading a blurb or leaving the page doesn't lose it; it's forgotten once sent. Browsers write `sessionStorage` to disk and bring it back with a reopened tab or a restored session, so on a shared computer the next person can see an unsent draft. `drafts = false` in `web.toml` keeps no drafts. Its header shows darner's wordmark, or dejima's with `wordmark = "dejima"`. It runs as its own container with its own API token.
 
-**It has no login of its own.** Like dejima's [remote access](https://gitbox.branderson.io/dejima/dejima/src/branch/main/docs/remote-access.md), whatever proxy you put in front of it is the whole gate. Don't open it to the public internet.
+**It has no login of its own.** Like dejima's [remote access](https://github.com/dejima-org/dejima/blob/main/docs/remote-access.md), whatever proxy you put in front of it is the whole gate. Don't open it to the public internet.
 
 ## What reaching it means
 
@@ -93,7 +93,7 @@ ntfy token add darner-web       # prints tk_..., for ntfy_token
 ntfy access phone darner read-only   # the subscriber, once auth-default-access is deny-all
 ```
 
-It's sent as an `Authorization: Bearer` header, never in the URL, which darner-web refuses with a credential in it, so `ntfy_url` can be logged and the token never is. `web.toml` already holds the API token, so keep it from other accounts on the host, and don't move either into a compose `environment:` block, which `docker inspect` shows. Turning on `auth-default-access: deny-all` closes every topic on that server, dejima's included; [dejima-guard's README](https://gitbox.branderson.io/dejima/dejima-guard#ntfy-its-own-topic-and-a-token-that-can-only-write-to-it) says what to grant back first. Use `https`.
+It's sent as an `Authorization: Bearer` header, never in the URL, which darner-web refuses with a credential in it, so `ntfy_url` can be logged and the token never is. `web.toml` already holds the API token, so keep it from other accounts on the host, and don't move either into a compose `environment:` block, which `docker inspect` shows. Turning on `auth-default-access: deny-all` closes every topic on that server, dejima's included; [dejima-guard's README](https://github.com/dejima-org/dejima-guard#ntfy-its-own-topic-and-a-token-that-can-only-write-to-it) says what to grant back first. Use `https`.
 
 The agent chooses when it asks for help or domains, so it chooses when some pushes happen, though never what they say; the launcher's `--help-interval` spaces its help requests, and your ntfy server's rate limit the rest.
 
