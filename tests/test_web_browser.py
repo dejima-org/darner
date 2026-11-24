@@ -202,8 +202,10 @@ async def test_a_page_reloads_for_news_and_marks_it_new_but_not_for_usage(aiohtt
     def output(seq):
         return {"seq": seq, "id": "dn-aaaaa", "type": "output", "summary": "done", "size": 0, "signalled": True, "data": None, "created": time.time()}
 
-    for e in api.events["dn-aaaaa"]:
+    events = api.events["dn-aaaaa"]
+    for e in events:
         e["created"] = started - 120
+    api.events["dn-aaaaa"] = []
     api.server = await aiohttp_server(api.app())
     port = _free_port()
     origin = f"http://127.0.0.1:{port}"
@@ -211,6 +213,7 @@ async def test_a_page_reloads_for_news_and_marks_it_new_but_not_for_usage(aiohtt
     server = TestServer(make_app(config), host="127.0.0.1", port=port)
     await server.start_server()
     changes = {
+        "first": lambda: api.events["dn-aaaaa"].extend(events),
         "usage": lambda: session.update(usage=[{"model": "m", "requests": 4, "metered": 4, "input": 2000, "output": 300}]),
         "output": lambda: api.events["dn-aaaaa"].append(output(9)),
         "again": lambda: api.events["dn-aaaaa"].append(output(10)),
@@ -231,6 +234,8 @@ async def test_a_page_reloads_for_news_and_marks_it_new_but_not_for_usage(aiohtt
         result = json.loads(line)
     finally:
         await server.close()
+    assert "Nothing yet." in result["empty"]
+    assert result["first"] == {"seq": "4", "fresh": True, "new": True, "when": "2m ago", "used": "nothing yet", "same_page": False}
     assert result["loaded"] == {"seq": "4", "fresh": False, "new": False, "when": "2m ago", "used": "nothing yet", "same_page": True}
     # Usage and ages change in place: the page isn't reloaded for them.
     assert result["used"] == {**result["loaded"], "used": "2k in, 300 out"}

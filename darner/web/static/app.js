@@ -99,8 +99,9 @@ function reload(news = false) {
 
 // The latest event is new if the poll reloaded the page to show it, and stays new
 // through the page's other reloads, until it's left or reloaded by hand. Only a
-// later event is new: answering a request leads the page with an older one.
-const latest = document.querySelector(".latest[data-seq]");
+// later event is new: answering a request leads the page with an older one. A page
+// with nothing yet counts as seq 0, so a session's first event is new too.
+const latest = document.querySelector(".latest");
 try {
   const flag = JSON.parse(sessionStorage.getItem(STAYED) ?? "null");
   sessionStorage.removeItem(STAYED);
@@ -108,12 +109,13 @@ try {
   const stayed = flag && Math.abs(Date.now() - flag.at) < 30000 ? flag : null;
   if (latest) {
     const key = `latest:${location.pathname}`;
-    const seq = Number(latest.dataset.seq);
+    const seq = Number(latest.dataset.seq ?? 0);
     const before = JSON.parse(sessionStorage.getItem(key) ?? "null");
     const fresh = Boolean(stayed && before && ((stayed.news && seq > before.seq) || (seq === before.seq && before.fresh)));
     sessionStorage.setItem(key, JSON.stringify({ seq, fresh }));
     latest.classList.toggle("fresh", fresh);
-    latest.querySelector(".new").hidden = !fresh;
+    const label = latest.querySelector(".new");
+    if (label) label.hidden = !fresh;
   }
 } catch {
   // Without storage, nothing is marked new.
