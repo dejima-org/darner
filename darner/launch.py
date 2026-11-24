@@ -15,6 +15,7 @@ sent to its server and the prompt is passed as a single argument.
 
 import argparse
 import contextlib
+import errno
 import fcntl
 import hashlib
 import threading
@@ -28,6 +29,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from collections.abc import Iterable
 from pathlib import Path
 
 from darner import archive
@@ -41,6 +43,17 @@ SHA256 = re.compile(r"[0-9a-f]{64}")
 KEPT = ".kept"
 RUN_ID = re.compile(r"[0-9a-f]{16}")
 MAX_HELP = 16 * 1024
+# A session's token usage, as dejima's credential proxy recorded it: one JSON line per model request.
+USAGE_RECORD = re.compile(r"[0-9a-f]{16}\.jsonl")
+USAGE_COUNTS = ("input", "output", "cache_read", "cache_write")
+# Read from where the last read stopped, at most this much at a time, so a flooded record
+# neither freezes the totals nor costs a full parse every poll.
+MAX_USAGE_READ = 4 * 1024 * 1024
+MAX_IGNORED_READ = 64 * 1024
+MAX_COUNT = 10**12
+# Model names past this many are counted unnamed: a refused request's model is the one the
+# agent's request named, so it could otherwise name enough to swamp the real ones.
+MAX_USAGE_MODELS = 50
 SIGNALS = {
     "done": (".done", "consumed"),
     "help": (".help", "consumed-help"),
@@ -102,6 +115,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--docker", default="docker")
     p.add_argument("--dejima-allow", default="dejima-allow")
     p.add_argument("--dejima-share", default="dejima-share")
+    p.add_argument("--dejima-usage", default="dejima-usage")
     p.add_argument("--keep-shared", action="store_true", help="keep an ended session's ~/shared rather than pruning it")
     p.add_argument("--stop-timeout", default=60, type=int, help="seconds to wait for a stopped session to exit")
     p.add_argument("--exec", dest="exec_dir", type=Path, help=argparse.SUPPRESS)
@@ -109,10 +123,18 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     return p.parse_args(argv)
 
 
-def dejima_argv(args: argparse.Namespace, job, task_dir: Path, dejima: str) -> list[str]:
+# The agent settings a session's view says it ran with, harness first.
+RAN_WITH = ("harness", "backend", "model", "effort", "context_window")
+
+
+def dejima_argv(args: argparse.Namespace, job, task_dir: Path, dejima: str) -> tuple[list[str], dict]:
+    """dejima's argv for the job, and what the session runs with: each agent setting
+    and whether the task, this launcher or dejima's config set it."""
     harness = job.harness or args.harness
     # Left out of argv when neither names one, but checked as the harness dejima picks.
-    default_harness, defaults = launch_defaults(args, dejima)
+    refused = set()
+    dejima_harness, defaults = dejima_defaults(args, dejima, refused, [harness] if harness else [])
+    default_harness, defaults = _with_flags(args, dejima_harness, defaults)
     used = harness or default_harness
     # Each default is the one for the harness actually used, so overriding
     # the harness never pairs it with another harness's setting.
@@ -126,7 +148,31 @@ def dejima_argv(args: argparse.Namespace, job, task_dir: Path, dejima: str) -> l
         harness_options(dejima_root(dejima)), used, backend or d.get("backend"), effort or d.get("effort"),
         int(context_window) if context_window else d.get("context_window"),
     )
-    argv = [dejima, "--isolated", "--no-pause", "--shared-path-file", str(task_dir / "shared-path")]
+    ran_with = {}
+    for key in RAN_WITH:
+        asked = getattr(job, key)
+        ours = args.harness if key == "harness" else dict(getattr(args, key)).get(used)
+        theirs = dejima_harness if key == "harness" else d.get(key)
+        if value := asked or ours or theirs:
+            source = "task" if asked else "launcher" if ours else "dejima"
+            ran_with[key] = {"value": int(value) if key == "context_window" else value, "from": source}
+        elif (used, key) in refused:
+            # Set in dejima's config to a value darner doesn't read, which a
+            # page would otherwise call unset.
+            ran_with = {}
+            break
+    # Unknown when dejima couldn't print its config, which always names a harness.
+    if not dejima_harness:
+        ran_with = {}
+    argv = [
+        dejima, "--isolated", "--no-pause", "--shared-path-file", str(task_dir / "shared-path"),
+        "--usage-path-file", str(task_dir / "usage-path"),
+    ]
+    # A dejima that takes this drops a flag it doesn't know, rather than refusing
+    # the launch, and says which in ignored-args. It never drops a --no-, --drop-,
+    # --require- or --strict- flag, which is how its confining flags are spelled.
+    if _ignores_extra_args(dejima):
+        argv += ["--ignore-extra-args", "--ignored-args-file", str(task_dir / "ignored-args")]
     if args.keep_records:
         argv.append("--keep-records")
     for flag, value in (
@@ -143,7 +189,44 @@ def dejima_argv(args: argparse.Namespace, job, task_dir: Path, dejima: str) -> l
         argv += ["--internal-domain", name]
     if job.dependencies:
         argv += ["--dependencies", str(task_dir / "dependencies")]
-    return argv + ["--", job.prompt]
+    return argv + ["--", job.prompt], ran_with
+
+
+def _ignores_extra_args(dejima: str) -> bool:
+    """Whether this dejima takes --ignore-extra-args and --ignored-args-file (#99).
+    An older one refuses them too, so they're passed only when --help-full, which
+    isn't budgeted as --help is, names both."""
+    try:
+        text = subprocess.run(
+            [dejima, "--help-full"], stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=30,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return all(re.search(rf"(?<![\w-]){flag}(?![\w-])", text) for flag in ("--ignore-extra-args", "--ignored-args-file"))
+
+
+def ignored_flags(task_dir: Path) -> list[str]:
+    """The flags this task's dejima said it dropped. Only flags the launcher passed
+    are reported, so nothing else written there, and no value, such as a host path,
+    gets further."""
+    try:
+        fd = os.open(task_dir / "ignored-args", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError:
+        return []
+    # One task's unreadable file must not fail status for every task.
+    try:
+        with os.fdopen(fd, "rb") as f:
+            if not stat.S_ISREG(os.fstat(f.fileno()).st_mode):
+                return []
+            lines = f.read(MAX_IGNORED_READ).decode(errors="replace").splitlines()
+    except OSError:
+        return []
+    try:
+        argv = json.loads((task_dir / "argv.json").read_text())
+        passed = {arg for arg in argv[1 : argv.index("--")] if arg.startswith("--")}
+    except (OSError, ValueError, TypeError, AttributeError):
+        return []
+    return sorted(passed.intersection(lines))
 
 
 def launch(args: argparse.Namespace, data: object) -> dict:
@@ -155,7 +238,7 @@ def launch(args: argparse.Namespace, data: object) -> dict:
     if dejima is None:
         raise RuntimeError(f"{Path(args.dejima).name} not found on PATH; pass --dejima with its full path")
     task_dir = args.tasks_dir / job.id
-    argv = dejima_argv(args, job, task_dir, dejima)
+    argv, ran_with = dejima_argv(args, job, task_dir, dejima)
     args.tasks_dir.mkdir(parents=True, exist_ok=True)
     try:
         task_dir.mkdir(mode=0o700)
@@ -164,6 +247,7 @@ def launch(args: argparse.Namespace, data: object) -> dict:
     (task_dir / "domains").write_text("".join(f"{d}\n" for d in job.domains))
     (task_dir / "dependencies").write_text("".join(f"{d}\n" for d in job.dependencies))
     (task_dir / "argv.json").write_text(json.dumps(argv))
+    (task_dir / "ran-with.json").write_text(json.dumps(ran_with))
     try:
         _hold_files(job, task_dir)
         return _start_window(args, job, task_dir)
@@ -363,6 +447,131 @@ def _share_path(args: argparse.Namespace, task_dir: Path, record: Path | None = 
     return root, leaf
 
 
+def _usage_record(task_dir: Path) -> str | None:
+    """Where dejima records a session's token usage, from the path it wrote at launch, or None."""
+    try:
+        path = (task_dir / "usage-path").read_text().removesuffix("\n")
+    except OSError:
+        return None
+    if not os.path.isabs(path) or "\0" in path or not USAGE_RECORD.fullmatch(os.path.basename(path)):
+        return None
+    return path
+
+
+def _ran_with(task_dir: Path) -> dict:
+    """What the launch resolved each agent setting to; empty for a task launched before this was recorded."""
+    try:
+        return json.loads((task_dir / "ran-with.json").read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def session_usage(task_dir: Path) -> list[dict] | None:
+    """A session's token usage so far, summed by model, or None if it isn't metered.
+
+    dejima's credential proxy writes the record on the host, where no session
+    can reach it, from the provider's responses. It's still re-checked here: a
+    count is a non-negative integer, a model a model name, and a count the
+    provider didn't send stays absent rather than becoming zero. An empty record
+    is a metered session that has spent nothing yet; none at all, one that isn't
+    metered, such as a self-hosted model's. The running totals, and how far into
+    the record they reach, are kept in the task directory between reads, under a
+    lock, so two status calls at once can't save older totals over newer ones.
+    """
+    if (path := _usage_record(task_dir)) is None:
+        return None
+    try:
+        with _domains_lock(task_dir, "usage.lock"):
+            return _read_usage(task_dir, path)
+    except Exception as e:
+        # One task's failure mustn't fail status for every task: its last totals stand.
+        # The API's poll logs a successful status's stderr, so the failure is still seen.
+        print(f"darner-launch: couldn't read {task_dir.name}'s usage ({type(e).__name__})", file=sys.stderr)
+        return _saved_usage(task_dir)
+
+
+def _read_usage(task_dir: Path, path: str) -> list[dict] | None:
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError as e:
+        # No record, or a symlink in its place: not metered. Anything else may pass.
+        if e.errno in (errno.ENOENT, errno.ELOOP):
+            return None
+        raise
+    with os.fdopen(fd, "rb") as f:
+        st = os.fstat(f.fileno())
+        if not stat.S_ISREG(st.st_mode):
+            return None
+        state = _usage_sum(task_dir, st)
+        f.seek(state["offset"])
+        raw = f.read(MAX_USAGE_READ)
+    # A line still being written is left for the next read; one longer than a whole read is skipped.
+    end = raw.rfind(b"\n") + 1 or (len(raw) if len(raw) == MAX_USAGE_READ else 0)
+    totals = {t["model"]: t for t in state["totals"]}
+    for line in raw[:end].split(b"\n"):
+        _add_usage(totals, line)
+    state["offset"] += end
+    state["totals"] = sorted(totals.values(), key=lambda t: (t["model"] is None, t["model"] or ""))
+    _write_atomic(task_dir / "usage-sum.json", json.dumps(state))
+    return state["totals"]
+
+
+def _saved_usage(task_dir: Path) -> list[dict] | None:
+    try:
+        totals = json.loads((task_dir / "usage-sum.json").read_text()).get("totals")
+    except (OSError, ValueError, AttributeError):
+        return None
+    return totals if isinstance(totals, list) else None
+
+
+def _usage_sum(task_dir: Path, st: os.stat_result) -> dict:
+    """The totals read so far from this record, or a fresh start if they're for another file or past its end."""
+    fresh = {"file": [st.st_dev, st.st_ino], "offset": 0, "totals": []}
+    try:
+        state = json.loads((task_dir / "usage-sum.json").read_text())
+    except (OSError, ValueError):
+        return fresh
+    if not isinstance(state, dict) or state.get("file") != fresh["file"] or not isinstance(state.get("offset"), int):
+        return fresh
+    if not 0 <= state["offset"] <= st.st_size or not isinstance(state.get("totals"), list):
+        return fresh
+    return state
+
+
+def _add_usage(totals: dict, line: bytes) -> None:
+    try:
+        entry = json.loads(line)
+    except (ValueError, RecursionError):
+        return
+    if not isinstance(entry, dict):
+        return
+    model = entry.get("model") if valid_model(entry.get("model")) else None
+    if model not in totals and sum(m is not None for m in totals) >= MAX_USAGE_MODELS:
+        model = None
+    counts = {k: entry[k] for k in USAGE_COUNTS if type(entry.get(k)) is int and 0 <= entry[k] < MAX_COUNT}
+    total = totals.setdefault(model, {"model": model, "requests": 0, "metered": 0})
+    total["requests"] += 1
+    total["metered"] += bool(counts)
+    for k, n in counts.items():
+        total[k] = total.get(k, 0) + n
+
+
+def _forget_usage(args: argparse.Namespace, task_dir: Path) -> None:
+    """Have dejima-usage delete dejima's usage record for an ended session.
+
+    Through dejima's own tool, which deletes only a record in its usage
+    directory, by run id. With --keep-records, or if that fails, the record is
+    left for dejima to remove when it's a month old.
+    """
+    if args.keep_records or (path := _usage_record(task_dir)) is None or (tool := shutil.which(args.dejima_usage)) is None:
+        return
+    with contextlib.suppress(OSError, subprocess.SubprocessError):
+        subprocess.run(
+            [tool, "--forget", os.path.basename(path).removesuffix(".jsonl")],
+            stdin=subprocess.DEVNULL, capture_output=True, timeout=30,
+        )
+
+
 def _keeps_records(dejima: list[str]) -> bool:
     return "--" in dejima and "--keep-records" in dejima[: dejima.index("--")]
 
@@ -547,6 +756,7 @@ def forget(args: argparse.Namespace, task_id: str, delivered: str | None = None)
     share = _existing_share(args, task_dir)
     problem = _prune_share(args, task_dir, delivered) if delivered else "its output wasn't delivered whole"
     kept = problem and _keep(args, task_dir, task_id)
+    _forget_usage(args, task_dir)
     # A clear's discard may be forgetting it at the same time.
     with contextlib.suppress(FileNotFoundError):
         shutil.rmtree(task_dir)
@@ -719,6 +929,9 @@ def status(args: argparse.Namespace) -> list[dict]:
             "domain_request": _pending_request_number(task_dir),
             "answerable": args.answers and state == "running",
             "run_id": session_run_id(task_dir) if state == "running" else None,
+            "usage": session_usage(task_dir),
+            "ignored": ignored_flags(task_dir),
+            "ran_with": _ran_with(task_dir),
             "error": error,
         })
     return tasks
@@ -1365,34 +1578,64 @@ _SETTING = re.compile(r"harness\.([a-z0-9][a-z0-9_-]{0,63})\.(backend|model|effo
 _SETTING_CHECKS = {"backend": valid_name, "model": valid_model, "effort": valid_effort, "context_window": _context_window}
 
 
-def dejima_defaults(args: argparse.Namespace, dejima: str) -> tuple[str | None, dict]:
-    """dejima's own default harness and each harness's settings, from --print-config.
+def dejima_defaults(
+    args: argparse.Namespace, dejima: str, refused: set | None = None, harnesses: Iterable[str] = (),
+) -> tuple[str | None, dict]:
+    """dejima's own default harness and the settings of it and each of `harnesses`, from --print-config.
 
-    Only those keys are read, since the rest of the config holds host paths.
-    Nothing, if this dejima can't say.
+    dejima prints only the section of the harness it would run, so each other
+    harness is asked for with --harness. Only those keys are read, since the
+    rest of the config holds host paths. Nothing, if this dejima can't say. A
+    setting set to a value darner doesn't accept is left out, and added to
+    `refused` as (harness, key).
     """
-    argv = [dejima, *(["--identity", args.identity] if args.identity else []), "--print-config"]
-    try:
-        out = subprocess.run(argv, capture_output=True, text=True, timeout=30, check=True).stdout
-    except (OSError, subprocess.SubprocessError) as e:
-        # Only the API's log sees this, as a successful command's stderr.
-        reason = f"exit {e.returncode}" if isinstance(e, subprocess.CalledProcessError) else type(e).__name__
-        print(f"darner-launch: dejima --print-config failed ({reason}), so dejima's defaults are unknown", file=sys.stderr)
+    if (out := _print_config(args, dejima)) is None:
         return None, {}
     harness, defaults = None, {}
     for line in out.splitlines():
-        key, _, value = line.partition("=")
-        if key == "core.harness" and valid_name(value):
+        if line.startswith("core.harness=") and valid_name(value := line.partition("=")[2]):
             harness = value
-        elif (m := _SETTING.fullmatch(key)) and _SETTING_CHECKS[m[2]](value):
-            defaults.setdefault(m[1], {})[m[2]] = int(value) if m[2] == "context_window" else value
+    _read_settings(out, harness, defaults, refused)
+    for other in sorted(set(harnesses) - {harness}):
+        if (out := _print_config(args, dejima, other)) is not None:
+            _read_settings(out, other, defaults, refused)
+        elif refused is not None:
+            # Unknown, as a value darner can't read is, so a page doesn't call them unset.
+            refused.update((other, key) for key in _SETTING_CHECKS)
     return harness, defaults
+
+
+def _print_config(args: argparse.Namespace, dejima: str, harness: str | None = None) -> str | None:
+    argv = [dejima, *(["--identity", args.identity] if args.identity else []),
+            *(["--harness", harness] if harness else []), "--print-config"]
+    try:
+        return subprocess.run(argv, capture_output=True, text=True, timeout=30, check=True).stdout
+    except (OSError, subprocess.SubprocessError) as e:
+        # Only the API's log sees this, as a successful command's stderr.
+        reason = f"exit {e.returncode}" if isinstance(e, subprocess.CalledProcessError) else type(e).__name__
+        asked = f" --harness {harness}" if harness else ""
+        print(f"darner-launch: dejima{asked} --print-config failed ({reason}), so dejima's defaults are unknown", file=sys.stderr)
+        return None
+
+
+def _read_settings(out: str, harness: str | None, defaults: dict, refused: set | None) -> None:
+    for line in out.splitlines():
+        key, _, value = line.partition("=")
+        if not (m := _SETTING.fullmatch(key)) or m[1] != harness:
+            continue
+        if _SETTING_CHECKS[m[2]](value):
+            defaults.setdefault(harness, {})[m[2]] = int(value) if m[2] == "context_window" else value
+        elif value and refused is not None:
+            refused.add((harness, m[2]))
 
 
 def launch_defaults(args: argparse.Namespace, dejima: str) -> tuple[str | None, dict]:
     """The harness a launch gets when its job names none, and each harness's settings:
     dejima's own, with this launcher's flags in their place."""
-    default_harness, defaults = dejima_defaults(args, dejima)
+    return _with_flags(args, *dejima_defaults(args, dejima, harnesses=_names(dejima_root(dejima), "harness")))
+
+
+def _with_flags(args: argparse.Namespace, default_harness: str | None, defaults: dict) -> tuple[str | None, dict]:
     for key in ("backend", "model", "effort", "context_window"):
         for harness, value in getattr(args, key):
             defaults.setdefault(harness, {})[key] = int(value) if key == "context_window" else value
@@ -1410,8 +1653,11 @@ def catalog(args: argparse.Namespace) -> dict:
     # Not fatal, but each costs something quietly: printed for the API's log.
     if not args.keep_shared and (problem := _dejima_share(args)[1]):
         print(f"ended sessions' ~/shared will be kept, not pruned: {problem}", file=sys.stderr)
-    for option, tool, costs in (("--dejima-allow", args.dejima_allow, "domain requests can't be granted"),
-                                ("--docker", args.docker, "sessions can't be stopped")):
+    tools = [("--dejima-allow", args.dejima_allow, "domain requests can't be granted"),
+             ("--docker", args.docker, "sessions can't be stopped")]
+    if not args.keep_records:
+        tools.append(("--dejima-usage", args.dejima_usage, "token usage records are left for dejima to remove after a month"))
+    for option, tool, costs in tools:
         if shutil.which(tool) is None:
             print(f"{Path(tool).name} not found on PATH, so {costs}; pass {option} with its full path", file=sys.stderr)
     return {

@@ -117,3 +117,44 @@ def test_same_source_from_different_clients_is_separate(tmp_path):
     store.mark("dn-aaaaa", "launched")
     task, new = claim(store, "dn-bbbbb", client="other")
     assert new and task.id == "dn-bbbbb"
+
+
+def test_each_event_carries_what_was_used_since_the_last(tmp_path):
+    store = Store(str(tmp_path / "db"))
+    claim(store, "dn-aaaaa")
+    store.mark("dn-aaaaa", "launched")
+    store.set_usage("dn-aaaaa", [{"model": "m", "requests": 2, "metered": 2, "input": 10, "output": 4}])
+    store.add_event("dn-aaaaa", "help", "which db?")
+    store.set_usage("dn-aaaaa", [
+        {"model": "m", "requests": 5, "metered": 5, "input": 25, "output": 9},
+        {"model": "n", "requests": 1, "metered": 0},
+    ])
+    store.add_event("dn-aaaaa", "output", "done", data={"zip_sha256": "x"})
+    # A domains event isn't the end of a stretch of work, so it carries nothing and moves nothing.
+    store.add_event("dn-aaaaa", "domains", data={"request": 1})
+    help_, output, domains = store.task_events("maubot", "dn-aaaaa")
+    assert help_.data == {"usage": [{"model": "m", "requests": 2, "metered": 2, "input": 10, "output": 4}]}
+    assert output.data == {"zip_sha256": "x", "usage": [
+        {"model": "m", "requests": 3, "metered": 3, "input": 15, "output": 5},
+        {"model": "n", "requests": 1, "metered": 0},
+    ]}
+    assert domains.data == {"request": 1}
+    store.end("dn-aaaaa", data={"share_pruned": True})
+    [*_, ended] = store.task_events("maubot", "dn-aaaaa")
+    # Nothing since the output, and the session's total.
+    assert ended.data == {"share_pruned": True, "usage": [], "usage_total": [
+        {"model": "m", "requests": 5, "metered": 5, "input": 25, "output": 9},
+        {"model": "n", "requests": 1, "metered": 0},
+    ]}
+    assert store.usage("dn-aaaaa") is None
+
+
+def test_an_unmetered_session_carries_no_usage(tmp_path):
+    store = Store(str(tmp_path / "db"))
+    claim(store, "dn-aaaaa")
+    store.mark("dn-aaaaa", "launched")
+    store.set_usage("dn-aaaaa", None)
+    store.add_event("dn-aaaaa", "output", "done")
+    store.end("dn-aaaaa")
+    output, ended = store.task_events("maubot", "dn-aaaaa")
+    assert output.data is None and ended.data is None

@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 Brad Anderson
 import contextlib
+import errno
 import io
 import json
 import os
@@ -13,7 +14,7 @@ from pathlib import Path
 import pytest
 
 from darner.job import JobError
-from darner.launch import FETCH_REJECTED, launch, main, parse_args, status
+from darner.launch import FETCH_REJECTED, forget, ignored_flags, launch, main, parse_args, session_usage, status
 
 FAKE_TMUX = """#!/bin/sh
 python3 -c 'import json, sys; print(json.dumps(sys.argv[1:]))' "$@" >> "$FAKE_TMUX_LOG"
@@ -36,7 +37,12 @@ esac
 FAKE_DEJIMA = """#!/usr/bin/env python3
 import json, os, sys
 if sys.argv[-1] == "--print-config":
-    sys.exit(sys.stdout.write(os.environ.get("FAKE_DEJIMA_CONFIG", "")) and 0)
+    # As dejima does, the section of the harness --harness names, if one is set for it.
+    asked = sys.argv[sys.argv.index("--harness") + 1] if "--harness" in sys.argv else None
+    config = os.environ.get(f"FAKE_DEJIMA_CONFIG_{asked}", os.environ.get("FAKE_DEJIMA_CONFIG", ""))
+    sys.exit(1 if config == "fail" else sys.stdout.write(config) and 0)
+if sys.argv[-1] == "--help-full":
+    sys.exit(sys.stdout.write(os.environ.get("FAKE_DEJIMA_HELP", "")) and 0)
 open(os.environ["FAKE_DEJIMA_LOG"], "w").write(json.dumps(sys.argv[1:]))
 """
 
@@ -109,6 +115,7 @@ def test_launch_creates_session_and_window(env):
     assert (task / "dependencies").read_text() == "pip:pytest\n"
     assert written_argv(env, "dn-abc23") == [
         str(env / "bin" / "dejima"), "--isolated", "--no-pause", "--shared-path-file", str(task / "shared-path"),
+        "--usage-path-file", str(task / "usage-path"),
         "--domains", str(task / "domains"), "--dependencies", str(task / "dependencies"),
         "--", PROMPT,
     ]
@@ -129,9 +136,50 @@ def test_duplicate_id_rejected(env):
 def test_no_grants_or_names_leaves_flags_out(env):
     launch(args(env), {"id": "dn-abc23", "prompt": "p"})
     shared = str(env / "tasks" / "dn-abc23" / "shared-path")
+    used = str(env / "tasks" / "dn-abc23" / "usage-path")
     assert written_argv(env, "dn-abc23") == [
-        str(env / "bin" / "dejima"), "--isolated", "--no-pause", "--shared-path-file", shared, "--", "p",
+        str(env / "bin" / "dejima"), "--isolated", "--no-pause", "--shared-path-file", shared, "--usage-path-file", used, "--", "p",
     ]
+
+
+@pytest.mark.parametrize(("help_text", "passed"), [
+    ("  --ignore-extra-args\n      An argument this version does not know is dropped.\n  --ignored-args-file <f>\n", True),
+    # An older dejima refuses the flags themselves; a longer flag isn't one.
+    ("  --keep-records\n", False),
+    ("  --ignore-extra-args\n", False),
+    ("  --ignore-extra-args-x\n  --ignored-args-file <f>\n", False),
+])
+def test_ignore_extra_args_is_passed_only_to_a_dejima_that_lists_it(env, monkeypatch, help_text, passed):
+    monkeypatch.setenv("FAKE_DEJIMA_HELP", help_text)
+    launch(args(env), {"id": "dn-abc23", "prompt": "p"})
+    argv = written_argv(env, "dn-abc23")
+    flags = argv[: argv.index("--")]
+    pair = ["--ignore-extra-args", "--ignored-args-file", str(env / "tasks" / "dn-abc23" / "ignored-args")]
+    assert (pair == flags[-3:]) is passed and ("--ignore-extra-args" in flags) is passed
+
+
+def test_status_reports_only_the_flags_it_passed_that_dejima_dropped(env, monkeypatch):
+    monkeypatch.setenv("FAKE_DEJIMA_HELP", "--ignore-extra-args --ignored-args-file")
+    launch(args(env), {"id": "dn-abc23", "prompt": "--made-up"})
+    task = env / "tasks" / "dn-abc23"
+    assert ignored_flags(task) == []
+    # A value is a host path, and anything else wasn't the launcher's, the prompt included.
+    (task / "ignored-args").write_text(f"--usage-path-file\n{task}/usage-path\n--made-up\n<b>x</b>\n--isolated x\n")
+    assert ignored_flags(task) == ["--usage-path-file"]
+    [entry] = status(args(env))
+    assert entry["ignored"] == ["--usage-path-file"]
+    real_fdopen = os.fdopen
+    def failing(fd, *a, **k):
+        f = real_fdopen(fd, *a, **k)
+        f.read = lambda *_: (_ for _ in ()).throw(OSError(errno.EIO, "I/O error"))
+        return f
+    monkeypatch.setattr(os, "fdopen", failing)
+    assert ignored_flags(task) == []
+    monkeypatch.setattr(os, "fdopen", real_fdopen)
+    (task / "ignored-args").unlink()
+    (task / "ignored-args").symlink_to(env / "elsewhere")
+    (env / "elsewhere").write_text("--usage-path-file\n")
+    assert ignored_flags(task) == []
 
 
 @pytest.mark.parametrize(
@@ -149,7 +197,7 @@ def test_harness_and_backend_resolution(env, job, expected):
         "--backend", "claude-code=anthropic", "--backend", "cline=self-hosted",
     )
     launch(a, {"id": "dn-abc23", "prompt": "p", **job})
-    assert written_argv(env, "dn-abc23")[5:-2] == ["--identity", "darner", *expected]
+    assert written_argv(env, "dn-abc23")[7:-2] == ["--identity", "darner", *expected]
 
 
 @pytest.mark.parametrize("job,defaults", [
@@ -190,8 +238,9 @@ def test_exec_runs_dejima_with_prompt_as_one_argument(env):
         check=True,
     )
     shared = str(env / "tasks" / "dn-abc23" / "shared-path")
+    used = str(env / "tasks" / "dn-abc23" / "usage-path")
     assert json.loads((env / "dejima.log").read_text()) == [
-        "--isolated", "--no-pause", "--shared-path-file", shared, "--", PROMPT,
+        "--isolated", "--no-pause", "--shared-path-file", shared, "--usage-path-file", used, "--", PROMPT,
     ]
 
 
@@ -249,8 +298,8 @@ def test_status_states(env, share):
     code, out, _ = run(a, "status")
     assert code == 0
     assert json.loads(out) == [
-        {"id": "dn-abc23", "state": "exited", "ready": True, "unsignalled": False, "help": False, "domains": False, "answerable": False, "run_id": None, "error": None, "awaiting_answer": False, "result_pending": False, "quiet": None, "screen": "", "domain_request": None},
-        {"id": "dn-starx", "state": "starting", "ready": False, "unsignalled": False, "help": False, "domains": False, "answerable": False, "run_id": None, "error": None, "awaiting_answer": False, "result_pending": False, "quiet": None, "screen": "", "domain_request": None},
+        {"id": "dn-abc23", "state": "exited", "ready": True, "unsignalled": False, "help": False, "domains": False, "answerable": False, "run_id": None, "usage": None, "ignored": [], "ran_with": {}, "error": None, "awaiting_answer": False, "result_pending": False, "quiet": None, "screen": "", "domain_request": None},
+        {"id": "dn-starx", "state": "starting", "ready": False, "unsignalled": False, "help": False, "domains": False, "answerable": False, "run_id": None, "usage": None, "ignored": [], "ran_with": {}, "error": None, "awaiting_answer": False, "result_pending": False, "quiet": None, "screen": "", "domain_request": None},
     ]
 
 
@@ -1461,6 +1510,26 @@ END
     assert (env / "print-config-args").read_text().split() == ["--identity", "darner", "--print-config"]
 
 
+def test_each_harness_s_defaults_are_dejima_s_for_that_harness(env, monkeypatch):
+    # dejima prints only the section of the harness it would run.
+    monkeypatch.setenv("FAKE_DEJIMA_CONFIG", "core.harness=claude-code\nharness.claude-code.model=claude-opus-5-5\n")
+    monkeypatch.setenv("FAKE_DEJIMA_CONFIG_cline", "core.harness=cline\nharness.cline.backend=self-hosted\nharness.cline.model=qwen3.5-4b\n")
+    code, out, _ = run(args(env), "--dejima", str(env / "bin" / "dejima"), "catalog")
+    catalog = json.loads(out)
+    assert catalog["default_harness"] == "claude-code"
+    assert catalog["defaults"] == {"claude-code": {"model": "claude-opus-5-5"}, "cline": {"backend": "self-hosted", "model": "qwen3.5-4b"}}
+    launch(args(env), {"id": "dn-abc23", "prompt": "p", "harness": "cline"})
+    [task] = status(args(env))
+    assert task["ran_with"] == {
+        "harness": {"value": "cline", "from": "task"}, "backend": {"value": "self-hosted", "from": "dejima"},
+        "model": {"value": "qwen3.5-4b", "from": "dejima"},
+    }
+    # A harness whose settings dejima couldn't print has them unknown, not unset.
+    monkeypatch.setenv("FAKE_DEJIMA_CONFIG_cline", "fail")
+    launch(args(env), {"id": "dn-def45", "prompt": "p", "harness": "cline"})
+    assert next(t for t in status(args(env)) if t["id"] == "dn-def45")["ran_with"] == {}
+
+
 def test_catalog_still_answers_when_dejima_can_t_print_its_config(env):
     root = env / "dejima-install"
     (root / "bin").mkdir(parents=True)
@@ -1484,6 +1553,35 @@ def test_dejima_s_own_defaults_are_checked_and_left_to_it(env, monkeypatch):
     launch(args(env, "--backend", "cline=self-hosted"), {"id": "dn-abc23", "prompt": "p", "harness": "cline"})
     argv = written_argv(env, "dn-abc23")
     assert argv[argv.index("--harness"):argv.index("--")] == ["--harness", "cline", "--backend", "self-hosted"]
+
+
+def test_a_launch_records_what_each_agent_setting_ran_with_and_what_set_it(env, monkeypatch):
+    monkeypatch.setenv(
+        "FAKE_DEJIMA_CONFIG",
+        "core.harness=claude-code\nharness.cline.backend=self-hosted\nharness.cline.model=qwen3.5-4b\nharness.cline.context_window=120000\n",
+    )
+    launch(args(env, "--model", "cline=llama3:8b"), {"id": "dn-abc23", "prompt": "p", "harness": "cline", "effort": "high"})
+    [task] = status(args(env))
+    assert task["ran_with"] == {
+        "harness": {"value": "cline", "from": "task"}, "backend": {"value": "self-hosted", "from": "dejima"},
+        "model": {"value": "llama3:8b", "from": "launcher"}, "effort": {"value": "high", "from": "task"},
+        "context_window": {"value": 120000, "from": "dejima"},
+    }
+    # Unnamed by the task, the harness is dejima's, and a setting nothing names is left out.
+    launch(args(env), {"id": "dn-def45", "prompt": "p"})
+    assert next(t for t in status(args(env)) if t["id"] == "dn-def45")["ran_with"] == {"harness": {"value": "claude-code", "from": "dejima"}}
+    # A setting dejima's config gives a value darner doesn't read is unknown, so nothing is said,
+    # unless the task or the launcher sets it instead.
+    monkeypatch.setenv("FAKE_DEJIMA_CONFIG", "core.harness=claude-code\nharness.claude-code.model=claude-sonnet-4@20250514\n")
+    launch(args(env), {"id": "dn-klm57", "prompt": "p"})
+    launch(args(env), {"id": "dn-nop23", "prompt": "p", "model": "claude-opus-5-5"})
+    ran = {t["id"]: t["ran_with"] for t in status(args(env))}
+    assert ran["dn-klm57"] == {}
+    assert ran["dn-nop23"] == {"harness": {"value": "claude-code", "from": "dejima"}, "model": {"value": "claude-opus-5-5", "from": "task"}}
+    # Without dejima's config, its defaults are unknown, so nothing is said.
+    monkeypatch.delenv("FAKE_DEJIMA_CONFIG")
+    launch(args(env, "--harness", "cline"), {"id": "dn-ghj67", "prompt": "p", "model": "m"})
+    assert next(t for t in status(args(env)) if t["id"] == "dn-ghj67")["ran_with"] == {}
 
 
 def b64(data: bytes) -> str:
@@ -1959,3 +2057,133 @@ def test_forget_delivered_needs_a_sha256(share, monkeypatch, third):
     a, _ = share
     monkeypatch.setenv("SSH_ORIGINAL_COMMAND", f"forget-delivered dn-abc23 {third}".strip())
     assert run(a)[0] == 2
+
+
+@pytest.fixture
+def metered(env):
+    """A launched task whose dejima named a usage record, outside the task directory as dejima keeps it."""
+    launch(args(env), {"id": "dn-abc23", "prompt": "p"})
+    task = env / "tasks" / "dn-abc23"
+    (env / "usage").mkdir()
+    record = env / "usage" / "0123456789abcdef.jsonl"
+    (task / "usage-path").write_text(f"{record}\n")
+    return task, record
+
+
+def test_usage_is_summed_by_model_with_absent_counts_left_absent(metered):
+    task, record = metered
+    record.write_text(
+        '{"t": 1, "model": "claude-opus-5-5", "status": 200, "input": 10, "output": 5, "cache_read": 100}\n'
+        '{"t": 2, "model": "claude-opus-5-5", "status": 200, "input": 3, "output": 2}\n'
+        '{"t": 3, "model": "z-ai/glm-5.3", "status": 200}\n'
+        # A line still being written is left for the next read.
+        '{"t": 4, "model": "claude-opus-5-5", "input": 99'
+    )
+    assert session_usage(task) == [
+        {"model": "claude-opus-5-5", "requests": 2, "metered": 2, "input": 13, "output": 7, "cache_read": 100},
+        {"model": "z-ai/glm-5.3", "requests": 1, "metered": 0},
+    ]
+
+
+def test_usage_rechecks_every_count_and_model(metered):
+    task, record = metered
+    record.write_text(
+        '{"model": "<b>x</b>", "input": 1}\n'
+        '{"model": "m", "input": -5, "output": 1.5, "cache_read": "7", "cache_write": 1000000000000, "status": 200}\n'
+        '{"model": "m", "output": true}\n'
+        'not json\n[1, 2]\n'
+        # Too deeply nested to parse is skipped like any other bad line.
+        + "[" * 100000 + "\n"
+    )
+    assert session_usage(task) == [
+        {"model": "m", "requests": 2, "metered": 0},
+        # A model that isn't a model name is counted, unnamed.
+        {"model": None, "requests": 1, "metered": 1, "input": 1},
+    ]
+
+
+def test_an_empty_record_is_metered_and_no_record_is_not(metered, env):
+    task, record = metered
+    assert session_usage(task) is None
+    record.write_text("")
+    assert session_usage(task) == []
+    # A record dejima didn't name, or one that isn't a regular file, isn't read.
+    (task / "usage-path").write_text(f"{env / 'usage' / 'other.jsonl'}\n")
+    assert session_usage(task) is None
+    link = env / "usage" / "fedcba9876543210.jsonl"
+    link.symlink_to(record)
+    (task / "usage-path").write_text(f"{link}\n")
+    assert session_usage(task) is None
+    (task / "usage-path").unlink()
+    assert session_usage(task) is None
+
+
+FAKE_DEJIMA_USAGE = """#!/bin/sh
+echo "$@" >> "$(dirname "$0")/dejima-usage.log"
+"""
+
+
+@pytest.mark.parametrize("keep_records", [False, True])
+def test_status_reports_usage_and_forget_has_dejima_usage_delete_it(metered, env, keep_records):
+    task, record = metered
+    record.write_text('{"model": "m", "input": 4}\n')
+    tool = env / "dejima-usage"
+    tool.write_text(FAKE_DEJIMA_USAGE)
+    tool.chmod(0o755)
+    a = args(env, "--dejima-usage", str(tool), *(["--keep-records"] if keep_records else []))
+    [entry] = status(a)
+    assert entry["usage"] == [{"model": "m", "requests": 1, "metered": 1, "input": 4}]
+    (task / "exit").write_text("0\n")
+    forget(a, "dn-abc23")
+    assert not task.exists()
+    # Deleted by dejima's own tool, by run id, unless dejima's records are being kept.
+    log = env / "dejima-usage.log"
+    assert (log.read_text() if log.exists() else "") == ("" if keep_records else "--forget 0123456789abcdef\n")
+
+
+def test_a_failed_usage_read_keeps_the_last_totals_and_status_working(metered, env, monkeypatch, capsys):
+    task, record = metered
+    record.write_text('{"model": "m", "input": 4}\n')
+    first = session_usage(task)
+    import darner.launch
+
+    def broken(*_):
+        raise OSError(errno.EIO, "I/O error")
+
+    monkeypatch.setattr(darner.launch, "_write_atomic", broken)
+    record.write_text('{"model": "m", "input": 4}\n{"model": "m", "input": 5}\n')
+    assert session_usage(task) == first
+    [entry] = status(args(env))
+    assert entry["usage"] == first
+    assert "couldn't read dn-abc23's usage (OSError)" in capsys.readouterr().err
+
+
+def test_usage_is_read_on_from_where_it_stopped(metered):
+    task, record = metered
+    record.write_text('{"model": "m", "input": 1}\n{"model": "m", "inp')
+    assert session_usage(task) == [{"model": "m", "requests": 1, "metered": 1, "input": 1}]
+    with record.open("a") as f:
+        f.write('ut": 2}\n{"model": "m", "output": 3}\n')
+    assert session_usage(task) == [{"model": "m", "requests": 3, "metered": 3, "input": 3, "output": 3}]
+    # Read again, nothing new: the totals hold, not double.
+    assert session_usage(task) == [{"model": "m", "requests": 3, "metered": 3, "input": 3, "output": 3}]
+
+
+def test_a_flooded_record_still_counts_what_follows(metered, monkeypatch):
+    import darner.launch
+    monkeypatch.setattr(darner.launch, "MAX_USAGE_READ", 64)
+    task, record = metered
+    record.write_text("x" * 200 + "\n" + '{"model": "m", "input": 1}\n' * 5)
+    for _ in range(10):
+        used = session_usage(task)
+    assert used == [{"model": "m", "requests": 5, "metered": 5, "input": 5}]
+
+
+def test_models_past_the_cap_are_counted_unnamed(metered):
+    task, record = metered
+    # A refused request's model is the one the agent named, so it can name as many as it likes.
+    record.write_text('{"model": "real", "input": 10}\n' + "".join(f'{{"model": "fake-{i}", "status": 400}}\n' for i in range(80)))
+    used = session_usage(task)
+    assert len(used) == 51 and used[0] == {"model": "fake-0", "requests": 1, "metered": 0}
+    assert {"model": "real", "requests": 1, "metered": 1, "input": 10} in used
+    assert used[-1] == {"model": None, "requests": 31, "metered": 0}

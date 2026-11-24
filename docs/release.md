@@ -6,13 +6,16 @@ Work lands on `development`, and every merge there publishes a pre-release. A re
 
 darner runs dejima on the dejima host and relies on these of its flags, tools and files:
 
-- `dejima`, in its `--help-full`: `--isolated`, `--no-pause`, `--shared-path-file`, `--keep-records`, `--identity`, `--harness`, `--backend`, `--model`, `--effort`, `--context-window`, `--domains`, `--internal-domain`, `--dependencies`, `--drop-domains`, `--require-sealed` and `--print-config`
-- `--print-config`'s `section.key=value` lines, for `core.harness` and `harness.<name>.{backend,model,effort,context_window}`
+- `dejima`, in its `--help-full`: `--isolated`, `--no-pause`, `--shared-path-file`, `--usage-path-file`, `--keep-records`, `--identity`, `--harness`, `--backend`, `--model`, `--effort`, `--context-window`, `--domains`, `--internal-domain`, `--dependencies`, `--drop-domains`, `--require-sealed` and `--print-config`, and `--ignore-extra-args` with `--ignored-args-file`, passed when both are listed there, so a flag a newer darner passes is dropped and reported rather than refusing the launch
+- the file `--ignored-args-file` names: one dropped argument per line, written before the session starts; dejima never drops a `--no-`, `--drop-`, `--require-` or `--strict-` flag
+- `--print-config`'s `section.key=value` lines, for `core.harness` and `harness.<name>.{backend,model,effort,context_window}`, printing only the section of the harness it would run, which `--harness` names
 - `dejima-allow`: `--container`, `--internal` and `--port`, and exit status 2 meaning granted but not answering on 443
 - `dejima-share`: `prune --isolated [share]` and `--yes`, as its `--help-full` lists them
+- `dejima-usage`: `--forget <run id>`, and `--total <run id>`, whose sums the launcher's own must match
 - the manifests, `harnesses/*/harness.conf` (`api_styles`, and `keys` with `effort:?enum:...` and `context_window`) and `backends/*/backend.conf` (`api_style`), found beside the directory `dejima` resolves to from `bin/`
 - `$XDG_RUNTIME_DIR/dejima/sessions/<run id>` with its `pane=` and `pid=` lines. `pid=` is matched against the process the launcher started, so `--dejima` should name dejima or a wrapper that `exec`s it; with any other wrapper, the launcher falls back to the run id in its dejima's environment
 - the `SANDBOX_ISOLATED_WORK=dejima_isolated-work-<run id>` volume name
+- the usage record `--usage-path-file` names, `<run id>.jsonl`: one JSON line per model call, with `model` and any of `input`, `output`, `cache_read` and `cache_write`, where `input`, `cache_read` and `cache_write` don't overlap; empty while nothing's spent, and absent for a session that isn't metered
 
 `tests/test_dejima.py` checks these against a real dejima, which CI fetches: the release the newest `CHANGELOG.md` entry names, or dejima's `development` while that's `N/A` or not tagged yet. Locally, it runs when `DEJIMA_SRC` names a dejima checkout.
 
@@ -37,6 +40,8 @@ The release workflow publishes from exactly two places: a push to `main` makes a
 - **Check the job's token** can create releases but can't push to either branch.
 
 Pre-releases are published on this forge only. Before darner is mirrored to GitHub, stop them reaching it: the mirror publishes `main` and the tags on it, and a pre-release's `v<version>.dev<run>` tag is on `main` once `development` merges. Either exclude `.dev` tags from the mirror, or have pre-releases stop creating tags.
+
+The mirror publishes a release's `.mbp` only if the release notes state its sha256, which the release workflow adds, and a reader can rebuild it from the tag (`docs/matrix.md`). That holds only while everything it packages is committed source the mirror doesn't rewrite. `tests/test_plugin_build.py` checks the build is reproducible and that no packaged file carries a forge link, and `tests/test_dejima.py` runs the mirror's rewrite over a copy and rebuilds.
 
 ## 3. What is required
 

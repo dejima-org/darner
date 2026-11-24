@@ -1,6 +1,6 @@
 maubot: 0.5.0
 id: page.dejima.darner
-version: 0.1.19
+version: 0.1.20
 license: GPL-3.0-or-later
 modules:
 - dragonlet

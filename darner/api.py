@@ -12,6 +12,7 @@ import os
 import re
 import shutil
 import signal
+import sqlite3
 import sys
 import tempfile
 import time
@@ -21,12 +22,12 @@ from pathlib import Path
 
 from aiohttp import web
 
-from darner import archive, configsets, selftest
+from darner import archive, configsets, selftest, usage
 from darner.job import (
-    OUTPUT_INSTRUCTIONS, JobError, check_harness, compose_prompt, new_task_id, valid_context_window, valid_domain, valid_model,
-    valid_name, valid_task_id, validate_job,
+    OUTPUT_INSTRUCTIONS, JobError, check_harness, compose_prompt, new_task_id, valid_context_window, valid_domain, valid_effort,
+    valid_model, valid_name, valid_task_id, validate_job,
 )
-from darner.launch import FETCH_REJECTED
+from darner.launch import FETCH_REJECTED, RAN_WITH
 from darner.store import NameTaken, Store
 
 log = logging.getLogger("darner.api")
@@ -44,6 +45,11 @@ def _audit(action: str, client: str, task_id: str, requester: str, **details) ->
     audit.info("%s %s by %r via %s%s", action, task_id, requester, client, extra)
 
 RUN_ID = re.compile(r"[0-9a-f]{16}")
+# What's kept of a task or message a user asked to keep, in UTF-8 bytes.
+MAX_KEPT = 8 * 1024
+# Flags dejima dropped, as the launcher reported them: only ever ones it passed.
+IGNORED_FLAG = re.compile(r"--[a-z][a-z0-9-]{0,63}")
+MAX_IGNORED = 50
 
 EXAMPLE_TOKEN = "replace-with-a-long-random-token"
 MIN_TOKEN = 32
@@ -67,6 +73,7 @@ DEFAULTS = {
     "policy": {},
     "limits": {},
     "catalog": {},
+    "keep_input": False,
 }
 
 
@@ -98,7 +105,7 @@ def session_link(config: dict, run_id: str | None) -> str | None:
 
 REQUEST_KEYS = {
     "task", "context", "blurbs", "configs", "grants", "harness", "backend", "model", "effort", "context_window", "network",
-    "requester", "source", "name",
+    "requester", "source", "name", "keep",
 }
 # A session's name, which stands in for its id as dn-<name>. One shaped like an id can't be one.
 SESSION_NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,31}")
@@ -188,6 +195,32 @@ def _text(body: dict, key: str, required: bool = True) -> str:
     if not isinstance(value, str) or (required and not value.strip()) or len(value) > MAX_TEXT:
         raise RequestError(400, f"{key} must be {'non-empty ' if required else ''}text of at most {MAX_TEXT} characters")
     return value
+
+
+def _keep(config: dict, body: dict) -> bool:
+    """Whether the request asks to keep what it sends, which only an API with keep_input may."""
+    keep = body.get("keep", False)
+    if not isinstance(keep, bool):
+        raise RequestError(400, "keep must be true or false")
+    if keep and not config["keep_input"]:
+        raise RequestError(400, "this API doesn't keep what's sent: its keep_input setting is off")
+    return keep
+
+
+def _kept_text(text: str) -> tuple[str, bool]:
+    """Text cut to MAX_KEPT bytes at a character boundary, and whether it was cut."""
+    data = text.encode(errors="replace")
+    return data[:MAX_KEPT].decode(errors="ignore"), len(data) > MAX_KEPT
+
+
+def _store_kept(store: Store, client: str, task_id: str, kind: str, requester: str, text: str) -> None:
+    """Keep what was sent, once it has been. Not keeping it doesn't fail a request that did
+    what it was for, since resending would type it twice; the log says why."""
+    try:
+        if not store.keep(client, task_id, kind, requester, *_kept_text(text)):
+            log.warning("didn't keep a %s for %s, which was deleted meanwhile", kind, task_id)
+    except sqlite3.Error:
+        log.exception("keeping a %s for %s failed", kind, task_id)
 
 
 def _list(d: dict, key: str) -> list:
@@ -571,6 +604,8 @@ def end_task(app: web.Application, task_id: str, note: str = "", share: str | No
 
     share, "kept" or "pruned", is what became of its ~/shared, for its frontend to say.
     """
+    if (total := app[STORE].usage(task_id)) is not None:
+        audit.info("usage %s: %s", task_id, json.dumps(total, separators=(",", ":")))
     app[STORE].end(task_id, note, {f"share_{share}": True} if share else None)
     kept = app[STORE].kept_outputs(task_id)
     task_dir = Path(app[CONFIG]["results_dir"]) / task_id
@@ -644,6 +679,18 @@ async def forget(app: web.Application, task_id: str, delivered: str | None = Non
     return "kept"
 
 
+def report_ignored(store: Store, task: dict) -> None:
+    """Say once that the dejima host's dejima dropped flags this darner passed:
+    the session runs without what they do, until dejima is updated there."""
+    flags = task.get("ignored")
+    if not isinstance(flags, list) or store.latest_event_time(task["id"], ("ignored",)) is not None:
+        return
+    flags = sorted({f for f in flags[:MAX_IGNORED] if isinstance(f, str) and IGNORED_FLAG.fullmatch(f)})
+    if flags:
+        log.warning("dejima on the dejima host is older than this darner: %s ran without %s", task["id"], ", ".join(flags))
+        store.add_event(task["id"], "ignored", data={"flags": flags})
+
+
 async def poll_once(app: web.Application) -> None:
     config, store = app[CONFIG], app[STORE]
     await purge(app)
@@ -656,6 +703,8 @@ async def poll_once(app: web.Application) -> None:
     if code:
         log.warning("status failed: %s", err or f"exit {code}")
         return
+    if err:
+        log.warning("status: %s", err)
     listed = json.loads(out)
     app[FORGOTTEN].update(ended - {task["id"] for task in listed})
     # A task the launcher no longer lists can never report ending, such as one
@@ -682,6 +731,11 @@ async def poll_once(app: web.Application) -> None:
                 log.warning("can't read %s's ~/shared, so its output can't be collected: %s", task["id"], task["error"])
         if isinstance(task.get("run_id"), str) and RUN_ID.fullmatch(task["run_id"]):
             store.set_run_id(task["id"], task["run_id"])
+        # Before any event this poll adds, so each carries what was used up to now. A metered
+        # session never turns unmetered, so a read that failed doesn't erase what was counted.
+        if (used := usage.clean(task.get("usage"))) is not None or store.usage(task["id"]) is None:
+            store.set_usage(task["id"], used)
+        report_ignored(store, task)
         # One task's failure must not hold up the others.
         try:
             if task.get("help"):
@@ -885,6 +939,7 @@ async def create_task(request: web.Request) -> web.Response:
     try:
         job, source, requester, _, blurbs = _build(config, body)
         name = _session_name(body)
+        keep = _keep(config, body)
         await check_job_harness(request.app, job)
     except RequestError as e:
         return web.json_response({"error": str(e)}, status=e.status)
@@ -914,9 +969,11 @@ async def create_task(request: web.Request) -> web.Response:
         store.delete(job["id"])
         return web.json_response({"error": f"launch failed: {e}"}, status=502)
     store.mark(job["id"], "launched", target=target)
+    if keep:
+        _store_kept(store, client, job["id"], "task", requester, body["task"])
     _audit(
         "start", client, job["id"], requester, domains=job["domains"], internal=job["internal_domains"],
-        dependencies=job["dependencies"], files=[f["name"] for f in job["files"]],
+        dependencies=job["dependencies"], files=[f["name"] for f in job["files"]], **({"kept": True} if keep else {}),
     )
     run_id = result.get("run_id")
     if isinstance(run_id, str) and RUN_ID.fullmatch(run_id):
@@ -1018,10 +1075,11 @@ async def _type_into(request: web.Request, command: str) -> web.Response:
         body = await request.json()
     except ValueError:
         return web.json_response({"error": "body must be JSON"}, status=400)
-    if not isinstance(body, dict) or set(body) != {"text", "requester"}:
-        return web.json_response({"error": "body must have text and requester"}, status=400)
+    if not isinstance(body, dict) or not {"text", "requester"} <= set(body) <= {"text", "requester", "keep"}:
+        return web.json_response({"error": "body must have text and requester, and may have keep"}, status=400)
     try:
         text, requester = _text(body, "text"), _requester(body.get("requester"))
+        keep = _keep(request.app[CONFIG], body)
     except RequestError as e:
         return web.json_response({"error": str(e)}, status=e.status)
     payload = json.dumps({"text": text, "requester": requester}).encode()
@@ -1033,7 +1091,31 @@ async def _type_into(request: web.Request, command: str) -> web.Response:
         return web.json_response({"error": f"{command} failed: {e}"}, status=502)
     if code:
         return web.json_response({"error": err or f"launcher exited {code}"}, status=409)
-    _audit(command, client, task_id, requester, length=len(text))
+    if keep:
+        _store_kept(request.app[STORE], client, task_id, command, requester, text)
+    _audit(command, client, task_id, requester, length=len(text), **({"kept": True} if keep else {}))
+    return web.Response(status=204)
+
+
+async def list_kept(request: web.Request) -> web.Response:
+    """What users asked to keep of what they sent a session, oldest first, and whether this API keeps any."""
+    client, store = _client(request), request.app[STORE]
+    task_id = _task_id(request)
+    if store.task_status(client, task_id) is None:
+        raise _not_found(f"no session {task_id}")
+    return web.json_response({"keep_input": request.app[CONFIG]["keep_input"], "kept": store.kept(client, task_id)})
+
+
+async def delete_kept(request: web.Request) -> web.Response:
+    client, task_id, seq = _client(request), _task_id(request), int(request.match_info["seq"])
+    try:
+        body = await request.json() if request.can_read_body else {}
+        requester = _requester(body.get("requester"))
+    except (ValueError, RequestError, AttributeError):
+        return web.json_response({"error": "body must have requester"}, status=400)
+    if not request.app[STORE].forget_kept(client, task_id, seq):
+        raise _not_found("no such kept input")
+    _audit("delete-kept", client, task_id, requester, seq=seq)
     return web.Response(status=204)
 
 
@@ -1046,6 +1128,25 @@ async def list_blurbs(request: web.Request) -> web.Response:
 STARTED_WITH = (
     "configs", "blurbs", *configsets.SINGLES, "domains", "internal_domains", "dependencies", "files",
 )
+
+
+_RAN_WITH_CHECKS = {
+    "harness": valid_name, "backend": valid_name, "model": valid_model, "effort": valid_effort,
+    "context_window": valid_context_window,
+}
+
+
+def _ran_with(settings: object) -> dict:
+    """The launcher's account of each agent setting and what set it. Empty if any
+    entry is malformed, since leaving one out would show that setting as unset."""
+    if not isinstance(settings, dict):
+        return {}
+    kept = {
+        key: {"value": s["value"], "from": s["from"]} for key in RAN_WITH
+        if isinstance(s := settings.get(key), dict) and s.get("from") in ("task", "launcher", "dejima")
+        and _RAN_WITH_CHECKS[key](s.get("value"))
+    }
+    return kept if len(kept) == len(set(RAN_WITH) & set(settings)) else {}
 
 
 async def _sessions(request: web.Request, task_id: str | None = None) -> list[dict]:
@@ -1077,7 +1178,9 @@ async def _sessions(request: web.Request, task_id: str | None = None) -> list[di
             "state": state.get("state", "unknown"),
             "answerable": bool(state.get("answerable")),
             "waiting": waiting,
+            "usage": usage.clean(state["usage"]) if "usage" in state else store.usage(task["id"]),
             "started_with": {key: task["job"][key] for key in STARTED_WITH if task["job"].get(key)},
+            "ran_with": _ran_with(state.get("ran_with")),
         })
     return sessions
 
@@ -1270,7 +1373,7 @@ async def get_catalog(request: web.Request) -> web.Response:
         found = await fetch_catalog(request.app)
     except RuntimeError as e:
         return web.json_response({"error": f"catalog failed: {e}"}, status=502)
-    return web.json_response(describe_catalog(found, request.app[CONFIG]["catalog"]))
+    return web.json_response({**describe_catalog(found, request.app[CONFIG]["catalog"]), "keep_input": request.app[CONFIG]["keep_input"]})
 
 
 def describe_catalog(found: dict, catalog: dict) -> dict:
@@ -1348,6 +1451,8 @@ def make_app(config: dict, poll: bool = True) -> web.Application:
     config["catalog"] = check_catalog_config(config.get("catalog", {}))
     if config.get("remote_access_url") and not re.match(r"https?://", config["remote_access_url"]):
         raise ValueError("remote_access_url must start with http:// or https://")
+    if not isinstance(config["keep_input"], bool):
+        raise ValueError("keep_input must be true or false")
     app = web.Application(client_max_size=256 * 1024, middlewares=[_json_errors])
     app[CONFIG] = config
     app[STORE] = Store(config["db_path"])
@@ -1381,6 +1486,8 @@ def make_app(config: dict, poll: bool = True) -> web.Application:
     app.router.add_post(r"/v1/tasks/{id:dn-[a-z0-9][a-z0-9-]{0,31}}/message", message_task)
     app.router.add_post(r"/v1/tasks/{id:dn-[a-z0-9][a-z0-9-]{0,31}}/files", upload_file)
     app.router.add_post(r"/v1/tasks/{id:dn-[a-z0-9][a-z0-9-]{0,31}}/check", check_task)
+    app.router.add_get(r"/v1/tasks/{id:dn-[a-z0-9][a-z0-9-]{0,31}}/kept", list_kept)
+    app.router.add_post(r"/v1/tasks/{id:dn-[a-z0-9][a-z0-9-]{0,31}}/kept/{seq:\d{1,9}}/delete", delete_kept)
     app.router.add_get("/v1/tasks", list_sessions)
     app.router.add_get(r"/v1/tasks/{id:dn-[a-z0-9][a-z0-9-]{0,31}}", get_session)
     app.router.add_get(r"/v1/tasks/{id:dn-[a-z0-9][a-z0-9-]{0,31}}/events", task_events)

@@ -22,6 +22,7 @@ if command == ["status"]:
     if os.environ.get("STUB_STATUS_COUNT"):
         open(os.environ["STUB_STATUS_COUNT"], "a").write("status\\n")
     sys.stdout.write(open(os.environ["STUB_STATUS"]).read())
+    sys.stderr.write(os.environ.get("STUB_STATUS_STDERR", ""))
 elif command[:1] == ["catalog"]:
     open(os.environ["STUB_LOG"], "a").write(json.dumps(command) + "\\n")
     sys.stdout.write(os.environ["STUB_CATALOG"])
@@ -252,7 +253,8 @@ async def test_end_to_end_with_launcher(aiohttp_client, config, tmp_path, monkey
     task_id = (await resp.json())["id"]
     argv = json.loads((tmp_path / "tasks" / task_id / "argv.json").read_text())
     assert argv[3:5] == ["--shared-path-file", str(tmp_path / "tasks" / task_id / "shared-path")]
-    assert argv[5:9] == ["--harness", "claude-code", "--backend", "anthropic"]
+    assert argv[5:7] == ["--usage-path-file", str(tmp_path / "tasks" / task_id / "usage-path")]
+    assert argv[7:11] == ["--harness", "claude-code", "--backend", "anthropic"]
     assert argv[-1].startswith("Investigate these logs")
 
     # What dejima and the agent would do: record ~/shared, leave output, signal it.
@@ -666,6 +668,17 @@ async def test_share_error_is_logged_once(started, tmp_path, monkeypatch, caplog
     assert warnings == [f"can't read {task_id}'s ~/shared, so its output can't be collected: shared path '/x' is not under /y"]
 
 
+async def test_a_successful_status_s_stderr_is_logged(started, tmp_path, monkeypatch, caplog):
+    app, client, task_id, *_ = started
+    path = tmp_path / "status.json"
+    path.write_text(json.dumps([{"id": task_id, "state": "running", "ready": False}]))
+    monkeypatch.setenv("STUB_STATUS", str(path))
+    monkeypatch.setenv("STUB_STATUS_STDERR", f"darner-launch: couldn't read {task_id}'s usage (OSError)\n")
+    with caplog.at_level("WARNING", logger="darner.api"):
+        await poll_once(app)
+    assert f"status: couldn't read {task_id}'s usage (OSError)" in caplog.text
+
+
 async def test_stop_reaches_launcher(started, tmp_path):
     app, client, task_id, *_ = started
     assert (await client.post(f"/v1/tasks/{task_id}/stop", json=STOP_BODY, headers=AUTH)).status == 204
@@ -782,7 +795,10 @@ async def test_sessions_list_what_each_waits_on(started, tmp_path, monkeypatch, 
     await poll_once(app)
     path.write_text(json.dumps([{
         "id": task_id, "state": "running", "answerable": True, "awaiting_answer": True, "domain_request": None,
-        "run_id": RUN,
+        "run_id": RUN, "ran_with": {
+            "harness": {"value": "cline", "from": "dejima"}, "model": {"value": "m", "from": "launcher"},
+            "network": {"value": "sealed", "from": "task"},
+        },
     }]))
     await poll_once(app)
     resp = await client.get("/v1/tasks", headers=AUTH)
@@ -795,8 +811,24 @@ async def test_sessions_list_what_each_waits_on(started, tmp_path, monkeypatch, 
     assert single == session
     # What the request asked for, never the prompt.
     assert session["started_with"] == {"domains": ["pypi.org"], "dependencies": ["pip:pytest"]}
+    # What the launcher says each agent setting ran with, and nothing it doesn't show.
+    assert session["ran_with"] == {"harness": {"value": "cline", "from": "dejima"}, "model": {"value": "m", "from": "launcher"}}
     [help_event] = await (await client.get(f"/v1/tasks/{task_id}/events", headers=AUTH)).json()
     assert help_event["created"] > 0
+
+
+@pytest.mark.parametrize("bad", [
+    {"model": {"value": "<b>", "from": "dejima"}}, {"effort": {"value": "high", "from": "elsewhere"}},
+    {"backend": "self-hosted"}, {"context_window": {"value": "30000", "from": "task"}},
+])
+async def test_a_session_s_ran_with_is_dropped_whole_if_any_entry_is_malformed(client, tmp_path, monkeypatch, bad):
+    # Dropping just the one would show that setting as unset.
+    task_id = (await (await client.post("/v1/tasks", json=request(), headers=AUTH)).json())["id"]
+    path = tmp_path / "status.json"
+    path.write_text(json.dumps([{"id": task_id, "state": "running", "ran_with": {"harness": {"value": "cline", "from": "task"}, **bad}}]))
+    monkeypatch.setenv("STUB_STATUS", str(path))
+    session = await (await client.get(f"/v1/tasks/{task_id}", headers=AUTH)).json()
+    assert session["ran_with"] == {}
 
 
 async def test_a_session_says_the_config_sets_and_blurbs_it_was_started_with(client, config):
@@ -2037,3 +2069,155 @@ async def test_errors_are_json_for_frontends_to_relay(client):
     assert resp.status == 404 and await resp.json() == {"error": "no session dn-recipes"}
     resp = await client.get("/v1/nothing-here", headers=AUTH)
     assert resp.status == 404 and await resp.json() == {"error": "Not Found"}
+
+
+async def test_usage_reaches_events_and_the_session_view(started, tmp_path, monkeypatch):
+    app, client, task_id, status, output = started
+    path = tmp_path / "status.json"
+
+    def report(state, used, hostile=False):
+        path.write_text(json.dumps([{"id": task_id, "state": state, "ready": True, "usage": used}]))
+        monkeypatch.setenv("STUB_STATUS", str(path))
+
+    used = [{"model": "claude-opus-5-5", "requests": 3, "metered": 3, "input": 30, "output": 12, "cache_read": 900}]
+    report("running", used)
+    output(zip_bytes([("RESULT.md", "Found it."), ("MANIFEST.txt", "x")]))
+    await poll_once(app)
+    [event] = await events(client)
+    assert event["type"] == "output" and event["data"]["usage"] == used
+
+    resp = await client.get(f"/v1/tasks/{task_id}", headers=AUTH)
+    assert (await resp.json())["usage"] == used
+
+    # Whatever the launcher says is checked again: an entry that isn't a model's totals is dropped.
+    app[STATUS_CACHE].clear()
+    report("running", [{"model": "<script>", "requests": 1}, *used])
+    resp = await client.get(f"/v1/tasks/{task_id}", headers=AUTH)
+    assert (await resp.json())["usage"] == used
+
+    more = [{"model": "claude-opus-5-5", "requests": 4, "metered": 4, "input": 41, "output": 20, "cache_read": 1200}]
+    report("exited", more)
+    output(zip_bytes([("RESULT.md", "Done."), ("MANIFEST.txt", "x")]))
+    await poll_once(app)
+    *_, last, ended = await events(client)
+    assert last["data"]["usage"] == [{"model": "claude-opus-5-5", "requests": 1, "metered": 1, "input": 11, "output": 8, "cache_read": 300}]
+    assert ended["type"] == "ended" and ended["data"]["usage"] == [] and ended["data"]["usage_total"] == more
+
+
+async def test_a_failed_usage_read_doesnt_erase_what_was_counted(started, tmp_path, monkeypatch):
+    app, client, task_id, status, output = started
+    path = tmp_path / "status.json"
+    used = [{"model": "m", "requests": 2, "metered": 2, "output": 9}]
+    for reported in (used, None):
+        path.write_text(json.dumps([{"id": task_id, "state": "running", "ready": False, "usage": reported}]))
+        monkeypatch.setenv("STUB_STATUS", str(path))
+        await poll_once(app)
+    assert app[STORE].usage(task_id) == used
+
+
+async def test_flags_dejima_dropped_are_reported_once(started, tmp_path, monkeypatch, caplog):
+    app, client, task_id, status, output = started
+    path = tmp_path / "status.json"
+    for _ in range(2):
+        path.write_text(json.dumps([{
+            "id": task_id, "state": "running", "ready": False,
+            "ignored": ["--usage-path-file", "<b>x</b>", "--A", 7],
+        }]))
+        monkeypatch.setenv("STUB_STATUS", str(path))
+        await poll_once(app)
+    events = await (await client.get(f"/v1/tasks/{task_id}/events", headers=AUTH)).json()
+    assert [e["data"] for e in events if e["type"] == "ignored"] == [{"flags": ["--usage-path-file"]}]
+    assert "ran without --usage-path-file" in caplog.text
+
+
+async def test_nothing_sent_is_kept_unless_the_api_keeps_input(started):
+    app, client, task_id, *_ = started
+    resp = await client.post("/v1/tasks", json=request(keep=True, source={"kind": "web", "ref": "1" * 32}), headers=AUTH)
+    assert resp.status == 400 and "keep_input" in (await resp.json())["error"]
+    body = {"text": "the password is hunter2", "requester": "@u:example.org", "keep": True}
+    resp = await client.post(f"/v1/tasks/{task_id}/message", json=body, headers=AUTH)
+    assert resp.status == 400 and "keep_input" in (await resp.json())["error"]
+    assert await (await client.get(f"/v1/tasks/{task_id}/kept", headers=AUTH)).json() == {"keep_input": False, "kept": []}
+
+
+@pytest.fixture
+async def keeping(aiohttp_client, config, tmp_path, monkeypatch):
+    config["keep_input"] = True
+    app = make_app(config, poll=False)
+    client = await aiohttp_client(app)
+    task_id = (await (await client.post("/v1/tasks", json=request(keep=True), headers=AUTH)).json())["id"]
+    return app, client, task_id
+
+
+async def test_kept_input_is_listed_cut_to_its_limit_and_kept_until_the_session_is_cleared(keeping, tmp_path, monkeypatch):
+    app, client, task_id = keeping
+    # Cut at a character boundary: the last é would straddle the limit.
+    long = "x" * (8 * 1024 - 1) + "é"
+    for text, keep in (("Also check the logs.", True), ("not this one", False), (long, True)):
+        body = {"text": text, "requester": "@alice:example.org", **({"keep": True} if keep else {})}
+        assert (await client.post(f"/v1/tasks/{task_id}/message", json=body, headers=AUTH)).status == 204
+    kept = await (await client.get(f"/v1/tasks/{task_id}/kept", headers=AUTH)).json()
+    assert kept["keep_input"] is True
+    assert [(k["kind"], k["requester"], k["text"], k["truncated"]) for k in kept["kept"]] == [
+        ("task", "@u:example.org", "Investigate these logs", False),
+        ("message", "@alice:example.org", "Also check the logs.", False),
+        ("message", "@alice:example.org", "x" * (8 * 1024 - 1), True),
+    ]
+    # Never an event, which other frontends and notifications read.
+    assert all(e["type"] != "kept" for e in await (await client.get("/v1/events", headers=AUTH)).json())
+    # It outlasts the session's end, which deletes the prompt, until the session is cleared.
+    path = tmp_path / "status.json"
+    path.write_text(json.dumps([{"id": task_id, "state": "exited", "ready": False}]))
+    monkeypatch.setenv("STUB_STATUS", str(path))
+    await poll_once(app)
+    assert len((await (await client.get(f"/v1/tasks/{task_id}/kept", headers=AUTH)).json())["kept"]) == 3
+    assert (await client.post(f"/v1/tasks/{task_id}/clear", json={"requester": "@a:example.org"}, headers=AUTH)).status == 204
+    assert app[STORE].db.execute("SELECT count(*) FROM kept").fetchone() == (0,)
+
+
+async def test_kept_input_can_be_deleted_by_its_frontend_alone(keeping, config):
+    app, client, task_id = keeping
+    [kept] = (await (await client.get(f"/v1/tasks/{task_id}/kept", headers=AUTH)).json())["kept"]
+    config["tokens"]["other"] = "0ther-0123456789abcdef0123456789abcdef"
+    other = {"Authorization": "Bearer 0ther-0123456789abcdef0123456789abcdef"}
+    assert (await client.get(f"/v1/tasks/{task_id}/kept", headers=other)).status == 404
+    delete = f"/v1/tasks/{task_id}/kept/{kept['seq']}/delete"
+    assert (await client.post(delete, json={"requester": "@b:example.org"}, headers=other)).status == 404
+    assert (await client.post(delete, json={}, headers=AUTH)).status == 400
+    assert (await client.post(delete, json={"requester": "@a:example.org"}, headers=AUTH)).status == 204
+    assert (await (await client.get(f"/v1/tasks/{task_id}/kept", headers=AUTH)).json())["kept"] == []
+    assert (await client.post(delete, json={"requester": "@a:example.org"}, headers=AUTH)).status == 404
+
+
+@pytest.mark.parametrize("keep", ["yes", 1, None])
+async def test_keep_must_be_true_or_false(keeping, keep):
+    app, client, task_id = keeping
+    body = {"text": "hi", "requester": "@a:example.org", "keep": keep}
+    assert (await client.post(f"/v1/tasks/{task_id}/message", json=body, headers=AUTH)).status == 400
+
+
+async def test_keep_input_must_be_a_boolean(config):
+    config["keep_input"] = "false"
+    with pytest.raises(ValueError, match="keep_input must be true or false"):
+        make_app(config, poll=False)
+
+
+async def test_the_catalog_says_whether_the_api_keeps_input(keeping):
+    app, client, _ = keeping
+    assert (await (await client.get("/v1/catalog", headers=AUTH)).json())["keep_input"] is True
+
+
+def test_deleted_rows_are_overwritten(tmp_path):
+    assert Store(str(tmp_path / "db")).db.execute("PRAGMA secure_delete").fetchone() == (1,)
+
+
+def test_a_session_deleted_meanwhile_keeps_nothing_for_a_task_later_given_its_id(tmp_path):
+    store = Store(str(tmp_path / "db"))
+    source = {"kind": "web", "ref": "1" * 32}
+    store.claim("dn-abc23", "web", source, "@a:example.org", "{}")
+    store.delete("dn-abc23")
+    assert not store.keep("web", "dn-abc23", "message", "@a:example.org", "secret", False)
+    store.claim("dn-abc23", "maubot", {**source, "kind": "matrix"}, "@b:example.org", "{}")
+    assert store.kept("maubot", "dn-abc23") == []
+    # Nor for another client's session.
+    assert not store.keep("web", "dn-abc23", "message", "@a:example.org", "secret", False)

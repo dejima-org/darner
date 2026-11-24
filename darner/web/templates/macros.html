@@ -1,0 +1,10 @@
+{# A config set's keywords, one a line, as a task naming it applies them. #}
+{% macro settings(described) %}{% for key, value in described.items() if key != "description" %}{{ key }}: {% if value is string %}{{ value }}{% else %}{{ value | join(", ") }}{% endif %}
+{% endfor %}{% endmacro %}
+
+{# The Keep box: who can read it stays visible, the rest is in a popover like a config set's. #}
+{% macro keep_box(id, label) -%}
+<div class="choice keep"><label><input type="checkbox" name="keep" value="1" autocomplete="off" data-nodraft aria-describedby="{{ id }}"> {{ label }} <span class="description">Everyone who can use darner-web can read it there.</span></label>
+<button type="button" class="view quiet" aria-expanded="false" aria-label="View what keeping it means">view</button>
+<div class="peek"><p id="{{ id }}">It's kept until you delete it or the session is cleared. Leave this unticked for passwords, tokens or anything else secret. Only the first 8 KiB is kept.</p></div></div>
+{%- endmacro %}

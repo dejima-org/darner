@@ -55,10 +55,28 @@ def _image(self, tokens, idx, options, env):
     return f"{escape(alt)} ({escape(token.attrGet('src') or '')})"
 
 
-_md = MarkdownIt("commonmark", {"html": False})
+def _table_open(self, tokens, idx, options, env):
+    # Scrolls on its own when wider than the page.
+    return '<div class="table"><table>\n'
+
+
+def _table_close(self, tokens, idx, options, env):
+    return "</table></div>\n"
+
+
+def _cell_open(self, tokens, idx, options, env):
+    # A column's alignment is an inline style, which the CSP refuses, so it's dropped.
+    return f"<{tokens[idx].tag}>"
+
+
+_md = MarkdownIt("commonmark", {"html": False}).enable("table")
 _md.add_render_rule("link_open", _link_open)
 _md.add_render_rule("link_close", _link_close)
 _md.add_render_rule("image", _image)
+_md.add_render_rule("table_open", _table_open)
+_md.add_render_rule("table_close", _table_close)
+_md.add_render_rule("th_open", _cell_open)
+_md.add_render_rule("td_open", _cell_open)
 
 
 def render(text: str) -> Markup:

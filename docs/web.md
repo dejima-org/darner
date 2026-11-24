@@ -2,7 +2,7 @@
 
 [← darner README](../README.md)
 
-A browser frontend for darner. It shows its sessions at a glance, each one's events so far, the full text of blurbs and config sets, and the self-test. It starts tasks with [every setting](tasks.md), showing before Start what the task will launch: its config sets combined, its agent settings and where each comes from, the defaults included, and each blurb in full. It can send a session a message or answer its help request, upload a file into its `~/shared/uploads`, allow or deny its domain requests, stop it, and clear it once it has ended. What you send a session isn't kept, by darner-web or the API, so its page doesn't show it. It runs as its own container with its own API token.
+A browser frontend for darner. It shows its sessions at a glance, each one's events so far, the full text of blurbs and config sets, and the self-test. It starts tasks with [every setting](tasks.md), showing before Start what the task will launch: its config sets combined, its agent settings and where each comes from, the defaults included, and each blurb in full. It can send a session a message or answer its help request, upload a file into its `~/shared/uploads`, allow or deny its domain requests, stop it, and clear it once it has ended. What you send a session isn't kept, by darner-web or the API, so its page doesn't show it, unless the API has [`keep_input`](#kept-input) on and you tick Keep. Until it's sent, a task or message you've typed is kept in that browser tab's `sessionStorage`, so reading a blurb or leaving the page doesn't lose it; it's forgotten once sent. Browsers write `sessionStorage` to disk and bring it back with a reopened tab or a restored session, so on a shared computer the next person can see an unsent draft. `drafts = false` in `web.toml` keeps no drafts. Its header shows darner's wordmark, or dejima's with `wordmark = "dejima"`. It runs as its own container with its own API token.
 
 **It has no login of its own.** Like dejima's [remote access](https://gitbox.branderson.io/dejima/dejima/src/branch/main/docs/remote-access.md), whatever proxy you put in front of it is the whole gate. Don't open it to the public internet.
 
@@ -72,15 +72,42 @@ The nginx example uses `Host $http_host`, not `$host`, because darner-web checks
 
 darner-web sees and acts on only the sessions it started, as each frontend does: a session is followed up from the frontend that started it.
 
-A session's page leads with what it's waiting on you for, a domain request or a help request, or else its newest event, with the answer box below it, then what it was started with. Its history follows, newest first, each event folded until you open it.
+A session's page leads with what it's waiting on you for, a domain request or a help request, or else its newest event, with the answer box below it, then what it was started with. Its harness, backend, model, effort and context window are what the session runs with, each marked when it's the launcher's default or dejima's rather than the task's, and "the harness's own" when nothing sets it. Its history follows, newest first, each event folded until you open it.
 
 **Check now** has the API look at every session at once, rather than at its next `poll_interval`, for output or a request it hasn't seen yet. It can't find a signal the agent left somewhere other than `~/shared`. Checks are one every 15 seconds for darner-web, which shares one API token among its users.
 
 An ended session stays on its page, showing its output and zips, until someone presses **Clear**. The API then deletes it, and has the dejima host prune its `~/shared` if that was [kept](sessions.md#whats-kept). Uncleared output is deleted after the API's `output_retention`, 7 days by default. Files are uploaded from a running session's page, not when starting a task, since a session's `~/shared` doesn't exist until it's running.
 
+## Notifications
+
+With `ntfy_url` set in `web.toml`, darner-web pushes to that [ntfy](https://ntfy.sh) topic when one of its sessions has output, a help request or a domain request. Each push names the session and links to its page, and says nothing else: no summary, question or domain, since the phone is outside the sandbox and nothing the agent wrote should reach it. It doesn't push for a session that seems to be waiting, which dejima's own notifications cover where remote access is on.
+
+The topic is darner-web's, separate from the one dejima's remote access pushes to. Someone with access to darner but not to dejima's terminals can subscribe to darner-web's alone, and someone with both can subscribe to either or both. Everyone subscribed gets every push for every session darner-web started, so scope who can read the topic as you scope who gets past the proxy.
+
+On a self-hosted ntfy with access control, give darner-web an account that isn't an admin and a token that can only write to its topic, and put the token in `ntfy_token`. darner-web refuses a token with an `http://` `ntfy_url`, which would send it in the clear:
+
+```sh
+ntfy user add darner-web
+ntfy access darner-web darner write-only
+ntfy token add darner-web       # prints tk_..., for ntfy_token
+ntfy access phone darner read-only   # the subscriber, once auth-default-access is deny-all
+```
+
+It's sent as an `Authorization: Bearer` header, never in the URL, which darner-web refuses with a credential in it, so `ntfy_url` can be logged and the token never is. `web.toml` already holds the API token, so keep it from other accounts on the host, and don't move either into a compose `environment:` block, which `docker inspect` shows. Turning on `auth-default-access: deny-all` closes every topic on that server, dejima's included; [dejima-guard's README](https://gitbox.branderson.io/dejima/dejima-guard#ntfy-its-own-topic-and-a-token-that-can-only-write-to-it) says what to grant back first. Use `https`.
+
+The agent chooses when it asks for help or domains, so it chooses when some pushes happen, though never what they say; the launcher's `--help-interval` spaces its help requests, and your ntfy server's rate limit the rest.
+
+darner-web reads the API's events every 15 seconds for this. Events already there when it starts aren't pushed, including any that arrived while it was down or couldn't reach the API.
+
 ## What it keeps
 
-Nothing. It has no database and writes no files: every page is read from the API when it's asked for. The API keeps an ended session's output for this frontend until it's cleared, or for `output_retention` at most, and deletes everything else about a session when it ends.
+Nothing. It has no database and writes no files: every page is read from the API when it's asked for, and with notifications on it remembers only the newest event it has seen. The API keeps an ended session's output for this frontend until it's cleared, or for `output_retention` at most, and deletes everything else about a session when it ends, except [kept input](#kept-input).
+
+## Kept input
+
+With `keep_input = true` in the API's config, the new-task form and a session's message form each have a box to keep the task or message on the session's page, unticked every time a page loads. Tick it and the API keeps the first 8 KiB of the task or message, with who sent it, and the session's history shows it as plain text, marked kept, with a Delete button. It's kept until you delete it or the session is cleared or purged after `output_retention`, so unless that's 0 it outlasts the session's end, unlike its prompt.
+
+What's kept can be read and deleted by everyone who can use darner-web, which shares one API token, and by whoever holds that token. Anyone who can read the API's database or its backups can read it too. So leave Keep unticked for anything secret, such as a token or password. SQLite's `secure_delete` overwrites a deleted row in the database file, but not a backup, the copy SQLite's rollback journal briefly holds, which the filesystem may keep in free space, or space freed before this release; `sqlite3 darner.db VACUUM` with the API stopped rewrites the file. Without `keep_input`, the API refuses to keep anything and the box isn't shown.
 
 ## Setting it up
 

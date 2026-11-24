@@ -23,7 +23,7 @@
   --fg: var(--gb-fg1);
   --fg-dim: var(--gb-fg4);
   --fg-faint: var(--gb-gray);
-  /* One accent, the wordmark's orange, for anything you can act on. Aqua means
+  /* One accent, the wordmark's orange, for anything you can act on or haven't seen yet. Aqua means
      kept or allowed, red means refused or ended by force, yellow means waiting
      on someone; none of them is decoration. */
   --accent: var(--gb-orange);
@@ -50,6 +50,8 @@
 /* --- base -------------------------------------------------------------- */
 
 *, *::before, *::after { box-sizing: border-box; }
+/* Hidden stays hidden, whatever display a class gives it. */
+[hidden] { display: none !important; }
 
 body {
   margin: 0;
@@ -73,6 +75,7 @@ a { color: inherit; text-decoration-color: var(--accent); text-underline-offset:
 a:hover { color: var(--accent); }
 
 code, pre, .id { font-family: var(--font-mono); }
+code.flag { white-space: nowrap; }
 pre {
   margin: 0;
   font-size: 0.86rem;
@@ -203,11 +206,19 @@ nav .new { padding: 0.5rem 0.9rem; font-size: 0.95rem; }
 .panel > .row:first-child { margin-top: 0; }
 
 .latest { margin: 1.5rem 0; }
+.latest .stamp { margin-left: auto; white-space: nowrap; }
+.latest .by + .stamp { margin-left: 0; }
+/* The latest event arrived while the page was open. */
+.latest.fresh .event { border-color: var(--accent); animation: arrived 1.2s ease-out; }
+.latest .label.new { color: var(--accent); border-color: var(--accent); }
+@keyframes arrived { from { box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 45%, transparent); } }
+@media (prefers-reduced-motion: reduce) { .latest.fresh .event { animation: none; } }
 .started { margin: 1.5rem 0; }
 .started h2 { margin: 0 0 0.75rem; font-size: 1.05rem; }
 .started dl, .preview dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 0.35rem 1.25rem; margin: 0; }
 .started dt, .preview dt { font-family: var(--font-head); color: var(--fg-dim); }
 .started dd, .preview dd { margin: 0; font-family: var(--font-mono); font-size: 0.92rem; }
+.started dd .quiet { font-family: var(--font-head); font-size: 0.85rem; }
 
 .history-head { display: flex; justify-content: space-between; align-items: center; gap: 1rem; margin: 2.25rem 0 0.9rem; }
 .history-head h2 { margin: 0; }
@@ -238,12 +249,23 @@ nav .new { padding: 0.5rem 0.9rem; font-size: 0.95rem; }
   flex-wrap: wrap;
 }
 .event > h2 .by, .event > summary > h2 .by { color: var(--accent); font-size: 0.85rem; margin-left: auto; }
+/* What a stretch of the agent's work cost, as dejima's credential proxy counted it. Not the agent's. */
+.event h2 .tokens { color: var(--fg-dim); font-size: 0.85rem; font-weight: 400; margin-left: 0.6rem; }
 .event > summary > h2 { flex: 1; padding-left: 0; border-bottom: 0; }
 .event .body { padding: 1rem 1.1rem 0.4rem; }
 .event .agent { background: var(--bg-well); }
 .event .agent pre, .event pre.agent { padding: 1rem 1.1rem; }
+.event pre.kept { padding: 1rem 1.1rem; margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+/* The user's own text: the accent marks what the agent wrote. */
+.event.kept h2 .by { color: var(--fg-dim); }
+.choice.keep { margin-top: 0.5rem; }
+.choice.keep > label { flex-wrap: wrap; }
 .event .agent p:last-child { margin-bottom: 0.6rem; }
 .event .agent pre { background: none; }
+/* A table the agent wrote scrolls on its own rather than widening the page. */
+.agent .table { overflow-x: auto; margin: 0 0 1rem; }
+.agent table { border-collapse: collapse; overflow-wrap: normal; }
+.agent th, .agent td { border: 1px solid var(--rule-strong); padding: 0.3rem 0.6rem; text-align: left; vertical-align: top; }
 .event.ended > h2, .event.expired > h2 { border-bottom: 0; }
 .event.expired > h2 { color: var(--refused); }
 .event .footer { padding: 0 1.1rem 1rem; display: flex; gap: 0.75rem; flex-wrap: wrap; align-items: center; }
@@ -283,8 +305,28 @@ form button[type=submit] { margin-top: 1rem; }
 fieldset { border: 1px solid var(--rule); border-radius: 6px; padding: 0.4rem 1.1rem 1.1rem; margin: 1.5rem 0 0; }
 legend { padding: 0 0.4rem; margin: 0; color: var(--fg-dim); }
 .choices { display: flex; flex-wrap: wrap; gap: 0.5rem 1.4rem; margin-top: 0.6rem; }
-.choice { display: inline-flex; align-items: baseline; gap: 0.45rem; font-family: var(--font-head); font-weight: 400; margin: 0; }
-.choice > a { flex-shrink: 0; }
+.choice { position: relative; }
+.choice > label { display: inline-flex; align-items: baseline; gap: 0.45rem; font-family: var(--font-head); font-weight: 400; margin: 0; }
+/* What a config set or blurb holds, shown while it's pointed at or opened with View, so reading
+   it doesn't leave the form. Beside the label, not in it, so a click in it doesn't tick the box. */
+.peek {
+  display: none; position: absolute; top: 100%; left: 0; z-index: 10;
+  width: min(36rem, calc(100vw - 2rem)); max-height: 22rem; overflow: auto;
+  background: var(--bg-well); border: 1px solid var(--rule-strong); border-radius: 6px;
+  padding: 0.75rem 1rem; box-shadow: 0 0.5rem 1.5rem rgb(0 0 0 / 45%);
+}
+/* Hover only where there's a real pointer: a phone keeps a tapped element hovered, so View
+   couldn't close it there. */
+@media (hover: hover) { .choice:hover > .peek { display: block; } }
+.choice.open > .peek { display: block; }
+/* And from the keyboard, focusing the box: :focus-visible, so a tap on a phone doesn't open it. */
+.choice:has(> label input:focus-visible) > .peek { display: block; }
+/* Opened by pointing, it lets the pointer through, so moving down reaches the names it covers.
+   Opened with View, it takes the pointer, to scroll it or follow its link. */
+.peek { pointer-events: none; }
+.choice.open > .peek { pointer-events: auto; }
+.choice > .view { font-size: 0.85rem; padding: 0.05rem 0.45rem; margin-left: 0.35rem; }
+.peek pre, .peek p { margin: 0; }
 .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 1.25rem; }
 @media (max-width: 40rem) { .grid { grid-template-columns: 1fr; } }
 

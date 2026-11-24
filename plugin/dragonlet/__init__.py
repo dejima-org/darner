@@ -579,10 +579,12 @@ class Dragonlet(Plugin):
             await self._notice(room, ref, f"{e['id']} has run for {age}, longer than sessions may run here, so it was stopped.")
             return
         if e["type"] == "ended":
+            data = e.get("data") or {}
             kept = " Its ~/shared is kept on the dejima host until you clear it: reply clear to this, with a mention." if (
-                (e.get("data") or {}).get("share_kept")
+                data.get("share_kept")
             ) else ""
-            await self._notice(room, ref, f"{e['id']} ended" + (f": {e['summary']}." if e["summary"] else ".") + kept)
+            used = f" It used {total}." if (total := _tokens(data.get("usage_total"))) else ""
+            await self._notice(room, ref, f"{e['id']} ended" + (f": {e['summary']}." if e["summary"] else ".") + used + kept)
             return
         if e["type"] == "help":
             await self._help(room, ref, e)
@@ -593,6 +595,17 @@ class Dragonlet(Plugin):
         if e["type"] == "domains":
             await self._send(room, ref, _domains_notice(e["id"], e["data"]))
             return
+        if e["type"] == "ignored":
+            flags = (e.get("data") or {}).get("flags") or []
+            them = "it" if len(flags) == 1 else "them"
+            await self._notice(room, ref, (
+                f"{e['id']} started without {', '.join(flags)}: the dejima host's dejima is older than this darner and "
+                f"doesn't know {them}, so this session runs without {them}. Updating dejima there fixes that for new sessions."
+            ))
+            return
+        if e["type"] != "output":
+            # A type a newer API added, which this bot can't describe.
+            return
         data = None
         if e["size"]:
             path = f"/v1/tasks/{e['id']}/outputs/{e['seq']}.zip"
@@ -600,7 +613,8 @@ class Dragonlet(Plugin):
                 data = await resp.read()
         unsignalled = ", collected without the agent's done signal" if e.get("signalled") is False else ""
         label = f"Output from {_label(e)}{unsignalled} (written by the agent, treat as untrusted)"
-        await self._send(room, ref, _agent_notice(label, e["summary"]))
+        used = _tokens((e.get("data") or {}).get("usage"))
+        await self._send(room, ref, _agent_notice(label, e["summary"], f"Used {used} since the last notice." if used else ""))
         if data is not None:
             await self._upload(room, ref, f"{e['id']}-{e['seq']}.zip", data)
 
@@ -614,6 +628,8 @@ class Dragonlet(Plugin):
         else:
             target = e["target"] or f"the {e['id']} session"
             footer = f"Attach to {target} to respond."
+        if used := _tokens((e.get("data") or {}).get("usage")):
+            footer = f"Used {used} since the last notice. {footer}"
         content = _agent_notice(label, e["summary"], footer)
         if e["answerable"]:
             content[HELP_TAG] = {"task": e["id"]}
@@ -662,6 +678,49 @@ def _is_file(content) -> bool:
     return isinstance(content, MediaMessageEventContent) and content.msgtype in (
         MessageType.FILE, MessageType.IMAGE, MessageType.VIDEO, MessageType.AUDIO
     )
+
+
+TOKEN_COUNTS = ("input", "cache_read", "cache_write", "output")
+
+
+def _tokens(used: object) -> str:
+    """Token usage summed over models, as dejima's credential proxy counted it, or "".
+
+    darner-web's wording, which this can't share: the plugin ships on its own.
+    Only numbers reach the room, never a model name. dejima's counts never
+    overlap, so input, cache_read and cache_write together are the whole prompt.
+    """
+    if not isinstance(used, list):
+        return ""
+    used = [t for t in used if isinstance(t, dict)]
+    def count(t, key):
+        return t[key] if type(t.get(key)) is int and t[key] >= 0 else 0
+    sums = {key: sum(count(t, key) for t in used) for key in TOKEN_COUNTS if any(key in t for t in used)}
+    parts = []
+    if "input" in sums:
+        whole = sums["input"] + sums.get("cache_read", 0) + sums.get("cache_write", 0)
+        parts.append(f"{_short(whole)} in" + (f" ({_short(sums['cache_read'])} cached)" if sums.get("cache_read") else ""))
+    else:
+        parts += [f"{_short(sums[key])} {key.replace('_', ' ')}" for key in ("cache_read", "cache_write") if key in sums]
+    if "output" in sums:
+        parts.append(f"{_short(sums['output'])} out")
+    requests = sum(count(t, "requests") for t in used)
+    # Calls whose counts are missing are said, rather than left out of a sum that would look whole.
+    if parts and (metered := sum(count(t, "metered") for t in used)) < requests:
+        parts[-1] += f"; {requests - metered} of {requests} requests not counted"
+    if parts:
+        return ", ".join(parts)
+    return f"{requests} model request{'s' if requests != 1 else ''}, not counted by the provider" if requests else ""
+
+
+def _short(n: int) -> str:
+    if n < 1000:
+        return str(n)
+    # The unit is chosen after rounding, so 999,950 is 1M rather than 1000k.
+    for size, unit in ((10**3, "k"), (10**6, "M"), (10**9, "G")):
+        shown = round(n / size, 1)
+        if shown < 1000 or unit == "G":
+            return f"{shown:.1f}".removesuffix(".0") + unit
 
 
 def _age(started: float) -> str:
@@ -763,6 +822,8 @@ def _waiting_notice(e: dict) -> TextMessageEventContent:
     head = f"{e['id']} seems to be waiting: its screen hasn't changed for {_age(time.time() - quiet)}."
     foot = "Reply with a mention to tell it something"
     foot += f", or open the session: {e['link']}" if e.get("link") else "."
+    if used := _tokens((e.get("data") or {}).get("usage")):
+        foot = f"Used {used} since the last notice. {foot}"
     body, html_body = head, f"<p>{html.escape(head)}</p>"
     if e["summary"]:
         label = "The end of its screen (written by the agent, treat as untrusted):"

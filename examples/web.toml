@@ -27,3 +27,22 @@ public_origin = "https://darner.example.com"
 # How long to wait for the API to start a task, longer than its own
 # launch_timeout. Past it, the page says the task may still be starting.
 # launch_timeout = 300
+
+# Whether a task or message typed but not yet sent is kept in the browser tab's
+# sessionStorage, so leaving the page doesn't lose it. It's forgotten once sent.
+# Browsers write sessionStorage to disk and bring it back with a reopened tab or
+# a restored session, so on a shared computer the next person can too. false
+# keeps no drafts.
+# drafts = true
+
+# The wordmark in each page's header: "darner", or "dejima" for dejima's.
+# wordmark = "darner"
+
+# An ntfy topic to push to when a session darner-web started has output, a help
+# request or a domain request. A push names the session and links to its page,
+# never what the agent wrote. Unset, nothing is pushed (docs/web.md).
+# ntfy_url = "https://ntfy.example.com/darner"
+
+# A token that can only write to that topic, sent as a Bearer header. Never put
+# it in ntfy_url, which is refused with a credential in it, and ntfy_url must be https://.
+# ntfy_token = "tk_replace-with-a-write-only-token"

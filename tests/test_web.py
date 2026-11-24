@@ -11,6 +11,7 @@ from aiohttp import web
 
 from darner.archive import clean_text
 from darner.selftest import PAYLOAD
+import darner.web
 from darner.web import HEADERS, check_config, make_app
 from darner.web.render import render
 
@@ -64,6 +65,8 @@ class FakeApi:
         self.create_status = 201
         self.upload_delay = 0
         self.check_status = 200
+        # None answers as an API older than kept input does.
+        self.kept = {"keep_input": False, "kept": []}
 
     def app(self):
         async def record(request, result, status=200):
@@ -90,6 +93,8 @@ class FakeApi:
             return await record(request, found)
 
         async def events(request):
+            if isinstance(self.events, dict) and isinstance(self.events.get("answer"), dict):
+                return await record(request, self.events["answer"])
             return await record(request, [e for es in self.events.values() for e in es])
 
         async def output(request):
@@ -155,7 +160,12 @@ class FakeApi:
             return web.json_response({"path": "~/shared/uploads/" + request.query["name"], "size": len(self.uploaded), "told": False})
 
         async def catalog(request):
-            return await record(request, CATALOG)
+            return await record(request, CATALOG if self.kept is None else {**CATALOG, "keep_input": self.kept["keep_input"]})
+
+        async def kept(request):
+            if self.kept is None or request.match_info["id"] not in self.events:
+                raise web.HTTPNotFound()
+            return await record(request, self.kept)
 
         async def preview(request):
             body = await request.json()
@@ -192,6 +202,8 @@ class FakeApi:
         app.router.add_post("/v1/tasks/{id}/message", no_content)
         app.router.add_post("/v1/tasks/{id}/stop", no_content)
         app.router.add_post("/v1/tasks/{id}/clear", clear)
+        app.router.add_get("/v1/tasks/{id}/kept", kept)
+        app.router.add_post("/v1/tasks/{id}/kept/{seq}/delete", no_content)
 
         async def check(request):
             if self.check_status != 200:
@@ -307,6 +319,21 @@ async def test_a_session_page_says_what_it_was_started_with(client):
     assert "&lt;i&gt;cline&lt;/i&gt;" in started and "<i>" not in started
 
 
+async def test_a_session_page_says_what_each_agent_setting_ran_with_and_what_set_it(client, fake):
+    fake.sessions[0]["ran_with"] = {
+        "harness": {"value": "cline", "from": "task"}, "backend": {"value": "<b>anthropic</b>", "from": "dejima"},
+        "model": {"value": "claude-opus-5-5", "from": "launcher"}, "context_window": {"value": 30000, "from": "task"},
+    }
+    resp, html = await get(client, "/sessions/dn-aaaaa")
+    started = html.split('<section class="well started">', 1)[1].split("</section>", 1)[0]
+    assert "<dt>Harness</dt><dd>cline</dd>" in started and "<dt>Context window</dt><dd>30000</dd>" in started
+    assert '<dt>Backend</dt><dd>&lt;b&gt;anthropic&lt;/b&gt; <span class="quiet">dejima\'s default</span></dd>' in started
+    assert '<dt>Model</dt><dd>claude-opus-5-5 <span class="quiet">the launcher\'s default</span></dd>' in started
+    assert '<dt>Effort</dt><dd><span class="quiet">the harness\'s own</span></dd>' in started
+    # The rest is still what the task asked for.
+    assert "<dt>Config sets</dt><dd>recipes</dd>" in started and "<dt>Domains</dt><dd>pypi.org</dd>" in started
+
+
 async def test_the_selftest_check_catches_unsafe_html():
     with pytest.raises(AssertionError):
         assert_selftest_shown_safely(f"<p>{SELFTEST}</p>")
@@ -340,14 +367,56 @@ async def test_config_sets_are_listed_with_their_descriptions(client):
         _, html = await get(client, path)
         assert '<span class="description">Adds &lt;b&gt;recipes&lt;/b&gt;.</span>' in html, path
         # local has none, so nothing follows its name.
-        assert re.search(r'>local</a>(</li>|</label>)', html), path
+        assert re.search(r'\blocal(</a>)?(</li>|</label>)', html), path
+
+
+async def test_the_new_task_form_shows_what_each_config_set_and_blurb_holds(client):
+    _, html = await get(client, "/new")
+    # On the form itself, escaped, so reading one doesn't leave it.
+    assert '<div class="peek"><pre>blurb: mealie\nharness: &lt;i&gt;cline&lt;/i&gt;\nfile: token\n</pre></div>' in html
+    assert '<div class="peek"><pre>Use &lt;script&gt;the API&lt;/script&gt;.\n</pre></div>' in html
+    assert 'href="/configs/' not in html and 'href="/blurbs/' not in html
+    # Every field that takes a list says how.
+    assert html.count('<span class="quiet">comma separated') == 3
+    assert "The task is given to the agent and not kept" in html
+
+
+async def test_a_config_set_or_blurb_that_wont_load_says_where_to_look(client, fake):
+    fake.more_configs = ["broken"]
+    _, html = await get(client, "/new")
+    assert '<div class="peek"><p class="quiet">Couldn\'t be read: <a href="/configs/broken">its page</a> says why.</p>' in html
+
+
+async def test_a_message_draft_is_kept_for_one_session_only(client):
+    _, html = await get(client, "/sessions/dn-aaaaa")
+    # By id and start, so a later session given the same name doesn't get it.
+    assert re.search(r'data-draft="message:dn-aaaaa:\d+(\.\d+)?"', html)
+
+
+async def test_the_header_shows_darner_s_wordmark_unless_set_to_dejima_s(aiohttp_client, fake):
+    for overrides, name in (({}, "darner"), ({"wordmark": "dejima"}, "dejima")):
+        client = await aiohttp_client(make_app(config_for(fake, **overrides)))
+        _, html = await get(client, "/")
+        assert f'<img src="/static/{name}-wordmark-darkmode.png" alt="{name}"' in html
+        assert (await client.get(f"/static/{name}-wordmark-darkmode.png", headers=HOST)).status == 200
+
+
+async def test_drafts_can_be_turned_off(aiohttp_client, fake):
+    on = await aiohttp_client(make_app(config_for(fake)))
+    off = await aiohttp_client(make_app(config_for(fake, drafts=False)))
+    for path in ("/new", "/sessions/dn-aaaaa"):
+        _, html = await get(on, path)
+        assert re.search(r"<body[^>]* data-drafts>", html), path
+        assert "saved in this tab" in html, path
+        _, html = await get(off, path)
+        assert "data-drafts" not in html and "saved in this tab" not in html, path
 
 
 async def test_a_config_set_that_wont_load_is_listed_without_a_description(client, fake):
     fake.more_configs = ["broken"]
     for path in ("/configs", "/new"):
         resp, html = await get(client, path)
-        assert resp.status == 200 and re.search(r'>broken</a>(</li>|</label>)', html), path
+        assert resp.status == 200 and re.search(r'\bbroken(</a>)?(</li>|</label>)', html), path
 
 
 async def test_every_response_carries_the_security_headers(client):
@@ -497,6 +566,9 @@ async def test_the_api_being_down_is_an_error_page(aiohttp_client, fake):
     ("[x](javascript:alert(1))", "[x](javascript:alert(1))"),
     ("![p](https://px.example/a.png)", "p (https://px.example/a.png)"),
     ("<b>hi</b>", "&lt;b&gt;hi&lt;/b&gt;"),
+    # A table, in a box that scrolls, with no inline style for the CSP to refuse.
+    ("| a | b |\n|:--|--:|\n| <i>x</i> | 2 |", '<div class="table"><table>\n<thead>\n<tr>\n<th>a</th>\n<th>b</th>'),
+    ("| a | b |\n|:--|--:|\n| <i>x</i> | 2 |", "<td>&lt;i&gt;x&lt;/i&gt;</td>\n<td>2</td>"),
 ])
 def test_agent_markdown_rules(markdown, html):
     assert html in render(markdown)
@@ -511,9 +583,21 @@ def test_agent_markdown_rules(markdown, html):
     ({"user_header": ""}, "user_header"),
     ({"public_origin": "https://user@darner.example.com"}, "public_origin"),
     ({"launch_timeout": "300"}, "launch_timeout must be a positive number"),
+    ({"drafts": "no"}, "drafts must be true or false"),
+    ({"wordmark": "Darner"}, "wordmark must be"),
     ({"max_upload": 0}, "max_upload must be a positive number"),
     ({"max_download": True}, "max_download must be a positive number"),
     ({"public_origin": "https://darner.example.com:notaport"}, "public_origin"),
+    ({"ntfy_url": "ntfy.example.com/darner"}, "ntfy_url"),
+    ({"ntfy_url": "https://ntfy.example.com/darner\nX-Actions: x"}, "ntfy_url"),
+    ({"ntfy_url": "https://ntfy.example.com/dar ner"}, "ntfy_url"),
+    # A credential is ntfy_token's, kept out of the URL and so out of logs.
+    ({"ntfy_url": "https://:tk_secret@ntfy.example.com/darner"}, "ntfy_url"),
+    ({"ntfy_url": "https://ntfy.example.com/darner?auth=tk_secret"}, "ntfy_url"),
+    ({"ntfy_url": "https://ntfy.example.com/darner", "ntfy_token": "tk_x\r\nX-Actions: x"}, "ntfy_token"),
+    ({"ntfy_url": "https://ntfy.example.com/darner", "ntfy_token": "tk x"}, "ntfy_token"),
+    ({"ntfy_token": "tk_secret"}, "ntfy_token is set without ntfy_url"),
+    ({"ntfy_url": "http://ntfy.example.com/darner", "ntfy_token": "tk_secret"}, "https://"),
 ])
 def test_a_config_that_wouldn_t_work_is_refused(change, message):
     config = {"api_url": "http://127.0.0.1:8080", "api_token": TOKEN, "public_origin": ORIGIN, **change}
@@ -834,3 +918,222 @@ def test_the_vendored_static_files_are_the_recorded_ones():
     assert set(recorded) == {name for name in present if name not in reviewed and not name.startswith("fonts/LICENSE-")}
     for name, digest in recorded.items():
         assert hashlib.sha256((static / name).read_bytes()).hexdigest() == digest, name
+
+
+@pytest.mark.parametrize("used, shown", [
+    ([{"model": "m", "requests": 3, "metered": 3, "input": 12345, "output": 999, "cache_read": 58000, "cache_write": 1200000}],
+     # dejima's counts don't overlap, so the whole prompt is their sum.
+     "1.3M in (58k cached), 999 out"),
+    # Summed over models, each count only where some model has it.
+    ([{"model": "a", "requests": 1, "metered": 1, "output": 5}, {"model": None, "requests": 1, "metered": 1, "output": 7}], "12 out"),
+    # Without input, the prompt's size isn't known, so the cache counts are shown as they are.
+    ([{"model": "m", "requests": 1, "metered": 1, "cache_read": 5}], "5 cache read"),
+    # A partial count says so, rather than passing for the whole.
+    ([{"model": "m", "requests": 100, "metered": 60, "input": 999950, "output": 1000}], "1M in, 1k out; 40 of 100 requests not counted"),
+    # Requests with no counts are said to be uncounted, not shown as zero.
+    ([{"model": "m", "requests": 2, "metered": 0}], "2 model requests, not counted by the provider"),
+    ([], ""),
+])
+def test_tokens_are_shown_as_dejima_counts_them(used, shown):
+    from darner.web import _tokens
+    assert _tokens(used) == shown
+
+
+def test_each_model_says_how_many_requests_werent_counted():
+    from darner.web import _tokens_by_model
+    assert _tokens_by_model([{"model": "m", "requests": 4, "metered": 3, "output": 10}]) == "m: 4 requests (1 not counted), 10 out"
+
+
+async def test_usage_is_shown_on_events_and_the_session(client, fake):
+    fake.sessions[0]["usage"] = [{"model": "<i>m</i>", "requests": 4, "metered": 4, "input": 2000, "output": 300}]
+    fake.events["dn-aaaaa"][1]["data"] = {"usage": [{"model": "<i>m</i>", "requests": 1, "metered": 1, "input": 500, "output": 40}]}
+    _, html = await get(client, "/sessions/dn-aaaaa")
+    assert '<span class="tokens" title="&lt;i&gt;m&lt;/i&gt;: 1 request, 500 fresh in, 40 out">500 in, 40 out</span>' in html
+    title = "&lt;i&gt;m&lt;/i&gt;: 4 requests, 2k fresh in, 300 out"
+    assert f'Used so far: <span data-live="usage:dn-aaaaa" data-empty="nothing yet" title="{title}">2k in, 300 out</span>.' in html
+    _, html = await get(client, "/")
+    assert f'<p class="meta tokens" data-live="usage:dn-aaaaa" title="{title}">2k in, 300 out</p>' in html
+
+
+async def test_usage_is_updated_in_place_rather_than_reloading_the_page(client, fake):
+    async def states():
+        return [await (await client.get(path, headers=HOST)).json() for path in ("/state/", "/state/sessions/dn-aaaaa")]
+
+    fake.sessions[0]["usage"] = []
+    first = await states()
+    assert [s["live"] for s in first] == [{"usage:dn-aaaaa": ["", ""]}] * 2
+    fake.sessions[0]["usage"] = [{"model": "m", "requests": 4, "metered": 4, "input": 2000, "output": 300}]
+    used = await states()
+    assert [s["live"] for s in used] == [{"usage:dn-aaaaa": ["2k in, 300 out", "m: 4 requests, 2k fresh in, 300 out"]}] * 2
+    assert [s["version"] for s in used] == [s["version"] for s in first]
+    # Whether it's metered at all is said in words, so that change reloads the page.
+    fake.sessions[0]["usage"] = None
+    assert [s["version"] for s in await states()][1] != first[1]["version"]
+
+
+async def test_the_latest_event_says_how_long_ago_it_came_as_the_history_does(client, fake, monkeypatch):
+    monkeypatch.setattr("darner.web.time.time", lambda: 1000)
+    for e in fake.events["dn-aaaaa"]:
+        e["created"] = 1000 - 60 * e["seq"]
+    _, html = await get(client, "/sessions/dn-aaaaa")
+    latest = html.split('<section class="latest"', 1)[1].split("</section>", 1)[0]
+    # The help request it's waiting on leads the page.
+    assert latest.startswith(' aria-label="Latest" data-seq="2">')
+    assert '<span class="stamp"><span class="label new" hidden>new</span> <span class="when" data-at="880">2m ago</span></span></h2>' in latest
+    assert '<span class="when" data-at="760">4m ago</span>' in html.split('<section class="history">', 1)[1]
+    assert '<body data-now="1000"' in html
+
+
+async def test_an_unmetered_session_says_so_once_it_has_started(client, fake):
+    _, html = await get(client, "/sessions/dn-aaaaa")
+    assert "Token usage isn't metered for this session." in html
+    fake.sessions[0]["state"] = "starting"
+    _, html = await get(client, "/sessions/dn-aaaaa")
+    assert "metered" not in html
+
+
+async def test_an_ended_session_says_what_it_used(client, fake):
+    fake.events["dn-bbbbb"][1]["data"] = {"share_pruned": True, "usage": [], "usage_total": [{"model": "m", "requests": 9, "metered": 9, "output": 4500}]}
+    _, html = await get(client, "/sessions/dn-bbbbb")
+    assert '<span class="tokens" title="m: 9 requests, 4.5k out">It used 4.5k out.</span>' in html
+
+
+async def test_a_flag_dejima_dropped_is_shown_as_darner_s_own(client, fake):
+    fake.events["dn-aaaaa"].append(
+        {"seq": 7, "id": "dn-aaaaa", "type": "ignored", "summary": "", "size": 0, "data": {"flags": ["--usage-path-file"]}}
+    )
+    resp, html = await get(client, "/sessions/dn-aaaaa")
+    event = html.split('data-seq="7"', 1)[1].split("</details>", 1)[0]
+    assert 'Started without <code class="flag">--usage-path-file</code>' in event
+    assert "so this session runs without it." in event
+    assert "agent" not in event
+
+
+async def test_new_output_help_and_domain_requests_are_pushed_to_ntfy_in_darner_s_words(aiohttp_client, aiohttp_server, fake, monkeypatch, caplog):
+    pushed = []
+
+    async def topic(request):
+        pushed.append((dict(request.headers), await request.text()))
+        return web.json_response({})
+
+    ntfy = web.Application()
+    ntfy.router.add_post("/darner", topic)
+    server = await aiohttp_server(ntfy)
+    monkeypatch.setattr("darner.web.NTFY_POLL", 0.05)
+    app = make_app(config_for(fake, ntfy_url="https://ntfy.example.com/darner", ntfy_token="tk_secret"))
+    # A token is refused over http://, so this plain-HTTP topic goes in after the check.
+    app[darner.web.CONFIG]["ntfy_url"] = str(server.make_url("/darner"))
+    await aiohttp_client(app)
+    await asyncio.sleep(0.2)
+    # What was there when it started isn't news.
+    assert pushed == []
+    new = [("output", None), ("help", "fix-db"), ("waiting", None), ("domains", "<b>x</b>"), ("ignored", None), ("ended", None)]
+    fake.events["dn-aaaaa"] += [
+        {"seq": 10 + i, "id": "dn-aaaaa", "type": kind, "summary": SELFTEST, "size": 0, "data": None, "name": name}
+        for i, (kind, name) in enumerate(new)
+    ]
+    for _ in range(100):
+        if len(pushed) == 3:
+            break
+        await asyncio.sleep(0.05)
+    await asyncio.sleep(0.2)
+    assert [h["Title"] for h, _ in pushed] == [
+        "darner: dn-aaaaa has output", "darner: dn-fix-db needs help", "darner: dn-aaaaa asks to reach more domains",
+    ]
+    for headers, body in pushed:
+        assert body == "Open it in darner-web."
+        assert headers["Click"] == f"{ORIGIN}/sessions/dn-aaaaa"
+        assert headers["Authorization"] == "Bearer tk_secret"
+        assert not {"X-Actions", "X-Attach", "X-Icon", "Actions", "Attach", "Icon"} & set(headers)
+
+    # A failing topic is logged without its credential.
+    await server.close()
+    fake.events["dn-aaaaa"].append({"seq": 20, "id": "dn-aaaaa", "type": "help", "summary": "", "size": 0, "data": None, "name": None})
+    await asyncio.sleep(0.3)
+    assert "couldn't push to ntfy" in caplog.text and "tk_secret" not in caplog.text
+
+
+async def test_without_ntfy_url_nothing_reads_events_in_the_background(client, fake):
+    await asyncio.sleep(0.1)
+    assert not [c for c in fake.calls if c[1] == "/v1/events"]
+
+
+async def test_a_bad_answer_or_a_database_that_started_over_doesn_t_stop_pushes(aiohttp_client, aiohttp_server, fake, monkeypatch):
+    pushed = []
+
+    async def topic(request):
+        pushed.append(request.headers["Title"])
+        return web.json_response({})
+
+    ntfy = web.Application()
+    ntfy.router.add_post("/darner", topic)
+    server = await aiohttp_server(ntfy)
+    monkeypatch.setattr("darner.web.NTFY_POLL", 0.05)
+    fake.events = {"x": [{"seq": 500, "id": "dn-aaaaa", "type": "help", "name": None}]}
+    await aiohttp_client(make_app(config_for(fake, ntfy_url=str(server.make_url("/darner")))))
+    await asyncio.sleep(0.2)
+    fake.events = {"answer": {"error": "not a list"}}
+    await asyncio.sleep(0.2)
+    # Started over below what was seen: that's the new baseline, and what follows is pushed.
+    fake.events = {"x": [{"seq": 3, "id": "dn-aaaaa", "type": "help", "name": None}]}
+    await asyncio.sleep(0.2)
+    fake.events["x"].append({"seq": 4, "id": "dn-aaaaa", "type": "output", "name": None})
+    for _ in range(40):
+        if pushed:
+            break
+        await asyncio.sleep(0.05)
+    assert pushed == ["darner: dn-aaaaa has output"]
+
+
+async def test_the_keep_box_shows_only_when_the_api_keeps_input(client, fake):
+    for path in ("/new", "/sessions/dn-aaaaa"):
+        _, html = await get(client, path)
+        assert 'name="keep"' not in html and "not kept" in html
+    fake.kept = {"keep_input": True, "kept": []}
+    for path, label in (
+        ("/new", "Keep this task on the session's page"), ("/sessions/dn-aaaaa", "Keep this message on the session's page"),
+    ):
+        _, html = await get(client, path)
+        box = html.split('<div class="choice keep">', 1)[1].split("</div></div>", 1)[0]
+        # Unticked, and never brought back ticked from a draft or by the browser.
+        assert 'type="checkbox" name="keep"' in box and "checked" not in box and "data-nodraft" in box and 'autocomplete="off"' in box
+        assert label.replace("'", "&#39;") in box or label in box
+        # Who can read it stays visible; the rest is in the popover, which describes the box.
+        keep_id = "task-keep" if path == "/new" else "message-keep"
+        assert "Everyone who can use darner-web can read it there." in box.split("</label>", 1)[0]
+        assert f'aria-describedby="{keep_id}"' in box and f'<div class="peek"><p id="{keep_id}">' in box
+        note_id = "task-note" if path == "/new" else "message-note"
+        note = html.split(f'<p class="quiet" id="{note_id}">', 1)[1].split("</p>", 1)[0]
+        assert note.startswith("Until you") and note.endswith("saved in this tab.")
+
+
+@pytest.mark.parametrize("keep, sent", [(["1"], True), (None, False), ("1", False), (["1", "1"], False)])
+async def test_a_ticked_keep_box_asks_the_api_to_keep_what_s_sent(client, fake, keep, sent):
+    extra = {} if keep is None else {"keep": keep}
+    assert (await client.post("/sessions/dn-aaaaa/message", headers=POST, json={"text": "use postgres", **extra})).status == 200
+    assert (await client.post("/tasks", headers=POST, json={"task": "add this recipe", "ref": "a" * 32, **extra})).status == 200
+    [(_, message), (_, task)] = posted(fake)
+    assert message.get("keep", False) is sent and task.get("keep", False) is sent
+
+
+async def test_kept_input_is_shown_in_the_history_as_text_with_a_way_to_delete_it(client, fake):
+    fake.kept = {"keep_input": True, "kept": [
+        {"seq": 7, "kind": "message", "requester": "<b>alice</b>", "text": "<script>x</script>\n**not markdown**", "truncated": True, "created": 1},
+    ]}
+    _, html = await get(client, "/sessions/dn-aaaaa")
+    history = html.split('<section class="history">', 1)[1]
+    item = history.split('data-seq="kept-7"', 1)[1].split("</details>", 1)[0]
+    assert "Message from &lt;b&gt;alice&lt;/b&gt;, its first 8 KiB" in item
+    assert '<pre class="kept">&lt;script&gt;x&lt;/script&gt;\n**not markdown**</pre>' in item
+    assert 'data-post="/sessions/dn-aaaaa/kept/7/delete"' in item
+    # Never what the page leads with.
+    assert "kept-7" not in html.split('<section class="latest"', 1)[1].split("</section>", 1)[0]
+    resp = await client.post("/sessions/dn-aaaaa/kept/7/delete", headers=POST, json={})
+    assert resp.status == 200 and posted(fake) == [("/v1/tasks/dn-aaaaa/kept/7/delete", {"requester": "web"})]
+
+
+async def test_pages_work_with_an_api_older_than_kept_input(client, fake):
+    fake.kept = None
+    for path in ("/sessions/dn-aaaaa", "/new"):
+        resp, html = await get(client, path)
+        assert resp.status == 200 and 'name="keep"' not in html

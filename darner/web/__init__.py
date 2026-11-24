@@ -10,6 +10,8 @@ rebinding.
 """
 
 import argparse
+import asyncio
+import contextlib
 import hashlib
 import json
 import logging
@@ -43,6 +45,14 @@ DEFAULTS = {
     "listen": "127.0.0.1:8081", "user_header": None, "max_download": 100 * 1024 * 1024, "max_upload": 50 * 1024 * 1024,
     # Longer than the API's own launch_timeout, so a slow launch is answered rather than abandoned.
     "launch_timeout": 300,
+    # What's typed into a form is kept in the browser tab's sessionStorage until it's sent.
+    "drafts": True,
+    # An ntfy topic to push to when a session has output, a help request or a domain request.
+    "ntfy_url": None,
+    # Sent as a Bearer header, never in the URL.
+    "ntfy_token": None,
+    # The header's wordmark: darner's, or dejima's for a deployment that keeps it.
+    "wordmark": "darner",
 }
 # Room for the API's longest text fields, 32,768 characters each, at JSON's
 # worst case of six bytes a character, with the rest of a request beside them.
@@ -70,6 +80,15 @@ HEADERS = {
     "Cross-Origin-Resource-Policy": "same-origin",
 }
 TASK_ID = "{id:dn-[a-z2-7]{5}}"
+# dejima's notify watcher's character set, less what a credential would need:
+# userinfo and ?auth=. The token is ntfy_token's alone, so the URL can be logged.
+NTFY_URL = re.compile(r"https?://[A-Za-z0-9:/._~%+-]+")
+NTFY_TOKEN = re.compile(r"[A-Za-z0-9._~+/=-]{1,256}")
+NTFY_POLL = 15
+# What's pushed: darner's own words, never the agent's, since the phone is outside the sandbox.
+NOTICES = {"output": "has output", "help": "needs help", "domains": "asks to reach more domains"}
+NOTIFY_ID = re.compile(r"dn-[a-z2-7]{5}")
+NOTIFY_NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,31}")
 # What a session was started with, as its page labels it, in order.
 SETTING_LABELS = {
     "configs": "Config sets", "blurbs": "Blurbs", "harness": "Harness", "backend": "Backend", "model": "Model",
@@ -109,6 +128,25 @@ def check_config(config: dict) -> dict:
     for key in ("max_download", "max_upload", "launch_timeout"):
         if type(full[key]) not in (int, float) or full[key] <= 0:
             raise ValueError(f"{key} must be a positive number")
+    if type(full["drafts"]) is not bool:
+        raise ValueError("drafts must be true or false")
+    if full["wordmark"] not in ("darner", "dejima"):
+        raise ValueError('wordmark must be "darner" or "dejima"')
+    if full["ntfy_url"] is not None and not (
+        isinstance(full["ntfy_url"], str) and NTFY_URL.fullmatch(full["ntfy_url"])
+    ):
+        raise ValueError(
+            "ntfy_url must be an http:// or https:// ntfy topic URL with no credential in it, such as"
+            " https://ntfy.example.com/darner; a token goes in ntfy_token"
+        )
+    if full["ntfy_token"] is not None and not (
+        isinstance(full["ntfy_token"], str) and NTFY_TOKEN.fullmatch(full["ntfy_token"])
+    ):
+        raise ValueError("ntfy_token must be an ntfy access token, such as tk_ followed by letters and digits")
+    if full["ntfy_token"] and not full["ntfy_url"]:
+        raise ValueError("ntfy_token is set without ntfy_url")
+    if full["ntfy_token"] and not full["ntfy_url"].startswith("https://"):
+        raise ValueError("ntfy_token needs an https:// ntfy_url, so the token isn't sent in the clear")
     if full["user_header"] is not None and not (isinstance(full["user_header"], str) and full["user_header"].strip()):
         raise ValueError("user_header must be a header name, such as X-authentik-username")
     return full
@@ -219,12 +257,26 @@ async def api(request: web.Request, method: str, path: str, with_status: bool = 
 
 
 def page(request: web.Request, template: str, state: str | None = None, status: int = 200, **context) -> web.Response:
-    html = request.app[TEMPLATES].get_template(template).render(state=state, **context)
+    html = request.app[TEMPLATES].get_template(template).render(
+        state=state, drafts=request.app[CONFIG]["drafts"], wordmark=request.app[CONFIG]["wordmark"], now=int(time.time()),
+        **context,
+    )
     return web.Response(text=html, status=status, content_type="text/html")
 
 
 def _version(data) -> str:
-    return hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()[:16]
+    """What a page shows, less the usage its script updates in place: a reload for that would look like news."""
+    def still(session):
+        return session and {**session, "usage": session.get("usage") is not None}
+
+    shown = {**data, "session": still(data["session"])} if "session" in data else {**data, "sessions": [still(s) for s in data["sessions"]]}
+    return hashlib.sha256(json.dumps(shown, sort_keys=True).encode()).hexdigest()[:16]
+
+
+def _live(data) -> dict:
+    """Each session's usage as its page shows it, text and title, by the data-live key of the element."""
+    sessions = [data["session"]] if data.get("session") else data.get("sessions", [])
+    return {f"usage:{s['id']}": [_tokens(u), _tokens_by_model(u)] if (u := s.get("usage")) else ["", ""] for s in sessions}
 
 
 async def _sessions_data(request: web.Request) -> dict:
@@ -243,7 +295,14 @@ async def _session_data(request: web.Request, task_id: str) -> dict:
         if e.status != 404:
             raise
         session = None
-    return {"session": session, "events": events}
+    try:
+        kept = await api(request, "GET", f"/v1/tasks/{task_id}/kept")
+    except ApiError as e:
+        # An API older than kept input.
+        if e.status != 404:
+            raise
+        kept = {"keep_input": False, "kept": []}
+    return {"session": session, "events": events, "kept": kept}
 
 
 async def sessions_page(request: web.Request) -> web.Response:
@@ -260,12 +319,17 @@ async def session_page(request: web.Request) -> web.Response:
             return page(request, "gone.html", status=404, task_id=task_id)
         raise
     latest, history = _latest(data["session"], data["events"])
+    # What users kept of what they sent, among the events, newest first. Never the latest.
+    history = sorted(
+        history + [{**k, "type": "kept"} for k in data["kept"]["kept"]], key=lambda e: e.get("created") or 0, reverse=True,
+    )
     # What became of its ~/shared, as its latest ended event says, so the page can say where its files are.
     ended = [e.get("data") or {} for e in data["events"] if e["type"] == "ended" and e.get("data")]
     share = ended and ("kept" if ended[-1].get("share_kept") else "pruned" if ended[-1].get("share_pruned") else None)
+    total = next((e["usage_total"] for e in reversed(ended) if isinstance(e.get("usage_total"), list)), None)
     return page(
         request, "session.html", state=f"/state/sessions/{task_id}", version=_version(data), task_id=task_id,
-        latest=latest, history=history, share=share, **data,
+        latest=latest, history=history, share=share, total=total, **data,
     )
 
 
@@ -297,7 +361,7 @@ async def state(request: web.Request) -> web.Response:
         data = await (_session_data(request, task_id) if task_id else _sessions_data(request))
     except ApiError as e:
         return web.json_response({"version": None, "error": str(e)}, status=_status(e))
-    return web.json_response({"version": _version(data)})
+    return web.json_response({"version": _version(data), "live": _live(data)})
 
 
 async def download(request: web.Request) -> web.StreamResponse:
@@ -363,23 +427,26 @@ async def blurb_page(request: web.Request) -> web.Response:
 
 async def configs_page(request: web.Request) -> web.Response:
     names = await api(request, "GET", "/v1/configs")
-    return page(request, "names.html", kind="configs", title="Config sets", names=names, descriptions=await _descriptions(request, names))
+    return page(request, "names.html", kind="configs", title="Config sets", names=names, descriptions=_descriptions(await _each(request, "configs", names)))
 
 
-async def _descriptions(request: web.Request, names: list[str]) -> dict[str, str]:
-    """Each config set's description, the comment lines it starts with, to show beside its name."""
-    found = {}
-    for name in names:
+async def _each(request: web.Request, kind: str, names: list[str]) -> dict:
+    """Each config set or blurb as the API gives it, by name."""
+    async def one(name):
         try:
-            described = await api(request, "GET", f"/v1/configs/{quote(name, safe='')}")
+            return await api(request, "GET", f"/v1/{kind}/{quote(name, safe='')}")
         except ApiError as e:
             # Removed since it was listed, or doesn't load: its own page says why.
             if e.status in (400, 404):
-                continue
+                return None
             raise
-        if isinstance(described, dict) and isinstance(described.get("description"), str):
-            found[name] = described["description"]
-    return found
+    found = await asyncio.gather(*(one(name) for name in names))
+    return {name: value for name, value in zip(names, found) if value is not None}
+
+
+def _descriptions(described: dict) -> dict[str, str]:
+    """Each config set's description, the comment lines it starts with, to show beside its name."""
+    return {name: d["description"] for name, d in described.items() if isinstance(d, dict) and isinstance(d.get("description"), str)}
 
 
 async def config_page(request: web.Request) -> web.Response:
@@ -429,10 +496,24 @@ async def _act(request: web.Request, method: str, path: str, location: str | Non
 async def send_message(request: web.Request) -> web.Response:
     """Type a message into the session, which also answers a help request it's waiting on."""
     task_id = request.match_info["id"]
-    text = (await _body(request)).get("text")
+    body = await _body(request)
+    text = body.get("text")
     if not isinstance(text, str) or not text.strip():
         return web.json_response({"error": "Write a message first."}, status=400)
-    return await _act(request, "POST", f"/v1/tasks/{task_id}/message", json={"text": text, "requester": _user(request)})
+    message = {"text": text, "requester": _user(request)}
+    if _keep(body):
+        message["keep"] = True
+    return await _act(request, "POST", f"/v1/tasks/{task_id}/message", json=message)
+
+
+def _keep(body: dict) -> bool:
+    """Whether the form's Keep box was ticked."""
+    return body.get("keep") == ["1"]
+
+
+async def delete_kept(request: web.Request) -> web.Response:
+    task_id, seq = request.match_info["id"], request.match_info["seq"]
+    return await _act(request, "POST", f"/v1/tasks/{task_id}/kept/{seq}/delete", json={"requester": _user(request)})
 
 
 async def check_session(request: web.Request) -> web.Response:
@@ -528,6 +609,7 @@ async def new_task_page(request: web.Request) -> web.Response:
     catalog = await api(request, "GET", "/v1/catalog")
     blurbs = await api(request, "GET", "/v1/blurbs")
     configs = await api(request, "GET", "/v1/configs")
+    described = {name: d for name, d in (await _each(request, "configs", configs)).items() if isinstance(d, dict)}
     # Every level a harness's manifest lists; one that lists none takes any of dejima's.
     efforts = []
     for options in catalog.get("options", {}).values():
@@ -536,7 +618,8 @@ async def new_task_page(request: web.Request) -> web.Response:
                 efforts.append(level)
     # A fresh source per page, so sending the form twice finds the task the first send started.
     return page(
-        request, "new.html", catalog=catalog, blurbs=blurbs, configs=configs, descriptions=await _descriptions(request, configs),
+        request, "new.html", catalog=catalog, blurbs=blurbs, configs=configs, descriptions=_descriptions(described), described=described,
+        blurb_texts=await _each(request, "blurbs", blurbs),
         efforts=efforts, ref=secrets.token_hex(16),
     )
 
@@ -578,6 +661,8 @@ async def start_task(request: web.Request) -> web.Response:
     if not isinstance(ref, str) or not re.fullmatch(r"[0-9a-f]{32}", ref):
         return web.json_response({"error": "Reload the page and try again."}, status=400)
     request_body = _task_request(request, body, ref)
+    if _keep(body):
+        request_body["keep"] = True
     timeout = aiohttp.ClientTimeout(total=request.app[CONFIG]["launch_timeout"])
     try:
         status, result = await api(request, "POST", "/v1/tasks", with_status=True, json=request_body, timeout=timeout)
@@ -608,12 +693,122 @@ async def api_errors(request: web.Request, handler):
         return page(request, "error.html", status=_status(e), message=str(e))
 
 
+# dejima's counts never overlap: input is what was read fresh, so input, cache_read and
+# cache_write together are the whole prompt, on every backend.
+TOKEN_COUNTS = (("input", "fresh in"), ("cache_read", "cache read"), ("cache_write", "cache write"), ("output", "out"))
+
+
+def _short(n: int) -> str:
+    if n < 1000:
+        return str(n)
+    # The unit is chosen after rounding, so 999,950 is 1M rather than 1000k.
+    for size, unit in ((10**3, "k"), (10**6, "M"), (10**9, "G")):
+        shown = round(n / size, 1)
+        if shown < 1000 or unit == "G":
+            return f"{shown:.1f}".removesuffix(".0") + unit
+
+
+def _sums(used: list[dict]) -> dict:
+    return {key: sum(t[key] for t in used if key in t) for key, _ in TOKEN_COUNTS if any(key in t for t in used)}
+
+
+def _tokens(used: list[dict]) -> str:
+    """Token usage summed over models, as dejima's credential proxy counted it, or "" if there was none.
+
+    The whole prompt as "in", with how much of it came from the cache, then
+    "out". A count the provider didn't send isn't made up: without input, the
+    cache counts are shown as they are.
+    """
+    sums = _sums(used)
+    parts = []
+    if "input" in sums:
+        whole = sums["input"] + sums.get("cache_read", 0) + sums.get("cache_write", 0)
+        parts.append(f"{_short(whole)} in" + (f" ({_short(sums['cache_read'])} cached)" if sums.get("cache_read") else ""))
+    else:
+        parts += [f"{_short(sums[key])} {label}" for key, label in TOKEN_COUNTS[1:3] if key in sums]
+    if "output" in sums:
+        parts.append(f"{_short(sums['output'])} out")
+    requests = sum(t["requests"] for t in used)
+    if parts:
+        return ", ".join(parts) + _uncounted(requests, sum(t.get("metered", 0) for t in used))
+    return f"{requests} model request{'s' if requests != 1 else ''}, not counted by the provider" if requests else ""
+
+
+def _uncounted(requests: int, metered: int) -> str:
+    """Calls whose counts are missing, said rather than left out of a sum that would look whole."""
+    return f"; {requests - metered} of {requests} requests not counted" if metered < requests else ""
+
+
+def _tokens_by_model(used: list[dict]) -> str:
+    """Each model's requests and every count, as dejima names them, for a title."""
+    lines = []
+    for t in used:
+        counted = ", ".join(f"{_short(t[key])} {label}" for key, label in TOKEN_COUNTS if key in t)
+        missing = t["requests"] - t.get("metered", 0)
+        lines.append(
+            f"{t['model'] or 'unnamed model'}: {t['requests']} request{'s' if t['requests'] != 1 else ''}"
+            + (f" ({missing} not counted)" if missing > 0 else "") + (f", {counted}" if counted else "")
+        )
+    return "\n".join(lines)
+
+
 def _age(started) -> str:
     minutes = max(0, int(time.time() - started) // 60)
     if minutes < 60:
         return f"{minutes}m"
     hours, minutes = divmod(minutes, 60)
     return f"{hours}h{minutes:02d}m" if hours < 24 else f"{hours // 24}d{hours % 24}h"
+
+
+async def notify(app: web.Application, event: dict) -> None:
+    """Push one event to the ntfy topic: which session, what happened, and its page."""
+    config, task_id = app[CONFIG], event.get("id")
+    what = NOTICES.get(event.get("type"))
+    if not what or not isinstance(task_id, str) or not NOTIFY_ID.fullmatch(task_id):
+        return
+    name = event.get("name")
+    label = f"dn-{name}" if isinstance(name, str) and NOTIFY_NAME.fullmatch(name) else task_id
+    headers = {"Title": f"darner: {label} {what}", "Click": f"{config['public_origin']}/sessions/{task_id}"}
+    if config["ntfy_token"]:
+        headers["Authorization"] = f"Bearer {config['ntfy_token']}"
+    try:
+        async with app[API].post(
+            config["ntfy_url"], data="Open it in darner-web.", headers=headers, timeout=aiohttp.ClientTimeout(total=10),
+            allow_redirects=False,  # nor take its credential elsewhere
+        ) as resp:
+            if resp.status >= 300:
+                log.warning("ntfy at %s answered %s for %s", config["ntfy_url"], resp.status, task_id)
+    except (aiohttp.ClientError, TimeoutError) as e:
+        log.warning("couldn't push to ntfy at %s for %s: %s", config["ntfy_url"], task_id, type(e).__name__)
+
+
+async def notify_forever(app: web.Application) -> None:
+    """Push each new event this frontend's sessions get. Events already there when
+    this starts were for someone to see on the page, so they aren't pushed."""
+    config, last = app[CONFIG], None
+    while True:
+        try:
+            async with app[API].get(
+                config["api_url"].rstrip("/") + "/v1/events", headers={"Authorization": f"Bearer {config['api_token']}"},
+            ) as resp:
+                resp.raise_for_status()
+                listed = await resp.json(content_type=None)
+            if not isinstance(listed, list):
+                raise ValueError("not a list")
+            events = [e for e in listed if isinstance(e, dict) and type(e.get("seq")) is int]
+            newest = max((e["seq"] for e in events), default=0)
+            if last is None or 0 < newest < last:
+                # At startup, or the API's database started over.
+                last = newest
+            for e in sorted(events, key=lambda e: e["seq"]):
+                if e["seq"] > last:
+                    last = e["seq"]
+                    await notify(app, e)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            log.warning("couldn't read darner-api's events for notifications: %s", type(e).__name__)
+        await asyncio.sleep(NTFY_POLL)
 
 
 def make_app(config: dict) -> web.Application:
@@ -625,7 +820,11 @@ def make_app(config: dict) -> web.Application:
     )
     templates.filters["agent"] = render
     templates.filters["age"] = _age
+    templates.filters["tokens"] = _tokens
+    templates.filters["tokens_by_model"] = _tokens_by_model
     templates.globals["SETTING_LABELS"] = SETTING_LABELS
+    # darner.launch's RAN_WITH, repeated rather than imported: darner-web doesn't load the launcher.
+    templates.globals["RAN_WITH"] = ("harness", "backend", "model", "effort", "context_window")
     app[TEMPLATES] = templates
 
     async def client(app: web.Application):
@@ -634,6 +833,16 @@ def make_app(config: dict) -> web.Application:
         await app[API].close()
 
     app.cleanup_ctx.append(client)
+
+    async def notifier(app: web.Application):
+        task = asyncio.create_task(notify_forever(app)) if app[CONFIG]["ntfy_url"] else None
+        yield
+        if task:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+
+    app.cleanup_ctx.append(notifier)
     app.router.add_get("/", sessions_page)
     app.router.add_get(f"/sessions/{TASK_ID}", session_page)
     app.router.add_get(f"/sessions/{TASK_ID}/outputs/{{seq:\\d+}}.zip", download)
@@ -653,6 +862,7 @@ def make_app(config: dict) -> web.Application:
     app.router.add_post(f"/sessions/{TASK_ID}/check", check_session)
     app.router.add_post(f"/sessions/{TASK_ID}/clear", clear_session)
     app.router.add_post(f"/sessions/{TASK_ID}/files", upload_file)
+    app.router.add_post(f"/sessions/{TASK_ID}/kept/{{seq:\\d{{1,9}}}}/delete", delete_kept)
     app.router.add_post(f"/sessions/{TASK_ID}/domains/{{n:\\d{{1,9}}}}/{{verb:allow|deny}}", decide_domains)
     app.router.add_static("/static", HERE / "static")
     return app

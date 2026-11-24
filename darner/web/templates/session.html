@@ -1,21 +1,33 @@
 {% extends "base.html" %}
+{% from "macros.html" import keep_box %}
 {% set title = "dn-" ~ session.name if session and session.name else task_id %}
 {% block title %}{{ title }} · darner{% endblock %}
-{% macro heading(e) -%}
+{% macro used(e) -%}
+{% set u = e.data and e.data.get("usage") %}{% if u and u | tokens %} <span class="tokens" title="{{ u | tokens_by_model }}">{{ u | tokens }}</span>{% endif %}
+{%- endmacro %}
+{% macro flags(e) -%}
+{% for f in e.data.flags %}<code class="flag">{{ f }}</code>{{ ", " if not loop.last }}{% endfor %}
+{%- endmacro %}
+{% macro ago(t) %}<span class="when" data-at="{{ t }}">{{ t | age }} ago</span>{% endmacro %}
+{% macro heading(e, tail="") -%}
 {% if e.type == "output" %}
-<h2>Output{% if e.signalled == false %}, collected without the agent's done signal{% endif %} <span class="by">the agent's</span></h2>
+<h2>Output{% if e.signalled == false %}, collected without the agent's done signal{% endif %}{{ used(e) }} <span class="by">the agent's</span>{{ tail }}</h2>
 {% elif e.type == "help" %}
-<h2>Help request <span class="by">the agent's</span></h2>
+<h2>Help request{{ used(e) }} <span class="by">the agent's</span>{{ tail }}</h2>
 {% elif e.type == "waiting" %}
-<h2>Seems to be waiting: its screen hasn't changed for {{ e.data.quiet // 60 }}m{% if e.summary %} <span class="by">the end of its screen, the agent's</span>{% endif %}</h2>
+<h2>Seems to be waiting: its screen hasn't changed for {{ e.data.quiet // 60 }}m{{ used(e) }}{% if e.summary %} <span class="by">the end of its screen, the agent's</span>{% endif %}{{ tail }}</h2>
 {% elif e.type == "domains" %}
-<h2>Asks to reach these domains</h2>
+<h2>Asks to reach these domains{{ tail }}</h2>
 {% elif e.type == "expired" %}
-<h2>Stopped after running for {{ e.data.age // 3600 }}h, longer than sessions may run</h2>
+<h2>Stopped after running for {{ e.data.age // 3600 }}h, longer than sessions may run{{ tail }}</h2>
+{% elif e.type == "ignored" %}
+<h2>Started without {{ flags(e) }}{{ tail }}</h2>
+{% elif e.type == "kept" %}
+<h2>{{ {"task": "Task", "message": "Message", "answer": "Answer"}.get(e.kind, "Sent") }} from {{ e.requester }}{% if e.truncated %}, its first 8 KiB{% endif %} <span class="by">kept</span>{{ tail }}</h2>
 {% elif e.type == "ended" %}
-<h2>Ended{% if e.summary %}: {{ e.summary }}{% endif %}</h2>
+<h2>Ended{% if e.summary %}: {{ e.summary }}{% endif %}{{ used(e) }}{{ tail }}</h2>
 {% else %}
-<h2>{{ e.type }}</h2>
+<h2>{{ e.type }}{{ tail }}</h2>
 {% endif %}
 {%- endmacro %}
 {% macro body(e) -%}
@@ -26,6 +38,11 @@
 <div class="body agent">{{ e.summary | agent }}</div>
 {% elif e.type == "waiting" %}
 {% if e.summary %}<pre class="agent">{{ e.summary }}</pre>{% endif %}
+{% elif e.type == "kept" %}
+<pre class="kept">{{ e.text }}</pre>
+<div class="footer"><button type="button" class="quiet" data-post="/sessions/{{ task_id }}/kept/{{ e.seq }}/delete" data-confirm="Delete this kept copy? It's removed from darner's database.">Delete</button></div>
+{% elif e.type == "ignored" %}
+<div class="body"><p>The dejima host's dejima is older than this darner and doesn't know {{ flags(e) }}, so this session runs without {{ "it" if e.data.flags | length == 1 else "them" }}. Updating dejima there fixes that for new sessions.</p></div>
 {% elif e.type == "domains" %}
 <div class="body">
 <ul class="domains">
@@ -46,25 +63,33 @@
 {% block main %}
 <h1 class="id">{{ title }}</h1>
 {% if session %}
-<p class="summary">{% if session.name %}<span class="id">{{ task_id }}</span>. {% endif %}Started by <strong>{{ session.requester }}</strong>, {{ session.started | age }} ago. <span class="state {{ session.state }}">{{ session.state }}</span>
-{% if session.link %} · <a href="{{ session.link }}" rel="noopener noreferrer">Open it in remote access</a>{% endif %}</p>
+<p class="summary">{% if session.name %}<span class="id">{{ task_id }}</span>. {% endif %}Started by <strong>{{ session.requester }}</strong>, <span data-at="{{ session.started }}">{{ session.started | age }} ago</span>. <span class="state {{ session.state }}">{{ session.state }}</span>
+{% if session.link %} · <a href="{{ session.link }}" rel="noopener noreferrer">Open it in remote access</a>{% endif %}
+{% set u = session.get("usage") %}{% if u is not none %}<br><span class="tokens">Used so far: <span data-live="usage:{{ session.id }}" data-empty="nothing yet" title="{{ u | tokens_by_model }}">{{ u | tokens or "nothing yet" }}</span>.</span>{% elif session.state != "starting" %}<br><span class="tokens">Token usage isn't metered for this session.</span>{% endif %}</p>
 {% else %}
-<p class="summary">Ended. Its output is kept here until it's cleared.{% if share == "pruned" %} Its ~/shared on the dejima host was removed, since everything in it is in the zip.{% elif share == "kept" %} Its ~/shared is kept on the dejima host too, since it holds files the zip doesn't.{% endif %}</p>
+<p class="summary">Ended. Its output is kept here until it's cleared.{% if share == "pruned" %} Its ~/shared on the dejima host was removed, since everything in it is in the zip.{% elif share == "kept" %} Its ~/shared is kept on the dejima host too, since it holds files the zip doesn't.{% endif %}{% if total and total | tokens %} <span class="tokens" title="{{ total | tokens_by_model }}">It used {{ total | tokens }}.</span>{% endif %}</p>
 {% endif %}
 <p class="untrusted">Everything marked as the agent's was written by the agent. Treat it as untrusted.</p>
-<section class="latest" aria-label="Latest">
+<section class="latest" aria-label="Latest"{% if latest %} data-seq="{{ latest.seq }}"{% endif %}>
 {% if latest %}
-<div class="event {{ latest.type }}">{{ heading(latest) }}{{ body(latest) }}</div>
+{% set tail %}<span class="stamp"><span class="label new" hidden>new</span>{% if latest.get("created") %} {{ ago(latest.created) }}{% endif %}</span>{% endset %}
+<div class="event {{ latest.type }}">{{ heading(latest, tail) }}{{ body(latest) }}</div>
 {% else %}
 <p class="quiet">Nothing yet.</p>
 {% endif %}
 </section>
 {% if session %}
 <section class="panel">
-<form method="post" data-action="/sessions/{{ task_id }}/message">
+<form method="post" data-action="/sessions/{{ task_id }}/message" data-draft="message:{{ session.id }}:{{ session.started }}">
 <label for="message">{% if session.waiting.answer is not none %}Answer its help request{% else %}Send it a message{% endif %}</label>
+{% if kept.keep_input %}
+<textarea id="message" name="text" rows="3" required{% if drafts %} aria-describedby="message-note"{% endif %}></textarea>
+{% if drafts %}<p class="quiet" id="message-note">Until you send it, what you've typed here is saved in this tab.</p>{% endif %}
+{{ keep_box("message-keep", "Keep this message on the session's page") }}
+{% else %}
 <textarea id="message" name="text" rows="3" required aria-describedby="message-note"></textarea>
-<p class="quiet" id="message-note">What you send is typed into the session and not kept, so it won't appear here.</p>
+<p class="quiet" id="message-note">What you send is typed into the session and not kept, so it won't appear here: keep a copy if you'll want it later.{% if drafts %} Until you send it, what you've typed here is saved in this tab.{% endif %}</p>
+{% endif %}
 <button type="submit">Send</button> <span class="quiet sent" role="status" hidden>Sent.</span>
 </form>
 <form method="post" data-upload="/sessions/{{ task_id }}/files">
@@ -77,13 +102,19 @@
 <p class="status" role="status" hidden data-text="dejima is stopping the sandbox, and darner is collecting any output it left. This page reloads when that's done."></p>
 <p class="alert" role="alert" hidden></p>
 </section>
-{% if session.started_with %}
+{% set ran = session.get("ran_with") %}
+{% if session.started_with or ran %}
 <section class="well started">
 <h2>Started with</h2>
 <dl>
-{% for key, label in SETTING_LABELS.items() if key in session.started_with %}
+{% for key, label in SETTING_LABELS.items() %}
+{% if ran and key in RAN_WITH %}
+{% set s = ran.get(key) %}
+<dt>{{ label }}</dt><dd>{% if s %}{{ s.value }}{% if s["from"] == "dejima" %} <span class="quiet">dejima's default</span>{% elif s["from"] == "launcher" %} <span class="quiet">the launcher's default</span>{% endif %}{% else %}<span class="quiet">the harness's own</span>{% endif %}</dd>
+{% elif key in session.started_with %}
 {% set value = session.started_with[key] %}
 <dt>{{ label }}</dt><dd>{% if value is string or value is number %}{{ value }}{% else %}{{ value | join(", ") }}{% endif %}</dd>
+{% endif %}
 {% endfor %}
 </dl>
 </section>
@@ -100,7 +131,7 @@
 <div class="history-head"><h2>History</h2><button type="button" class="quiet" data-expand="#history">Expand all</button></div>
 <ol class="timeline" id="history">
 {% for e in history %}
-<li><details class="event {{ e.type }}" data-seq="{{ e.seq }}"><summary>{{ heading(e) }}{% if e.get("created") %}<span class="when">{{ e.created | age }} ago</span>{% endif %}</summary>{{ body(e) }}</details></li>
+<li><details class="event {{ e.type }}" data-seq="{{ "kept-" if e.type == "kept" }}{{ e.seq }}"><summary>{{ heading(e) }}{% if e.get("created") %}{{ ago(e.created) }}{% endif %}</summary>{{ body(e) }}</details></li>
 {% endfor %}
 </ol>
 </section>
